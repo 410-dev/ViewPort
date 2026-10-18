@@ -12,9 +12,11 @@
 | 자동 저장 | 기본은 모든 변경 사항 자동 저장. **예외**: 앱보다 상위 호환 버전 번들을 사용자 인가 후 로드한 경우 자동 저장 비활성(명시적 저장만) |
 | 쿼리 키워드 | 다국어 별칭. 파서는 언어 중립 AST를 만들고, 키워드는 로케일 별칭 테이블로 매핑. 저장 쿼리는 중립 형식(JSON AST)으로 보관하고 표시할 때 로케일로 렌더 |
 | 복합 정렬 | 순차 안정 정렬: **마지막에 쓴 정렬이 최우선 키**. `정렬(A) 그리고 정렬(B) 그리고 정렬(C)` ≡ `ORDER BY C, B, A, id` |
-| 암호화 잠금 | Argon2id로 비밀번호(+선택적 키파일)에서 키 도출. DB는 SQLCipher, 기타 파일은 XChaCha20-Poly1305. 미디어 원본은 암호화하지 않음 |
-| SMB | 순수 Rust SMB2/3 클라이언트 (모든 플랫폼 동일 동작, Range read) |
-| 썸네일 | 번들 내부 팩 파일(대용량 단위로 묶음), 잠금 시 함께 암호화 |
+| 암호화 잠금 | Argon2id로 비밀번호(+선택적 키 파일)에서 키 도출, XChaCha20-Poly1305로 봉인. 잠긴 번들의 DB는 **메모리에서만 복호화**해서 쓰고 변경 시 다시 암호화해 저장(평문 DB가 디스크에 남지 않음). 설정·썸네일도 암호화, 미디어 원본은 암호화하지 않음. SQLCipher는 OpenSSL 빌드 의존성 때문에 채택하지 않음 |
+| SMB | 순수 Rust SMB2/3 클라이언트(`smb2` 크레이트). 한 핸들로 위치 지정 읽기(영상 탐색), 자동 재연결 |
+| 네트워크 비밀번호 | 번들이 아닌 OS 자격 증명 저장소(Windows 자격 증명 관리자, macOS 키체인, Linux Secret Service)에 저장 |
+| FFmpeg | 설치 파일에 포함하지 않음(GPL 라이선스). 앱 폴더 → 설정 경로 → `PATH` 순으로 찾고, 없으면 영상 썸네일·길이·변환만 비활성 |
+| 썸네일 | 번들 내부 팩 파일(대용량 단위로 묶음), 잠금 시 항목별 암호화 |
 
 ## 크레이트 구성
 
@@ -25,9 +27,12 @@ crates/
   vp-query/             고급 검색 언어: 렉서 → 파서(AST, span) → 의미 분석(필드 레지스트리) → SQL 컴파일
   vp-db/                SQLite 스키마/마이그레이션, 미디어·확장 필드 저장소
   vp-driver/            스토리지 드라이버 추상화(MediaDriver) + 로컬 드라이버. SMB/WebDAV/FTP/VeraCrypt/샤드가 같은 trait 구현
-  vp-bundle/            .vpbun 번들: info.json, 버전 호환 검사, 레이아웃, (예정) 압축 해제/암호화
+  vp-bundle/            .vpbun 번들: info.json, 버전 호환 검사, 레이아웃
   vp-scan/              드라이버로 소스를 순회해 DB에 기록. 크기·수정 시각이 같으면 seen 표시만, 사라진 파일은 missing
   vp-thumb/             썸네일 생성(EXIF 회전 적용, 불투명=JPEG/투명=PNG)과 팩 파일 저장소
+  vp-cache/             청크 풀 기반 메모리 캐시(선점, LRU, 읽는 중인 항목은 축출하지 않음)
+  vp-media/             외부 FFmpeg로 영상 분석·프레임 추출·고호환 변환
+  vp-crypto/            Argon2id 키 도출, XChaCha20-Poly1305 봉인
 src-tauri/              Tauri 앱: 커맨드, 상태, 백그라운드 작업 조율
 src/                    SvelteKit UI
 ```
@@ -68,16 +73,17 @@ param     := 따옴표 없는 텍스트 | "따옴표 문자열"
 ```
 MyLibrary.vpbun/
   info.json            평문, 공개 가능 정보 (bundle_version 필수, 잠금 여부, KDF 파라미터)
-  db/library.sqlite    (잠금 시 SQLCipher)
-  settings.json        (잠금 시 암호화)
-  thumbs/*.pack        썸네일 팩
-  stats/               통계
+  db/library.sqlite    잠금 시 db/library.sqlite.enc
+  settings.json        잠금 시 settings.json.enc
+  thumbs/*.pack        썸네일 팩 (잠금 시 항목별 암호화)
+  converted/<id>.mp4   고호환 변환본 (미디어로 취급, 암호화하지 않음)
   media/               (선택) 번들 내 미디어 → 상대 경로로 참조
 ```
 
 - 미디어 경로는 `(source_id, relative_path)`로 저장. 번들 내 미디어의 source는 "bundle"이며 번들 루트 기준 상대 경로.
 - 로드 시 `bundle_version > SUPPORTED`이면 거부 또는 사용자 인가 후 읽기 전용(자동 저장 끔).
-- 압축 번들(zip 등)은 내부에서 `info.json`을 찾으면 임시/지정 위치로 해제 후 로드.
+- 압축 번들(zip)은 루트 또는 한 단계 아래에서 `info.json`을 찾으면 압축 파일 옆에 `<이름>.vpbun`으로 해제 후 로드(zip slip 방지).
+- 상위 버전 번들을 인가 후 열면 DB를 임시 작업 사본으로 열고, "번들에 저장"을 눌러야만 번들에 쓴다.
 
 ## 소스(다중 디렉터리)
 
@@ -100,18 +106,30 @@ MyLibrary.vpbun/
 - UI는 `vpthumb://localhost/<id>`(Windows/Android는 `http://vpthumb.localhost/<id>`)로 요청한다. 없으면 즉시 생성하므로
   화면에 보이는 것이 항상 먼저 처리된다. 스캔 후 백그라운드 작업이 나머지를 채운다. 둘은 `thumbnails.workers` 크기의
   같은 세마포어를 공유한다.
-- 영상 썸네일은 미디어 파이프라인(FFmpeg) 도입 후 지원. 그 전까지는 `unsupported`로 기록된다.
+- 영상 썸네일은 FFmpeg로 `thumbnails.video_frame_position` 위치의 프레임을 뽑는다. FFmpeg가 없으면 `unsupported`로
+  기록되고, 나중에 FFmpeg가 발견되면 다시 시도한다.
 
 ## 그리드
 
 가상 스크롤: 보이는 행 ± `grid.overscan_rows`만 DOM에 그리고, 이름 등 메타데이터는 보이는 항목만 묶어서 가져온다.
 검색 결과는 id 배열 전체를 한 번에 받는다(10만 개 ≈ 1MB 미만). 정렬이 없는 쿼리에는 `grid.default_sort`가 적용된다.
 
-## 캐시 (예정)
+## 캐시
 
-- 사용자 설정 용량만큼 시작 시 메모리 선점(데스크톱: 페이지 커밋 + touch, 선택적 lock). 모바일은 OS 종료 위험 때문에 선점 없이 상한만.
-- 시작 시 통계 점수 상위 n개(기본 30)를 용량의 x%(기본 50%) 상한 내에서 백그라운드 프리로드.
-- 캐러셀 이동 방향 기반 선읽기(prefetch).
+- 메모리를 고정 크기 청크(`cache.chunk_bytes`) 풀로 관리한다. 번들을 열면 설정 용량 전체를 할당하고 모든 페이지에 써서
+  커밋한다(작업 관리자에 사용 중으로 표시). 모바일은 기본으로 선점하지 않는다.
+- 번들을 열면 조회 점수(frecency, 반감기 `stats.half_life_days`) 상위 n개를 용량의 x% 안에서, 상위부터 차례로 프리로드한다.
+- 캐러셀은 앞뒤 `prefetch_ahead/behind`개를 백엔드 캐시에 올리고, 이미지는 WebView에서도 미리 디코딩한다.
+- `vpmedia://`는 HTTP Range를 지원한다. 이미지는 통째로 캐시, 영상은 바로 스트리밍하면서 백그라운드로 캐시한다.
+
+## 영상
+
+- 스캔 후 백그라운드에서 ffprobe로 길이·크기·코덱을 기록하고 WebView 재생 가능 여부를 판정한다.
+- 재생이 어려운 파일은 뷰어 배너로 변환을 제안한다(변환 / 이 파일을 무시 목록에 추가). 설정에는 변환이 필요한 파일 수와
+  "모두 변환"이 표시된다. 변환은 가능하면 리먹스, 아니면 H.264/AAC로 인코딩(하드웨어 인코더 시도 후 libx264)한다.
+- `playback.fallback_mode`: `auto`(필요할 때), `always`(모든 영상을 변환본으로 재생), `never`.
+- 구간 반복: 영상별 이름 붙은 A-B 구간, 영상당 하나를 "자동 시작"으로 지정 가능.
+- 슬라이드쇼: 이미지는 `image_interval_secs`, 영상은 재생 횟수 또는 지정 지점부터 n초.
 
 ## 향후 확장을 위한 고려
 

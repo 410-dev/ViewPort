@@ -12,18 +12,50 @@
   "app": {
     "windows": [],
     "security": {
-      "csp": null
+      "csp": {
+        "default-src": "'self'",
+        "script-src": "'self'",
+        "style-src": "'self' 'unsafe-inline'",
+        "img-src": "'self' data: blob: vpthumb: http://vpthumb.localhost https://vpthumb.localhost vpmedia: http://vpmedia.localhost https://vpmedia.localhost",
+        "media-src": "'self' blob: vpmedia: http://vpmedia.localhost https://vpmedia.localhost",
+        "connect-src": "'self' ipc: http://ipc.localhost https://ipc.localhost",
+        "font-src": "'self' data:"
+      }
     }
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": [
+      "msi",
+      "nsis",
+      "deb",
+      "appimage",
+      "dmg",
+      "app"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "publisher": "ViewPort",
+    "copyright": "© 2026 ViewPort",
+    "category": "Photography",
+    "shortDescription": "ViewPort media manager",
+    "longDescription": "Image and video library with advanced search, tagging, caching, slideshow and encrypted project bundles.",
+    "license": "MIT",
+    "windows": {
+      "wix": {
+        "language": [
+          "ko-KR",
+          "en-US"
+        ]
+      },
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      }
+    }
   }
 }
