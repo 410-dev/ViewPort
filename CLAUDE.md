@@ -54,17 +54,26 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
   `recent.rs`(기기별 상태: 최근 번들, `AppSettings`).
 
 ### 프론트엔드 (`src/`)
-- `routes/+page.svelte`가 `StartScreen` ↔ `Library` 전환. `Library`가 `Grid`(가상 스크롤), `Viewer`(캐러셀·슬라이드쇼·구간 반복),
-  `InfoPanel`, `QueryEditor`, `BasicSearch`, `Settings`, `SourceDialog`를 조합한다.
+- `routes/+page.svelte`가 기기 설정(`prefs.svelte.ts`)을 불러온 뒤 `StartScreen` ↔ `Library` 전환. `app.css`가 디자인 토큰
+  (다크 기본, `data-theme="light"`)과 알약형 기본 컴포넌트(`.btn`, `.icon-btn`, `.seg`, `.input`, `.switch`, `.dialog`)를 정의한다.
+- `Library.svelte`가 조합: `shell/Sidebar`, `shell/Toolbar`, `views/*`(그리드·목록·트리), `panel/RightPanel`(미리보기/결합/정보),
+  `StatusBar`(작업 진행), `query/QueryModal`(쿼리 명령어 편집기), `settings/SettingsPanel`, `SourceDialog`, `Viewer`.
+- `views/`: 모든 보기는 `ViewProps`(`views/types.ts`)를 받고 `Selection`·`briefs` 캐시를 공유한다. 새 보기는 `views/index.ts`의
+  `VIEWS`에, 새 열은 `views/columns.ts`의 `COLUMNS`에 항목 하나로 추가한다.
+- `settings/schema.ts`: 설정 패널 레이아웃(데이터). 각 필드는 `bundle`(번들 `Settings`) 또는 `app`(기기 `AppSettings`) 경로를 가리킨다.
+- `tasks.svelte.ts`: 백엔드 작업 레지스트리(`src-tauri/src/tasks.rs`, `task` 이벤트)의 미러.
 - `lib/api.ts`: 모든 `invoke` 래퍼와 백엔드 타입 미러. 커맨드를 추가·변경하면 여기 타입도 맞춘다.
-- `lib/query.ts`: 편집기용 토크나이저·자동완성. `normalize`·연산자 허용 규칙이 `vp_query`와 **미러**이므로 함께 수정한다.
-- `lib/i18n.svelte.ts`: `ko`/`en` 문자열 표. 새 UI 문자열은 두 표 모두에 추가한다(`en`은 `Record<Key,string>`라 누락 시 타입 오류).
+- `lib/query.ts`: 편집기용 토크나이저·자동완성·호출 위치 파싱. `normalize`·연산자 허용 규칙·`POSTFIX_OPS`·항 수가
+  `vp_query`와 **미러**이므로 함께 수정한다.
+- `lib/i18n.svelte.ts` + `lib/i18n/<언어>.ts`: UI 문자열 사전. 키 집합은 `ko.ts`가 정의하고 다른 언어는 `Record<Key,string>`라
+  누락 시 타입 오류. 언어 추가는 사전 파일 + `LOCALES` 등록. 런타임 키(`task.*`, `qop.*`, `qerr.*`)는 `tx()`로 조회.
 - `lib/keys.ts`: 키 바인딩(설정 `keys`에서 읽음).
+- 글꼴: 한국어 고정폭 글꼴을 쓰지 않는다. 기본은 시스템 고딕, 사용자가 설정에서 바꾼다(`ui.font_ui`, `ui.font_editor`).
 
 ## 핵심 규칙과 불변식
 
 - **하드코딩 금지**: 용량, 개수, 시간, 비율, 워커 수, 키 바인딩 등 튜닝값은 `vp-core/src/settings.rs`에 필드로 추가하고
-  `Settings.svelte`에 노출한다. 모든 설정 구조체는 `#[serde(default)]` — 구버전/신버전 설정 파일 모두 로드돼야 한다.
+  `src/lib/settings/schema.ts`에 노출한다. 모든 설정 구조체는 `#[serde(default)]` — 구버전/신버전 설정 파일 모두 로드돼야 한다.
 - **미디어 식별자는 `(source_id, rel_path)`**. 절대 경로를 DB에 저장하지 않는다. 번들 내 미디어는 `bundle` 드라이버 소스로
   번들 루트 기준 상대 경로. 소스 재연결(다른 PC) 시 태그·통계가 보존돼야 한다.
 - **워크스페이스는 여러 소스(디렉터리)를 동시에 가진다** — `source` 테이블 한 행 = 불러온 디렉터리 하나.
@@ -77,6 +86,8 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
 - **지연 최소화**: 파일은 수 KB~수 GB. UI 스레드·커맨드에서 큰 파일을 통째로 읽지 말고 `read_at` 기반 스트리밍, 백그라운드 작업,
   세마포어(`thumb_permits`, `prefetch_permits`)를 사용한다. 화면에 보이는 것이 먼저 처리돼야 한다.
 - 백그라운드 작업은 `Workspace.closed` 플래그를 확인해 번들이 닫히면 멈춰야 한다.
+- **진행 상황 보고**: 시간이 걸릴 수 있는 작업은 `tasks::begin`/`begin_with_cancel`로 `Task`를 만들어 진행량을 갱신한다.
+  파일 전체 읽기는 `workspace::read_tracked` 또는 `tasks::ReadTracker`를 거쳐 느린 저장 장치에서도 진행 상황이 보이게 한다.
 
 ## 고급 검색 언어 요점
 
@@ -98,7 +109,8 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
 - **기본 조건 추가**: `base_fields()`에 `FieldDef::column(...)` + `ko`/`en` 이름·별칭. 컬럼 별칭(`m.`, `s.`, `src.`)은 검색 쿼리 기준.
 - **자동 태깅/인식**: 확장 필드 값은 `origin`(user / auto:<provider>)으로 출처를 구분한다. 자동 생성 값이 수동 값을 덮어쓰지 않게 유지.
 - **데이터 샤드 저장**: 미디어 경로 모델이 `(source_id, path)`이므로 드라이버 하나로 추가돼야 한다. 샤드 메타데이터는 별도 DB.
-- 하드웨어 가속은 `AppSettings.hardware`(`gpu`, `video_decode`, `video_encode`, 기기별) 옵션으로 제어한다.
+- 하드웨어 가속은 `AppSettings.hardware`(기기별)로 제어한다: `gpu`, `gpu_rasterization`, `zero_copy`(WebView 인자),
+  `video_decode` + `ffmpeg_hwaccel`(FFmpeg `-hwaccel`, 실패 시 소프트웨어 재시도), `video_encode` + `encoders`(시도 순서).
 
 ## 영상 재생
 
@@ -108,7 +120,7 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
 
 ## 작업 방식
 
-- `main` 브랜치에 직접 커밋한다. push는 하지 않는다(GitHub는 사용자가 관리).
+- `main` 브랜치에 직접 커밋한다. push는 사용자가 요청할 때만 한다(GitHub는 사용자가 관리).
 - 변경 후 `cargo test --workspace`와 `npm run check`가 통과해야 한다. 쿼리 언어를 바꾸면 `vp-query` 단위 테스트와
   `vp-db/src/tests.rs`(실제 SQLite 검색) 양쪽에 케이스를 추가한다.
 - 코드 주석·식별자는 영어, 문서(README, ARCHITECTURE)와 UI 기본 로케일은 한국어.

@@ -74,6 +74,18 @@ fn spec_query_end_to_end() {
 }
 
 #[test]
+fn extension_and_negated_text_operators() {
+    let lib = library();
+    assert_eq!(lib.ids("이름(MP4:의 확장자를 가지고 있음)"), [3, 4, 5]);
+    assert_eq!(lib.ids("이름(.jpg:mp4:의 확장자를 가지고 있음)"), [1, 2, 3, 4, 5]);
+    assert_eq!(lib.ids("이름(jpg:의 확장자를 가지고 있지 않음)"), [3, 4, 5]);
+    assert_eq!(lib.ids("name(jpg:lacks extension)"), [3, 4, 5]);
+    assert_eq!(lib.ids("이름(b:로 시작하지 않음)"), [3, 4, 5]);
+    assert_eq!(lib.ids("이름(.jpg:로 끝나지 않음)"), [3, 4, 5]);
+    assert_eq!(lib.ids("경로(trip:를 포함하지 않음)"), [3, 5]);
+}
+
+#[test]
 fn enum_and_negation() {
     let lib = library();
     assert_eq!(lib.ids("태그(바다)"), [1, 2]);
