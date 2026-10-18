@@ -120,7 +120,7 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
 
 ## 작업 방식
 
-- `main` 브랜치에 직접 커밋한다. push는 사용자가 요청할 때만 한다(GitHub는 사용자가 관리).
+- `main` 브랜치에 직접 커밋한다. push는 하지 않는다(GitHub는 사용자가 관리).
 - 변경 후 `cargo test --workspace`와 `npm run check`가 통과해야 한다. 쿼리 언어를 바꾸면 `vp-query` 단위 테스트와
   `vp-db/src/tests.rs`(실제 SQLite 검색) 양쪽에 케이스를 추가한다.
 - 코드 주석·식별자는 영어, 문서(README, ARCHITECTURE)와 UI 기본 로케일은 한국어.
