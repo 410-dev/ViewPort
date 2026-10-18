@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "viewport",
+  "productName": "ViewPort",
   "version": "0.1.0",
   "identifier": "com.viewport.app",
   "build": {
@@ -12,9 +12,11 @@
   "app": {
     "windows": [
       {
-        "title": "viewport",
-        "width": 800,
-        "height": 600
+        "title": "ViewPort",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 480,
+        "minHeight": 360
       }
     ],
     "security": {

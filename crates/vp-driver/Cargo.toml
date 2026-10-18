@@ -1,0 +1,14 @@
+[package]
+name = "vp-driver"
+description = "ViewPort storage driver abstraction and built-in drivers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,224 @@
+//! Workspace settings. Every tunable lives here so nothing is hard-coded elsewhere.
+//!
+//! All structs use `#[serde(default)]`, so a settings file written by an older
+//! build (missing fields) or a newer one (extra fields) still loads.
+
+use serde::{Deserialize, Serialize};
+
+const MIB: u64 = 1024 * 1024;
+const GIB: u64 = 1024 * MIB;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Settings {
+    pub general: GeneralSettings,
+    pub cache: CacheSettings,
+    pub playback: PlaybackSettings,
+    pub slideshow: SlideshowSettings,
+    pub thumbnails: ThumbnailSettings,
+    pub hardware: HardwareSettings,
+    pub keys: KeyBindings,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GeneralSettings {
+    /// UI and query keyword locale ("ko", "en").
+    pub locale: String,
+    /// Debounce before writing changes to the bundle.
+    pub autosave_debounce_ms: u64,
+}
+
+impl Default for GeneralSettings {
+    fn default() -> Self {
+        Self { locale: "ko".into(), autosave_debounce_ms: 500 }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CacheSettings {
+    /// Total in-memory media cache size.
+    pub memory_bytes: u64,
+    /// Reserve and commit the whole cache at startup (desktop only).
+    pub preallocate: bool,
+    /// Additionally lock the cache pages so the OS cannot swap them out.
+    pub lock_pages: bool,
+    /// Number of most-viewed items to preload at startup.
+    pub autoload_top_n: u32,
+    /// Fraction of `memory_bytes` the startup preload may use.
+    pub autoload_ratio: f32,
+    /// Items to prefetch ahead / behind the current carousel position.
+    pub prefetch_ahead: u32,
+    pub prefetch_behind: u32,
+    /// Files larger than this are streamed instead of cached whole.
+    pub max_item_bytes: u64,
+}
+
+impl Default for CacheSettings {
+    fn default() -> Self {
+        Self {
+            memory_bytes: 2 * GIB,
+            preallocate: true,
+            lock_pages: false,
+            autoload_top_n: 30,
+            autoload_ratio: 0.5,
+            prefetch_ahead: 3,
+            prefetch_behind: 1,
+            max_item_bytes: GIB,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VideoFallbackMode {
+    /// Use the WebView player; fall back to remux/transcode only when it cannot play the file.
+    Auto,
+    /// Always route video through the fallback pipeline.
+    Always,
+    /// Never fall back; unsupported files show an error banner.
+    Never,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PlaybackSettings {
+    /// Seek step for Shift + arrow / Shift + A/D.
+    pub seek_step_secs: f64,
+    pub fallback_mode: VideoFallbackMode,
+    /// Suggest converting unsupported files to a high-compatibility format.
+    pub suggest_conversion: bool,
+    /// Initial volume, 0.0..=1.0.
+    pub volume: f32,
+    pub muted: bool,
+}
+
+impl Default for PlaybackSettings {
+    fn default() -> Self {
+        Self {
+            seek_step_secs: 5.0,
+            fallback_mode: VideoFallbackMode::Auto,
+            suggest_conversion: true,
+            volume: 1.0,
+            muted: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum SlideshowVideoMode {
+    /// Play the whole video `count` times, then advance.
+    PlayCount { count: u32 },
+    /// Play `duration_secs` starting at `start_secs` (negative = from the end), then advance.
+    Clip { start_secs: f64, duration_secs: f64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SlideshowSettings {
+    /// Time each image stays on screen.
+    pub image_interval_secs: f64,
+    pub video: SlideshowVideoMode,
+    /// Restart from the first item after the last one.
+    pub wrap_around: bool,
+}
+
+impl Default for SlideshowSettings {
+    fn default() -> Self {
+        Self {
+            image_interval_secs: 5.0,
+            video: SlideshowVideoMode::PlayCount { count: 1 },
+            wrap_around: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThumbnailFormat {
+    Webp,
+    Avif,
+    Jpeg,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ThumbnailSettings {
+    /// Longest edge of generated thumbnails in pixels.
+    pub max_edge_px: u32,
+    pub format: ThumbnailFormat,
+    /// Encoder quality, 0..=100.
+    pub quality: u8,
+    /// Size of each thumbnail pack file in the bundle.
+    pub pack_bytes: u64,
+    /// Background generation workers; 0 = number of CPUs / 2.
+    pub workers: u32,
+    /// Position in a video to grab the thumbnail frame from, as a fraction of its length.
+    pub video_frame_position: f32,
+    /// Number of thumbnails the grid keeps decoded in memory.
+    pub grid_memory_items: u32,
+}
+
+impl Default for ThumbnailSettings {
+    fn default() -> Self {
+        Self {
+            max_edge_px: 320,
+            format: ThumbnailFormat::Webp,
+            quality: 80,
+            pack_bytes: 256 * MIB,
+            workers: 0,
+            video_frame_position: 0.1,
+            grid_memory_items: 2000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HardwareSettings {
+    /// Hardware video decoding (WebView and fallback pipeline).
+    pub video_decode: bool,
+    /// Hardware encoding for fallback transcodes.
+    pub video_encode: bool,
+    /// GPU image decoding / scaling where available.
+    pub image_decode: bool,
+}
+
+impl Default for HardwareSettings {
+    fn default() -> Self {
+        Self { video_decode: true, video_encode: true, image_decode: true }
+    }
+}
+
+/// Key bindings by action. Values are `KeyboardEvent.key`-style names, with
+/// optional `Shift+` / `Ctrl+` / `Alt+` / `Meta+` prefixes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KeyBindings {
+    pub next: Vec<String>,
+    pub prev: Vec<String>,
+    pub seek_forward: Vec<String>,
+    pub seek_backward: Vec<String>,
+    pub toggle_fullscreen: Vec<String>,
+    pub toggle_play: Vec<String>,
+    pub toggle_slideshow: Vec<String>,
+    pub close_viewer: Vec<String>,
+}
+
+impl Default for KeyBindings {
+    fn default() -> Self {
+        let v = |keys: &[&str]| keys.iter().map(|k| k.to_string()).collect();
+        Self {
+            next: v(&["ArrowRight", "d"]),
+            prev: v(&["ArrowLeft", "a"]),
+            seek_forward: v(&["Shift+ArrowRight", "Shift+d"]),
+            seek_backward: v(&["Shift+ArrowLeft", "Shift+a"]),
+            toggle_fullscreen: v(&["f", "F11"]),
+            toggle_play: v(&[" "]),
+            toggle_slideshow: v(&["s"]),
+            close_viewer: v(&["Escape"]),
+        }
+    }
+}

@@ -1,9 +1,10 @@
 [package]
 name = "viewport"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
-edition = "2024"
+description = "ViewPort media manager"
+authors = ["ViewPort"]
+edition.workspace = true
+license.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -20,14 +21,11 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde.workspace = true
+serde_json.workspace = true
+vp-core.workspace = true
+vp-query.workspace = true
+vp-db.workspace = true
+vp-driver.workspace = true
+vp-bundle.workspace = true
 
-
-# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
-[profile.release]
-codegen-units = 1
-lto = true
-opt-level = 3
-panic = "abort"
-strip = true

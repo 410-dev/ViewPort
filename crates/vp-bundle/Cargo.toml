@@ -1,0 +1,15 @@
+[package]
+name = "vp-bundle"
+description = "ViewPort project bundle (.vpbun) layout, info.json and version checks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vp-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
