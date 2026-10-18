@@ -54,6 +54,8 @@ fn install(app: &AppHandle, state: &AppState, ws: Workspace) -> CmdResult<Bundle
         crate::video::spawn_probe_backfill(app, ws.clone());
     }
     let old = state.workspace.write().unwrap().replace(ws);
+    // Extra windows belong to the previous bundle.
+    crate::windows::close_secondary(app);
     if let Some(old) = old {
         std::thread::spawn(move || retire(old));
     }
@@ -109,6 +111,7 @@ pub async fn unlock_bundle(
 
 #[tauri::command]
 pub async fn close_bundle(app: AppHandle) {
+    crate::windows::close_secondary(&app);
     let ws = app.state::<AppState>().workspace.write().unwrap().take();
     if let Some(ws) = ws {
         let _ = tauri::async_runtime::spawn_blocking(move || retire(ws)).await;
@@ -197,8 +200,19 @@ pub fn get_app_settings(app: AppHandle) -> vp_core::settings::AppSettings {
 }
 
 #[tauri::command]
-pub fn save_app_settings(app: AppHandle, settings: vp_core::settings::AppSettings) -> CmdResult<()> {
-    Ok(recent::save_app_settings(&app, &settings)?)
+pub fn save_app_settings(app: AppHandle, mut settings: vp_core::settings::AppSettings) -> CmdResult<()> {
+    // Volume and mute are live state owned by `audio`; a settings dialog opened earlier must
+    // not roll them back.
+    let live = crate::audio::current();
+    settings.audio.volume = live.volume;
+    settings.audio.muted = live.muted;
+    let old_shortcut = recent::app_settings(&app).privacy.restore_shortcut;
+    recent::save_app_settings(&app, &settings)?;
+    if old_shortcut != settings.privacy.restore_shortcut {
+        crate::windows::register_shortcut(&app, &settings.privacy.restore_shortcut);
+    }
+    let _ = app.emit("app-settings", ());
+    Ok(())
 }
 
 // ---------------------------------------------------------------- sources

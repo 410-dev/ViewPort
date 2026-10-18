@@ -115,7 +115,8 @@ pub struct PlaybackSettings {
     pub fallback_mode: VideoFallbackMode,
     /// Suggest converting unsupported files to a high-compatibility format.
     pub suggest_conversion: bool,
-    /// Initial volume, 0.0..=1.0.
+    /// Superseded by the device's master audio (`AppSettings.audio`); kept so older
+    /// settings files round-trip.
     pub volume: f32,
     pub muted: bool,
     /// FFmpeg executable; empty means look next to the app, then on PATH.
@@ -284,6 +285,9 @@ pub struct AppSettings {
     pub reopen_last_bundle: bool,
     pub ui: UiSettings,
     pub progress: ProgressSettings,
+    pub audio: AudioSettings,
+    pub privacy: PrivacySettings,
+    pub windows: WindowSettings,
 }
 
 impl Default for AppSettings {
@@ -293,7 +297,75 @@ impl Default for AppSettings {
             reopen_last_bundle: true,
             ui: UiSettings::default(),
             progress: ProgressSettings::default(),
+            audio: AudioSettings::default(),
+            privacy: PrivacySettings::default(),
+            windows: WindowSettings::default(),
         }
+    }
+}
+
+/// App-wide (master) audio, shared by every window and split pane.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AudioSettings {
+    /// Master volume, 0.0..=1.0. Remembered across runs.
+    pub volume: f32,
+    /// Master mute as last left by the user.
+    pub muted: bool,
+    /// Always start muted, whatever the state was at exit.
+    pub start_muted: bool,
+    /// Only the focused window / split pane plays sound; the others play muted.
+    pub focus_only: bool,
+}
+
+impl Default for AudioSettings {
+    fn default() -> Self {
+        Self { volume: 1.0, muted: false, start_muted: true, focus_only: true }
+    }
+}
+
+/// The panic key: mute everything and hide every window at once.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PrivacySettings {
+    /// Keys (`KeyboardEvent.key` style) that trigger it in any window.
+    pub panic_keys: Vec<String>,
+    pub panic_mute: bool,
+    pub panic_hide: bool,
+    /// System-wide shortcut that brings hidden windows back (Tauri accelerator syntax).
+    pub restore_shortcut: String,
+    /// Tray / menu bar icon for restoring hidden windows. Applies after restart.
+    pub tray_icon: bool,
+}
+
+impl Default for PrivacySettings {
+    fn default() -> Self {
+        Self {
+            panic_keys: vec!["Escape".into()],
+            panic_mute: true,
+            panic_hide: true,
+            restore_shortcut: "CommandOrControl+Shift+Space".into(),
+            tray_icon: true,
+        }
+    }
+}
+
+/// Extra windows (desktop) and split view (all platforms; the only option on mobile).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WindowSettings {
+    /// Most viewer panes shown side by side in one window.
+    pub max_viewer_panes: u32,
+    /// "auto" (by window orientation), "columns" or "rows".
+    pub split_layout: String,
+    /// Size of newly opened windows in logical pixels.
+    pub new_width: u32,
+    pub new_height: u32,
+}
+
+impl Default for WindowSettings {
+    fn default() -> Self {
+        Self { max_viewer_panes: 3, split_layout: "auto".into(), new_width: 1100, new_height: 760 }
     }
 }
 
@@ -471,6 +543,12 @@ pub struct KeyBindings {
     pub view_grid: Vec<String>,
     pub view_list: Vec<String>,
     pub view_tree: Vec<String>,
+    /// Open the focused item in a new viewer window (desktop).
+    pub open_new_window: Vec<String>,
+    /// Viewer: master mute, add a split pane, move focus to the next pane.
+    pub toggle_mute: Vec<String>,
+    pub split_view: Vec<String>,
+    pub next_pane: Vec<String>,
 }
 
 impl Default for KeyBindings {
@@ -486,13 +564,18 @@ impl Default for KeyBindings {
             toggle_slideshow: v(&["s"]),
             toggle_info: v(&["i"]),
             toggle_loops: v(&["l"]),
-            close_viewer: v(&["Escape"]),
+            // Escape is the panic key (see `PrivacySettings`).
+            close_viewer: v(&["Backspace", "q"]),
             focus_search: v(&["Ctrl+f", "Meta+f"]),
             query_editor: v(&["Ctrl+e", "Meta+e"]),
             toggle_panel: v(&["Ctrl+p", "Meta+p"]),
             view_grid: v(&["Ctrl+1", "Meta+1"]),
             view_list: v(&["Ctrl+2", "Meta+2"]),
             view_tree: v(&["Ctrl+3", "Meta+3"]),
+            open_new_window: v(&["Ctrl+Enter", "Meta+Enter"]),
+            toggle_mute: v(&["m"]),
+            split_view: v(&["v"]),
+            next_pane: v(&["Tab"]),
         }
     }
 }

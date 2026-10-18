@@ -8,6 +8,7 @@
   import Icon from "../ui/Icon.svelte";
   import { COLUMNS } from "../views/columns";
   import { SECTIONS, type Field } from "./schema";
+  import { broadcast } from "../sync";
 
   let {
     settings,
@@ -150,6 +151,7 @@
       await api.saveSettings($state.snapshot(draft) as Settings);
       await api.saveAppSettings($state.snapshot(appDraft) as AppSettings);
       Object.assign(settings, $state.snapshot(draft));
+      broadcast("settings");
       prefs.app = structuredClone($state.snapshot(appDraft)) as AppSettings;
       applyPrefs(prefs.app);
       onclose();

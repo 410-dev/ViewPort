@@ -140,6 +140,10 @@ export interface KeyBindings {
   view_grid: string[];
   view_list: string[];
   view_tree: string[];
+  open_new_window: string[];
+  toggle_mute: string[];
+  split_view: string[];
+  next_pane: string[];
 }
 
 export interface Settings {
@@ -195,7 +199,21 @@ export interface AppSettings {
   reopen_last_bundle: boolean;
   ui: UiSettings;
   progress: { emit_interval_ms: number; slow_read_ms: number; read_piece_bytes: number; keep_finished_secs: number };
+  audio: { volume: number; muted: boolean; start_muted: boolean; focus_only: boolean };
+  privacy: { panic_keys: string[]; panic_mute: boolean; panic_hide: boolean; restore_shortcut: string; tray_icon: boolean };
+  windows: { max_viewer_panes: number; split_layout: "auto" | "columns" | "rows"; new_width: number; new_height: number };
 }
+
+export interface AudioState {
+  volume: number;
+  muted: boolean;
+  focus: string | null;
+}
+
+/** What an extra window was opened to show. */
+export type WindowPayload =
+  | { kind: "viewer"; ids: number[]; index: number }
+  | { kind: "library"; sourceId: number | null; folder: string; query: string };
 
 export type TaskState = "running" | "done" | "failed" | "cancelled";
 
@@ -347,8 +365,17 @@ export const api = {
   getAppSettings: () => invoke<AppSettings>("get_app_settings"),
   saveAppSettings: (settings: AppSettings) => invoke<void>("save_app_settings", { settings }),
   listTasks: () => invoke<TaskInfo[]>("list_tasks"),
+  getAudio: () => invoke<AudioState>("get_audio"),
+  setAudio: (volume: number | null, muted: boolean | null) => invoke<AudioState>("set_audio", { volume, muted }),
+  setAudioFocus: (label: string) => invoke<void>("set_audio_focus", { label }),
+  openWindow: (payload: WindowPayload) => invoke<string>("open_window", { kind: payload.kind, payload }),
+  takeWindowPayload: () => invoke<WindowPayload | null>("take_window_payload"),
+  panic: () => invoke<void>("panic"),
   cancelTask: (id: number) => invoke<boolean>("cancel_task", { id }),
 };
+
+export const onAudio = (f: (e: AudioState) => void): Promise<UnlistenFn> => listen<AudioState>("audio", (e) => f(e.payload));
+export const onAppSettings = (f: () => void): Promise<UnlistenFn> => listen("app-settings", () => f());
 
 export const onTask = (f: (e: TaskInfo) => void): Promise<UnlistenFn> => listen<TaskInfo>("task", (e) => f(e.payload));
 

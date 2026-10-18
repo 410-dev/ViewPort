@@ -14,7 +14,7 @@
    * Folder tree with files inline, like a file manager's expandable details view.
    * Children are loaded when a folder is expanded; the current query filters the files.
    */
-  let { selection, overscan, columns, rowPx, sort, tree, onsort, onopen }: ViewProps = $props();
+  let { selection, overscan, columns, rowPx, sort, tree, onsort, onopen, onopenwindow }: ViewProps = $props();
 
   type Children = { folders: { name: string; count: number }[]; files: number[] };
   type Row =
@@ -121,7 +121,7 @@
       return selection.selectAll(ids);
     }
     if (e.key === "Escape") return selection.clear();
-    if (e.key === "Enter" && selection.focus != null) {
+    if (e.key === "Enter" && !e.ctrlKey && !e.metaKey && selection.focus != null) {
       e.preventDefault();
       return onopen(selection.focus, ids);
     }
@@ -183,6 +183,8 @@
           style:transform="translateY({slot * rowPx}px)"
           onclick={(e) => selection.click(e, r.index, flat.files)}
           ondblclick={() => onopen(r.id, flat.files)}
+          onauxclick={(e) => e.button === 1 && onopenwindow?.(r.id, flat.files)}
+          onmousedown={(e) => e.button === 1 && e.preventDefault()}
           tabindex="-1"
         >
           <Cells {columns} id={r.id} brief={briefs.get(r.id) ?? null} indent={r.depth}>

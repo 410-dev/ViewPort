@@ -14,7 +14,10 @@
   import SourceDialog from "./SourceDialog.svelte";
   import StatusBar from "./StatusBar.svelte";
   import Icon from "./ui/Icon.svelte";
-  import Viewer from "./Viewer.svelte";
+  import ViewerShell from "./ViewerShell.svelte";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { isMobile } from "./platform";
+  import { broadcast, onSync } from "./sync";
   import { invalidate } from "./views/briefs.svelte";
   import { columnsFor, type SortSpec } from "./views/columns";
   import { VIEWS } from "./views";
@@ -25,13 +28,25 @@
     bundle,
     onclose,
     onbundle,
-  }: { bundle: BundleSummary; onclose: () => void; onbundle: (b: BundleSummary) => void } = $props();
+    secondary = false,
+    initial = null,
+  }: {
+    bundle: BundleSummary;
+    onclose: () => void;
+    onbundle: (b: BundleSummary) => void;
+    /** An extra explorer window: "close" closes the window, not the bundle. */
+    secondary?: boolean;
+    initial?: { sourceId: number | null; folder: string; query: string } | null;
+  } = $props();
 
   let settings = $state<Settings | null>(null);
   let sources = $state<SourceRow[]>([]);
-  let selected = $state<number | null>(null);
-  let folder = $state("");
-  let query = $state("");
+  // svelte-ignore state_referenced_locally
+  let selected = $state<number | null>(initial?.sourceId ?? null);
+  // svelte-ignore state_referenced_locally
+  let folder = $state(initial?.folder ?? "");
+  // svelte-ignore state_referenced_locally
+  let query = $state(initial?.query ?? "");
   let sort = $state<SortSpec | null>(null);
   let ids = $state<number[]>([]);
   let elapsed = $state(0);
@@ -83,7 +98,8 @@
     }
   }
 
-  let lastSource: number | null = null;
+  // svelte-ignore state_referenced_locally
+  let lastSource: number | null = selected;
   $effect(() => {
     if (selected !== lastSource) {
       lastSource = selected;
@@ -125,6 +141,16 @@
       }
     }),
   ];
+  // Other windows on the same workspace changed something.
+  unlisten.push(
+    onSync("media", (changed) => {
+      invalidate(changed);
+      runSearch(false);
+    }),
+    onSync("sources", () => refreshSources()),
+    onSync("saved", () => refreshSaved()),
+    onSync("settings", () => api.getSettings().then((s) => (settings = s))),
+  );
   onDestroy(() => unlisten.forEach((p) => p.then((f) => f())));
 
   $effect(() => {
@@ -143,6 +169,7 @@
     try {
       const s = await api.addLocalSource(path);
       await refreshSources();
+      broadcast("sources");
       selected = s.id;
     } catch (e) {
       alert(asCmdError(e).message);
@@ -152,6 +179,7 @@
   async function removeSource(s: SourceRow) {
     if (!(await ask(t("side.removeConfirm", { name: s.name }), { kind: "warning" }))) return;
     await api.removeSource(s.id);
+    broadcast("sources");
     if (selected === s.id) selected = null;
     delete scans[s.id];
     await refreshSources();
@@ -163,11 +191,23 @@
     if (!(await ask(t("side.deleteSaved", { name: q.label }), { kind: "warning" }))) return;
     await api.deleteSavedQuery(q.id);
     refreshSaved();
+    broadcast("saved");
   }
 
   function openViewer(id: number, list: number[]) {
     const index = list.indexOf(id);
     if (index >= 0) viewing = { list, index };
+  }
+
+  /** Desktop: the item in its own viewer window (falls back to the in-window viewer on mobile). */
+  function openViewerWindow(id: number, list: number[]) {
+    if (isMobile) return openViewer(id, list);
+    const index = list.indexOf(id);
+    if (index >= 0) api.openWindow({ kind: "viewer", ids: list, index }).catch((e) => alert(asCmdError(e).message));
+  }
+
+  function openExplorerWindow() {
+    api.openWindow({ kind: "library", sourceId: selected, folder, query }).catch((e) => alert(asCmdError(e).message));
   }
 
   function toggleSort(field: string) {
@@ -190,6 +230,7 @@
   }
 
   async function close() {
+    if (secondary) return getCurrentWindow().close();
     await api.closeBundle();
     onclose();
   }
@@ -221,6 +262,8 @@
     const k = settings.keys;
     if (matches(e, k.focus_search)) toolbar?.focusSearch();
     else if (matches(e, k.query_editor)) modal = { editing: null };
+    else if (matches(e, k.open_new_window) && selection.focus != null && !isTyping(e))
+      openViewerWindow(selection.focus, ids.includes(selection.focus) ? ids : [selection.focus]);
     else if (isTyping(e)) return;
     else if (matches(e, k.toggle_panel)) {
       ui().panel_visible = !ui().panel_visible;
@@ -252,6 +295,7 @@
       {scans}
       {saved}
       activeQuery={query}
+      {secondary}
       onselect={(id) => (selected = id)}
       onaddfolder={addFolder}
       onaddnetwork={() => (sourceDialog = { source: null })}
@@ -281,6 +325,7 @@
       onview={setView}
       ontile={setTile}
       onadvanced={() => (modal = { editing: null })}
+      onnewwindow={isMobile ? undefined : openExplorerWindow}
     />
     {#if queryError}
       <div class="qerror"><Icon name="alert" size={13} /><span>{queryError}</span></div>
@@ -310,6 +355,7 @@
             tree={{ sources: sources.map((s) => ({ id: s.id, name: s.name })), sourceId: selected, folder, query: effectiveQuery }}
             onsort={toggleSort}
             onopen={openViewer}
+            onopenwindow={openViewerWindow}
             onfolder={(p) => (folder = p)}
           />
         {/if}
@@ -324,8 +370,10 @@
         focus={selection.focus}
         selected={selectedIds}
         onopen={(id) => openViewer(id, ids.includes(id) ? ids : [id])}
+        onopenwindow={isMobile ? undefined : (id) => openViewerWindow(id, ids.includes(id) ? ids : [id])}
         onchanged={() => {
           invalidate(selectedIds);
+          broadcast("media", selectedIds);
           runSearch(false);
         }}
       />
@@ -344,7 +392,10 @@
       modal = null;
     }}
     onclose={() => (modal = null)}
-    onsaved={refreshSaved}
+    onsaved={() => {
+      refreshSaved();
+      broadcast("saved");
+    }}
   />
 {/if}
 
@@ -355,6 +406,7 @@
     ondone={async (s) => {
       sourceDialog = null;
       await refreshSources();
+      broadcast("sources");
       selected = s.id;
       runSearch(false);
     }}
@@ -366,12 +418,10 @@
 {/if}
 
 {#if viewing && settings}
-  <Viewer
-    ids={viewing.list}
-    bind:index={viewing.index}
+  <ViewerShell
+    panes={[{ ids: viewing.list, index: viewing.index }]}
     {settings}
-    onclose={() => {
-      const id = viewing?.list[viewing.index];
+    onclose={(id) => {
       viewing = null;
       if (id !== undefined) {
         selection.set.clear();
@@ -379,7 +429,10 @@
         selection.focus = id;
       }
     }}
-    onchanged={() => runSearch(false)}
+    onchanged={() => {
+      broadcast("media");
+      runSearch(false);
+    }}
   />
 {/if}
 

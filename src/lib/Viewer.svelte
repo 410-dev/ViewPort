@@ -8,14 +8,40 @@
   import Icon from "./ui/Icon.svelte";
   import { isTyping, matches } from "./keys";
   import InfoPanel from "./panel/InfoPanel.svelte";
+  import { audible, audio, claimFocus, setMuted, setVolume } from "./audio.svelte";
+  import VolumeControl from "./ui/VolumeControl.svelte";
+  import { prefs } from "./prefs.svelte";
 
+  /**
+   * One viewer pane. `ViewerShell` lays out up to `windows.max_viewer_panes` of them;
+   * only the `active` pane takes keyboard input (and, with `audio.focus_only`, plays sound).
+   */
   let {
     ids,
     index = $bindable(),
     settings,
     onclose,
     onchanged,
-  }: { ids: number[]; index: number; settings: Settings; onclose: () => void; onchanged?: () => void } = $props();
+    active = true,
+    panes = 1,
+    onactivate,
+    onsplit,
+    onpop,
+  }: {
+    ids: number[];
+    index: number;
+    settings: Settings;
+    onclose: () => void;
+    onchanged?: () => void;
+    active?: boolean;
+    /** Panes in this window. */
+    panes?: number;
+    onactivate?: () => void;
+    /** Adds a pane; absent when no more fit. */
+    onsplit?: () => void;
+    /** Moves this pane to its own window; absent on mobile. */
+    onpop?: () => void;
+  } = $props();
 
   let showInfo = $state(false);
 
@@ -137,11 +163,26 @@
   });
 
   // ---- video
+  // Master audio: one volume and mute for every window and pane.
+  const wantMuted = $derived(!audible(active));
   $effect(() => {
     if (!video) return;
-    video.volume = settings.playback.volume;
-    video.muted = settings.playback.muted;
+    video.volume = audio.volume;
+    video.muted = wantMuted;
   });
+
+  /** The native controls changed volume or mute: make that the master state. */
+  function onVolumeChange() {
+    if (!video) return;
+    if (Math.abs(video.volume - audio.volume) > 0.01) setVolume(video.volume);
+    if (video.muted !== wantMuted) {
+      if (!video.muted) {
+        onactivate?.();
+        claimFocus();
+        setMuted(false);
+      } else setMuted(true);
+    }
+  }
 
   function seek(seconds: number) {
     if (!video || !isFinite(video.duration)) return;
@@ -296,14 +337,22 @@
   }
 
   async function close() {
-    if (fullscreen) await toggleFullscreen(false);
+    if (fullscreen && panes <= 1) await toggleFullscreen(false);
     if (lastId !== undefined) api.recordView(lastId, Math.round(performance.now() - shownAt)).catch(() => {});
     onclose();
   }
 
   // ---- keyboard
+  // Bundles saved before the panic key existed bind Escape here; the panic key wins, so fall
+  // back to the current defaults when nothing else is left.
+  const closeKeys = $derived.by(() => {
+    const panic = prefs.app?.privacy.panic_keys ?? [];
+    const keys = settings.keys.close_viewer.filter((k) => !panic.includes(k));
+    return keys.length ? keys : ["Backspace", "q"];
+  });
+
   function onKey(e: KeyboardEvent) {
-    if (isTyping(e)) return;
+    if (!active || isTyping(e)) return;
     const k = settings.keys;
     const isVideo = brief?.kind === "video";
     let handled = true;
@@ -317,7 +366,7 @@
     else if (matches(e, k.toggle_info)) showInfo = !showInfo;
     else if (matches(e, k.toggle_slideshow)) toggleSlideshow();
     else if (matches(e, k.toggle_loops) && isVideo) showLoops = !showLoops;
-    else if (matches(e, k.close_viewer)) close();
+    else if (matches(e, closeKeys)) close();
     else handled = false;
     if (handled) {
       e.preventDefault();
@@ -363,10 +412,14 @@
 <div
   class="viewer"
   class:hide-cursor={!hud}
+  class:active={active && panes > 1}
   role="dialog"
   aria-modal="true"
   tabindex="-1"
-  onpointerdown={onPointerDown}
+  onpointerdown={(e) => {
+    onactivate?.();
+    onPointerDown(e);
+  }}
   onpointerup={onPointerUp}
   onpointermove={poke}
 >
@@ -381,6 +434,7 @@
         playsinline
         controls={hud}
         onloadedmetadata={onLoaded}
+        onvolumechange={onVolumeChange}
         ontimeupdate={onTime}
         onerror={() => (error = true)}
       ></video>
@@ -471,12 +525,21 @@
       <span class="load"><span class="spinner"></span><span class="tabular">{fmtBytes(loadingTask.done)} / {fmtBytes(loadingTask.total)}</span>
         <span class="bar"><i style:width="{(f ?? 0) * 100}%"></i></span></span>
     {/if}
+    <span class="tools vol" role="presentation" onpointerdown={(e) => e.stopPropagation()} onpointerup={(e) => e.stopPropagation()}>
+      <VolumeControl dark />
+    </span>
     <span class="tools">
       <button class="hb" class:on={slideshow} onclick={toggleSlideshow} title={t("viewer.slideshow")}><Icon name={slideshow ? "stop" : "play"} size={15} /></button>
       {#if brief?.kind === "video"}
         <button class="hb" class:on={showLoops} onclick={() => (showLoops = !showLoops)} title={t("viewer.loops")}><Icon name="loop" size={15} /></button>
       {/if}
       <button class="hb" class:on={showInfo} onclick={() => (showInfo = !showInfo)} title={t("viewer.info")}><Icon name="info" size={15} /></button>
+      {#if onsplit}
+        <button class="hb" onclick={onsplit} title={t("viewer.split")}><Icon name="columns" size={15} /></button>
+      {/if}
+      {#if onpop}
+        <button class="hb" onclick={onpop} title={t("viewer.popOut")}><Icon name="external" size={15} /></button>
+      {/if}
       <button class="hb" onclick={() => toggleFullscreen()} title={t("viewer.fullscreen")}><Icon name="maximize" size={15} /></button>
       <button class="hb" onclick={close} title={t("common.close")}><Icon name="x" size={15} /></button>
     </span>
@@ -487,9 +550,9 @@
 
 <style>
   .viewer {
-    position: fixed;
+    position: absolute;
     inset: 0;
-    z-index: 20;
+    overflow: hidden;
     display: grid;
     place-items: center;
     background: #000;
@@ -509,6 +572,14 @@
     --faint: #626877;
     --tile: #1d2028;
     color-scheme: dark;
+  }
+  .viewer.active::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border: 2px solid var(--accent-line);
+    pointer-events: none;
+    z-index: 4;
   }
   .hide-cursor {
     cursor: none;

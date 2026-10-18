@@ -12,7 +12,12 @@
    * `ui.preview_delay_ms`, so scrubbing through a slow drive with the arrow keys only
    * reads the file you stop on. Read progress comes from the backend task registry.
    */
-  let { id, selected, onopen }: { id: number | null; selected: number[]; onopen: (id: number) => void } = $props();
+  let {
+    id,
+    selected,
+    onopen,
+    onopenwindow,
+  }: { id: number | null; selected: number[]; onopen: (id: number) => void; onopenwindow?: (id: number) => void } = $props();
 
   const b = $derived(id == null ? null : briefs.get(id) ?? null);
   $effect(() => {
@@ -106,7 +111,13 @@
       {/if}
     </button>
     <div class="meta">
-      <span class="name" title={b.name}>{b.name}</span>
+      <span class="top">
+        <span class="name" title={b.name}>{b.name}</span>
+        <button class="icon-btn sm" title={t("panel.openViewer")} onclick={() => onopen(b.id)}><Icon name="maximize" size={13} /></button>
+        {#if onopenwindow}
+          <button class="icon-btn sm" title={t("panel.openWindow")} onclick={() => onopenwindow(b.id)}><Icon name="external" size={13} /></button>
+        {/if}
+      </span>
       <span class="sub tabular">
         {b.ext.toUpperCase()}
         {#if b.width}· {b.width} × {b.height}{/if}
@@ -192,7 +203,15 @@
     gap: 2px;
     padding: 0 2px;
   }
+  .top {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+  }
   .name {
+    flex: 1;
+    min-width: 0;
     font-weight: 600;
     overflow: hidden;
     text-overflow: ellipsis;

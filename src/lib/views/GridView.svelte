@@ -7,7 +7,7 @@
   import { arrowStep } from "./selection.svelte";
   import type { ViewProps } from "./types";
 
-  let { ids, folders, selection, resetKey, tile, showNames, overscan, onopen, onfolder }: ViewProps = $props();
+  let { ids, folders, selection, resetKey, tile, showNames, overscan, onopenwindow, onopen, onfolder }: ViewProps = $props();
 
   const GAP = 10;
   const LABEL = 22;
@@ -60,7 +60,7 @@
       return;
     }
     if (e.key === "Escape") return selection.clear();
-    if (e.key === "Enter" && selection.focus != null) {
+    if (e.key === "Enter" && !e.ctrlKey && !e.metaKey && selection.focus != null) {
       e.preventDefault();
       return onopen(selection.focus, ids);
     }
@@ -123,6 +123,8 @@
           onpointerdown={(e) => (lastPointer = e.pointerType)}
           onclick={(e) => click(e, v.index)}
           ondblclick={() => onopen(id, ids)}
+          onauxclick={(e) => e.button === 1 && onopenwindow?.(id, ids)}
+          onmousedown={(e) => e.button === 1 && e.preventDefault()}
           tabindex="-1"
         >
           <div class="frame" style:height="{tileW}px">

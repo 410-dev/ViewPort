@@ -4,6 +4,7 @@
   import { t, tx } from "./i18n.svelte";
   import { fraction, running, tasks } from "./tasks.svelte";
   import Icon from "./ui/Icon.svelte";
+  import VolumeControl from "./ui/VolumeControl.svelte";
 
   /** Bottom bar: result count and timing on the left, background work on the right. */
   let { count, elapsed, selected }: { count: number; elapsed: number; selected: number } = $props();
@@ -40,6 +41,8 @@
   <span class="faint tabular">{elapsed.toFixed(1)} ms</span>
   <span class="grow"></span>
 
+  <VolumeControl />
+  <span class="sep"></span>
   <button class="tasks" class:idle={!primary && failed.length === 0} onclick={() => (open = !open)} aria-expanded={open}>
     {#if primary}
       {@const f = fraction(primary)}

@@ -1,4 +1,5 @@
 mod archive;
+mod audio;
 mod commands;
 mod error;
 mod media;
@@ -7,6 +8,7 @@ mod secrets;
 mod tasks;
 mod thumbs;
 mod video;
+mod windows;
 mod workspace;
 
 use std::sync::atomic::AtomicBool;
@@ -23,7 +25,10 @@ pub struct AppState {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
+    builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
@@ -36,6 +41,9 @@ pub fn run() {
         .setup(|app| {
             tasks::init(app.handle());
             create_main_window(app.handle())?;
+            audio::init(app.handle());
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            windows::setup_desktop(app.handle())?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -93,10 +101,30 @@ pub fn run() {
             commands::child_folders,
             commands::list_tasks,
             commands::cancel_task,
+            audio::get_audio,
+            audio::set_audio,
+            audio::set_audio_focus,
+            windows::open_window,
+            windows::take_window_payload,
+            windows::panic,
+            windows::restore_windows,
         ])
+        .on_window_event(|window, event| {
+            // Closing the main window ends the app, extra windows included.
+            if window.label() == windows::MAIN && matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                use tauri::Manager;
+                windows::close_secondary(window.app_handle());
+                window.app_handle().exit(0);
+            }
+        })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
+            // macOS: clicking the Dock icon brings back windows hidden by the panic key.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                windows::restore(app);
+            }
             if let tauri::RunEvent::Exit = event {
                 // Write what a locked bundle still holds in memory before the process ends.
                 use tauri::Manager;
@@ -110,7 +138,7 @@ pub fn run() {
 
 /// Chromium switches derived from the device's hardware settings. The first switch is
 /// what Tauri passes by default on Windows; overriding the arguments must keep it.
-fn browser_args(hw: &vp_core::settings::HardwareSettings) -> String {
+pub(crate) fn browser_args(hw: &vp_core::settings::HardwareSettings) -> String {
     let mut args = vec!["--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection".to_string()];
     if !hw.gpu {
         args.push("--disable-gpu".into());
@@ -131,15 +159,6 @@ fn browser_args(hw: &vp_core::settings::HardwareSettings) -> String {
 /// The main window is created here rather than in `tauri.conf.json` so that hardware
 /// settings can be applied to the WebView before it starts.
 fn create_main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
-    let hw = recent::app_settings(app).hardware;
-    let builder = tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::default())
-        .title("ViewPort")
-        .inner_size(1280.0, 800.0)
-        .min_inner_size(480.0, 360.0);
-    #[cfg(windows)]
-    let builder = builder.additional_browser_args(&browser_args(&hw));
-    #[cfg(not(windows))]
-    let _ = browser_args(&hw);
-    builder.build()?;
+    windows::build(app, windows::MAIN, "ViewPort", 1280.0, 800.0)?;
     Ok(())
 }

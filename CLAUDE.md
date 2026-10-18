@@ -44,6 +44,7 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
 
 ### src-tauri
 - `lib.rs`: `AppState`(열린 `Workspace` 하나, `DriverRegistry`), 커맨드 등록, 커스텀 URI 스킴 등록.
+- `windows.rs`(보조 창, 화면 가리기, 트레이, 전역 복원 단축키), `audio.rs`(마스터 음량), `tasks.rs`(진행 상황 레지스트리).
   메인 창은 하드웨어 가속 설정을 WebView 인자에 반영하려고 `tauri.conf.json`이 아닌 코드에서 만든다.
 - `workspace.rs`: 열린 번들. 쓰기/읽기 DB 연결 분리(WAL), 잠긴 번들은 인메모리 DB 하나를 주기적으로 재암호화해 저장,
   상위 버전 번들은 임시 작업 사본 + 수동 저장.
@@ -68,6 +69,10 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
 - `lib/i18n.svelte.ts` + `lib/i18n/<언어>.ts`: UI 문자열 사전. 키 집합은 `ko.ts`가 정의하고 다른 언어는 `Record<Key,string>`라
   누락 시 타입 오류. 언어 추가는 사전 파일 + `LOCALES` 등록. 런타임 키(`task.*`, `qop.*`, `qerr.*`)는 `tx()`로 조회.
 - `lib/keys.ts`: 키 바인딩(설정 `keys`에서 읽음).
+- 창: `routes/+page.svelte`가 창 라벨(`main`/`viewer-N`/`library-N`)로 화면을 고른다. 뷰어는 `ViewerShell`(분할, 최대 3)이
+  `Viewer` 패널들을 감싼다. 창 사이 데이터 변경은 `sync.ts`의 `broadcast`/`onSync`로 알린다 — 공유 데이터를 바꾸는 코드는 꼭 호출한다.
+- 소리는 `audio.svelte.ts`(백엔드 `audio.rs` 미러)만 쓴다. 미디어 요소의 음량·음소거를 직접 정하지 말고 `audible()`을 따른다.
+- 화면 가리기 키는 `routes/+layout.svelte`가 캡처 단계에서 처리한다. Esc에 다른 기능을 붙이지 않는다.
 - 글꼴: 한국어 고정폭 글꼴을 쓰지 않는다. 기본은 시스템 고딕, 사용자가 설정에서 바꾼다(`ui.font_ui`, `ui.font_editor`).
 
 ## 핵심 규칙과 불변식

@@ -4,6 +4,8 @@
   import { fmtBytes, fmtDate, fmtDuration } from "../format";
   import { i18n, t, type Key } from "../i18n.svelte";
   import Icon from "../ui/Icon.svelte";
+  import { onDestroy } from "svelte";
+  import { broadcast, onSync } from "../sync";
 
   /** Metadata and editable extension fields (tags, rating, memo, custom) of the selection. */
   /** `compact` hides the file name (the preview above already shows it). */
@@ -33,6 +35,15 @@
     }, 60);
     return () => clearTimeout(timer);
   });
+
+  // Another window edited values or fields.
+  const unlisten = [
+    onSync("media", () => {
+      if (ids.length === 1) api.mediaDetail(ids[0]).then((d) => (detail = d));
+    }),
+    onSync("fields", () => loadFields()),
+  ];
+  onDestroy(() => unlisten.forEach((p) => p.then((f) => f())));
 
   async function reload() {
     if (ids.length === 1) detail = await api.mediaDetail(ids[0]);
@@ -94,6 +105,7 @@
       newName = "";
       adding = false;
       await loadFields();
+      broadcast("fields");
     } catch (e) {
       error = asCmdError(e).message;
     }
@@ -102,6 +114,7 @@
     if (!(await ask(t("info.deleteField", { name: fieldName(f) }), { kind: "warning" }))) return;
     await api.deleteField(f.key);
     await loadFields();
+    broadcast("fields");
     onchanged?.();
   }
 </script>

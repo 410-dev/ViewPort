@@ -17,6 +17,7 @@
     onview,
     ontile,
     onadvanced,
+    onnewwindow,
   }: {
     query: string;
     scope: SourceRow | null;
@@ -28,6 +29,8 @@
     onview: (key: "grid" | "list" | "tree") => void;
     ontile: (px: number) => void;
     onadvanced: () => void;
+    /** Opens another explorer window here; absent on mobile. */
+    onnewwindow?: () => void;
   } = $props();
 
   let search: HTMLInputElement;
@@ -108,6 +111,9 @@
         </button>
       {/each}
     </div>
+    {#if onnewwindow}
+      <button class="icon-btn" title={t("tb.newWindow")} onclick={onnewwindow}><Icon name="windowPlus" size={16} /></button>
+    {/if}
     <button
       class="icon-btn"
       class:on={ui().panel_visible}

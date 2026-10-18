@@ -175,8 +175,6 @@ export const SECTIONS: Section[] = [
       {
         fields: [
           { kind: "number", ...bundle({ path: "playback.seek_step_secs", label: "set.seekStep" }), min: 1, step: 1, unit: "s" },
-          { kind: "number", ...bundle({ path: "playback.volume", label: "set.volume" }), min: 0, max: 100, step: 5, scale: 0.01, unit: "%" },
-          { kind: "toggle", ...bundle({ path: "playback.muted", label: "set.muted" }) },
         ],
       },
       {
@@ -194,6 +192,67 @@ export const SECTIONS: Section[] = [
           },
           { kind: "toggle", ...bundle({ path: "playback.suggest_conversion", label: "set.suggestConvert" }) },
           { kind: "text", ...bundle({ path: "playback.ffmpeg_path", label: "set.ffmpegPath", help: "set.ffmpegPath.help" }), placeholder: "auto" },
+        ],
+      },
+    ],
+  },
+  {
+    id: "audio",
+    icon: "volume",
+    title: "set.audio",
+    groups: [
+      {
+        note: "set.audio.note",
+        fields: [
+          { kind: "toggle", ...app({ path: "audio.start_muted", label: "set.startMuted", help: "set.startMuted.help" }) },
+          { kind: "toggle", ...app({ path: "audio.focus_only", label: "set.focusOnly", help: "set.focusOnly.help" }) },
+        ],
+      },
+    ],
+  },
+  {
+    id: "privacy",
+    icon: "eyeOff",
+    title: "set.privacy",
+    groups: [
+      {
+        note: "set.privacy.note",
+        fields: [
+          { kind: "list", ...app({ path: "privacy.panic_keys", label: "set.panicKeys", help: "set.panicKeys.help" }) },
+          { kind: "toggle", ...app({ path: "privacy.panic_mute", label: "set.panicMute" }) },
+          { kind: "toggle", ...app({ path: "privacy.panic_hide", label: "set.panicHide" }) },
+          { kind: "text", ...app({ path: "privacy.restore_shortcut", label: "set.restoreShortcut", help: "set.restoreShortcut.help" }), placeholder: "CommandOrControl+Shift+Space" },
+          { kind: "toggle", ...app({ path: "privacy.tray_icon", label: "set.trayIcon", help: "set.trayIcon.help" }) },
+        ],
+      },
+    ],
+  },
+  {
+    id: "windows",
+    icon: "columns",
+    title: "set.windows",
+    groups: [
+      {
+        title: "set.split",
+        fields: [
+          { kind: "number", ...app({ path: "windows.max_viewer_panes", label: "set.maxPanes" }), min: 1, max: 3, step: 1 },
+          {
+            kind: "select",
+            ...app({ path: "windows.split_layout", label: "set.splitLayout" }),
+            options: [
+              { value: "auto", label: "set.splitLayout.auto" },
+              { value: "columns", label: "set.splitLayout.columns" },
+              { value: "rows", label: "set.splitLayout.rows" },
+            ],
+          },
+        ],
+      },
+      {
+        title: "set.newWindows",
+        note: "set.newWindows.note",
+        fields: [
+          { kind: "number", ...app({ path: "windows.new_width", label: "set.newWidth" }), min: 480, step: 20, unit: "px" },
+          { kind: "number", ...app({ path: "windows.new_height", label: "set.newHeight" }), min: 360, step: 20, unit: "px" },
         ],
       },
     ],
@@ -360,6 +419,7 @@ export const SECTIONS: Section[] = [
           key("view_grid", "key.view_grid"),
           key("view_list", "key.view_list"),
           key("view_tree", "key.view_tree"),
+          key("open_new_window", "key.open_new_window"),
         ],
       },
       {
@@ -375,6 +435,9 @@ export const SECTIONS: Section[] = [
           key("toggle_info", "key.toggle_info"),
           key("toggle_loops", "key.toggle_loops"),
           key("close_viewer", "key.close_viewer"),
+          key("toggle_mute", "key.toggle_mute"),
+          key("split_view", "key.split_view"),
+          key("next_pane", "key.next_pane"),
         ],
       },
     ],

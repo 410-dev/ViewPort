@@ -6,7 +6,7 @@
   import { arrowStep } from "./selection.svelte";
   import type { ViewProps } from "./types";
 
-  let { ids, folders, selection, resetKey, overscan, columns, rowPx, sort, onsort, onopen, onfolder }: ViewProps = $props();
+  let { ids, folders, selection, resetKey, overscan, columns, rowPx, sort, onsort, onopenwindow, onopen, onfolder }: ViewProps = $props();
 
   const HEAD = 33;
   let el: HTMLDivElement;
@@ -45,7 +45,7 @@
       return selection.selectAll(ids);
     }
     if (e.key === "Escape") return selection.clear();
-    if (e.key === "Enter" && selection.focus != null) {
+    if (e.key === "Enter" && !e.ctrlKey && !e.metaKey && selection.focus != null) {
       e.preventDefault();
       return onopen(selection.focus, ids);
     }
@@ -92,6 +92,8 @@
           style:transform="translateY({r.slot * rowPx}px)"
           onclick={(e) => selection.click(e, r.index, ids)}
           ondblclick={() => onopen(id, ids)}
+          onauxclick={(e) => e.button === 1 && onopenwindow?.(id, ids)}
+          onmousedown={(e) => e.button === 1 && e.preventDefault()}
           tabindex="-1"
         >
           <Cells {columns} {id} brief={briefs.get(id) ?? null} />

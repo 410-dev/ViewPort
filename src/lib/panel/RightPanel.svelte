@@ -8,8 +8,15 @@
     focus,
     selected,
     onopen,
+    onopenwindow,
     onchanged,
-  }: { focus: number | null; selected: number[]; onopen: (id: number) => void; onchanged: () => void } = $props();
+  }: {
+    focus: number | null;
+    selected: number[];
+    onopen: (id: number) => void;
+    onopenwindow?: (id: number) => void;
+    onchanged: () => void;
+  } = $props();
 
   const MODES: { key: "preview" | "both" | "info"; label: Key }[] = [
     { key: "preview", label: "panel.mode.preview" },
@@ -55,12 +62,12 @@
   </header>
   <div class="body" bind:this={body}>
     {#if ui().panel_mode === "preview"}
-      <Preview id={current} {selected} {onopen} />
+      <Preview id={current} {selected} {onopen} {onopenwindow} />
     {:else if ui().panel_mode === "info"}
       <InfoPanel ids={selected} {onchanged} />
     {:else}
       <div class="top" style:height="{ui().preview_split * 100}%">
-        <Preview id={current} {selected} {onopen} />
+        <Preview id={current} {selected} {onopen} {onopenwindow} />
       </div>
       <div class="split" role="separator" aria-orientation="horizontal" onpointerdown={dragSplit}></div>
       <div class="bottom">

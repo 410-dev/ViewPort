@@ -10,6 +10,7 @@
     scans,
     saved,
     activeQuery,
+    secondary = false,
     onselect,
     onaddfolder,
     onaddnetwork,
@@ -29,6 +30,7 @@
     scans: Record<number, ScanEvent>;
     saved: SavedQuery[];
     activeQuery: string;
+    secondary?: boolean;
     onselect: (id: number | null) => void;
     onaddfolder: () => void;
     onaddnetwork: () => void;
@@ -130,7 +132,9 @@
 
   <div class="foot">
     <button class="item" onclick={onsettings}><Icon name="settings" size={15} /><span class="label">{t("side.settings")}</span></button>
-    <button class="item" onclick={onclose}><Icon name="logout" size={15} /><span class="label">{t("side.close")}</span></button>
+    <button class="item" onclick={onclose}
+      ><Icon name={secondary ? "x" : "logout"} size={15} /><span class="label">{secondary ? t("side.closeWindow") : t("side.close")}</span></button
+    >
   </div>
 </nav>
 

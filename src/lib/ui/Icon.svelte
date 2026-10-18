@@ -62,6 +62,14 @@
     sortDesc: "M4 6h3M4 12h5M4 18h7M17 5v14M14 8l3-3 3 3",
     dots: "M5 12h.01M12 12h.01M19 12h.01",
     shield: "M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6z",
+    columns: "M4 5h16v14H4zM12 5v14",
+    rows: "M4 5h16v14H4zM4 12h16",
+    external: "M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5",
+    windowPlus: "M4 5h16v14H4zM4 9h16M12 12v5M9.5 14.5h5",
+    volume: "M4 9h4l5-4v14l-5-4H4zM16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12",
+    volumeLow: "M4 9h4l5-4v14l-5-4H4zM16.5 8.5a5 5 0 0 1 0 7",
+    volumeMute: "M4 9h4l5-4v14l-5-4H4zM17 9l5 6M22 9l-5 6",
+    eyeOff: "M3 3l18 18M10.6 6.1A9.8 9.8 0 0 1 12 6c6.5 0 10 6 10 6a17 17 0 0 1-3.2 3.9M6.6 7.7C3.8 9.5 2 12 2 12s3.5 7 10 7a9.6 9.6 0 0 0 4.4-1.1M9.9 10a3 3 0 0 0 4.2 4.2",
   } as const;
   export type IconName = keyof typeof ICONS;
 </script>

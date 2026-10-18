@@ -120,6 +120,20 @@ UI에 전달되며 작업별로 `progress.emit_interval_ms` 간격으로 제한�
 완료 처리된다. 파일 읽기는 `ReadTracker`가 감싸서 `progress.slow_read_ms`보다 오래 걸릴 때만 작업으로 나타나고,
 `media_id`가 붙어 미리보기·뷰어가 해당 파일의 읽기 진행률을 보여준다. 취소 가능한 작업은 `cancel_task`로 멈춘다.
 
+## 창, 소리, 화면 가리기
+
+- **창**: 모든 창은 같은 SPA를 연다. 라벨이 종류를 뜻한다(`main`, `viewer-N`, `library-N`). `open_window`가 보여줄 내용을
+  백엔드에 맡기고 새 창이 `take_window_payload`로 한 번 가져간다(큰 id 목록이 URL로 가지 않게). 워크스페이스는 백엔드에
+  하나뿐이라 모든 창이 공유한다. 번들을 닫거나 바꾸면 보조 창은 닫히고, 메인 창을 닫으면 앱이 끝난다.
+  창 사이 변경 알림은 `vp-sync` 이벤트(`src/lib/sync.ts`)로 주고받는다. 스캔·작업·소리·기기 설정 이벤트는 백엔드가 모든 창에 보낸다.
+- **분할 보기**: `ViewerShell`이 최대 `windows.max_viewer_panes`(≤3)개의 `Viewer` 패널을 배치한다. 키 입력은 활성 패널만 받는다.
+  모바일(Android/iOS)은 보조 창이 없고 분할 보기만 쓴다.
+- **소리**(`src-tauri/src/audio.rs`): 마스터 음량·음소거 하나를 모든 창이 공유하고 `audio` 이벤트로 동기화한다.
+  `audio.focus_only`면 포커스된 창의 활성 패널만 소리를 낸다. `audio.start_muted`면 종료 시 상태와 관계없이 음소거로 시작한다.
+- **화면 가리기**(`src-tauri/src/windows.rs`): `privacy.panic_keys`(기본 Esc)를 모든 창이 캡처 단계에서 가장 먼저 처리해
+  `panic`을 부른다: 음소거 + 보이는 창 모두 숨김. 복원은 트레이 아이콘, 전역 단축키(`privacy.restore_shortcut`),
+  macOS Dock 클릭(`RunEvent::Reopen`). 모바일은 음소거만 한다.
+
 ## UI 구조
 
 - 기기 설정(`AppSettings.ui`): 언어, 쿼리 키워드 언어, 테마, 강조색, 글꼴, 보기 방식, 패널 크기 등. 번들이 아닌 기기에 저장.
