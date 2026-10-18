@@ -1,98 +1,97 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { api, type BundleSummary } from "$lib/api";
+  import Library from "$lib/Library.svelte";
+  import StartScreen from "$lib/StartScreen.svelte";
 
-  type Span = { start: number; end: number };
-  type QueryCheck =
-    | { status: "ok"; normalized: string }
-    | { status: "error"; error: { kind: { code: string }; span: Span }; span: Span };
+  let bundle = $state<BundleSummary | null>(null);
+  let ready = $state(false);
 
-  let src = $state(
-    "생성 날짜(2026-10-18:이후) 그리고 (변경 날짜(2026-09-18:이후) 혹은 크기(100MB:이상)) 그리고 유형(다음을 포함:이미지:비디오) 그리고 오름차순 정렬(이름)",
-  );
-  let locale = $state("ko");
-  let result = $state<QueryCheck | null>(null);
-
+  // A reload of the webview keeps the bundle open in the backend.
   $effect(() => {
-    const text = src;
-    const loc = locale;
-    invoke<QueryCheck>("check_query", { src: text, locale: loc }).then((r) => (result = r));
+    api.currentBundle().then((b) => {
+      bundle = b;
+      ready = true;
+    });
   });
 </script>
 
-<main>
-  <h1>ViewPort</h1>
-  <p class="hint">Query language preview. The full editor UI comes later.</p>
-  <label>
-    Locale
-    <select bind:value={locale}>
-      <option value="ko">한국어</option>
-      <option value="en">English</option>
-    </select>
-  </label>
-  <textarea bind:value={src} rows="5" spellcheck="false"></textarea>
-  {#if result?.status === "ok"}
-    <pre class="ok">{result.normalized}</pre>
-  {:else if result?.status === "error"}
-    <pre class="err">{src.slice(0, result.span.start)}<mark>{src.slice(result.span.start, result.span.end) || " "}</mark>{src.slice(result.span.end)}</pre>
-    <p class="err">{result.error.kind.code}</p>
+{#if ready}
+  {#if bundle}
+    {#key bundle.path}
+      <Library {bundle} onclose={() => (bundle = null)} />
+    {/key}
+  {:else}
+    <StartScreen onopened={(b) => (bundle = b)} />
   {/if}
-</main>
+{/if}
 
 <style>
-  :root {
-    --bg: #f6f6f6;
-    --fg: #0f0f0f;
+  :global(:root) {
+    --bg: #f5f5f4;
     --panel: #ffffff;
-    --ok: #1a7f37;
-    --err: #cf222e;
-    color-scheme: light dark;
+    --tile: #e7e5e4;
+    --fg: #1c1917;
+    --muted: #78716c;
+    --border: #e7e5e4;
+    --accent: #2563eb;
+    --accent-soft: #dbeafe;
+    --danger: #dc2626;
+    --warn: #b45309;
+    color-scheme: light;
   }
   @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #1e1e1e;
-      --fg: #eaeaea;
-      --panel: #2a2a2a;
-      --ok: #4ac26b;
-      --err: #ff7b72;
+    :global(:root) {
+      --bg: #121212;
+      --panel: #1a1a1a;
+      --tile: #242424;
+      --fg: #e7e5e4;
+      --muted: #a1a1aa;
+      --border: #2a2a2a;
+      --accent: #60a5fa;
+      --accent-soft: #1e3a5f;
+      --danger: #f87171;
+      --warn: #fbbf24;
+      color-scheme: dark;
     }
   }
   :global(body) {
     margin: 0;
     background: var(--bg);
     color: var(--fg);
-    font-family: system-ui, sans-serif;
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif;
+    overflow: hidden;
   }
-  main {
-    max-width: 960px;
-    margin: 0 auto;
-    padding: 24px 16px;
-    display: grid;
-    gap: 12px;
-  }
-  textarea,
-  pre {
-    font: 14px/1.5 ui-monospace, monospace;
+  :global(button) {
+    font: inherit;
+    color: inherit;
     background: var(--panel);
-    color: var(--fg);
-    border: 1px solid #8884;
+    border: 1px solid var(--border);
     border-radius: 6px;
-    padding: 10px;
-    white-space: pre-wrap;
-    word-break: break-word;
-    margin: 0;
+    padding: 6px 12px;
+    cursor: pointer;
   }
-  .hint {
-    opacity: 0.7;
-    margin: 0;
+  :global(button:hover:not(:disabled)) {
+    border-color: var(--muted);
   }
-  .ok {
-    border-color: var(--ok);
-  }
-  .err {
-    color: var(--err);
-  }
-  mark {
-    background: var(--err);
+  :global(button.primary) {
+    background: var(--accent);
+    border-color: var(--accent);
     color: #fff;
+  }
+  :global(button:disabled) {
+    opacity: 0.5;
+    cursor: default;
+  }
+  :global(input:not([type="range"])) {
+    font: inherit;
+    color: inherit;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 7px 10px;
+    outline: none;
+  }
+  :global(input:focus) {
+    border-color: var(--accent);
   }
 </style>

@@ -49,6 +49,7 @@ fn library() -> Lib {
                 duration_ms: (kind == MediaKind::Video).then_some(90_000),
                 width: Some(1920),
                 height: Some(1080),
+                seen_gen: 1,
             })
             .unwrap();
         db.set_ext_values(id, "x.rating", &[ExtValue::Int(rating)], "user").unwrap();
@@ -87,6 +88,8 @@ fn enum_and_negation() {
 fn base_fields_and_sources() {
     let lib = library();
     assert_eq!(lib.ids("소스(NAS)"), [3, 5]);
+    let all = vp_query::Query::default();
+    assert_eq!(lib.db.search_in(&all, &lib.reg, &Db::compile_context(OCT18, 0), Some(2)).unwrap(), [3, 5]);
     assert_eq!(lib.ids("유형(영상) 그리고 내림차순 정렬(생성 날짜)"), [3, 5, 4]);
     assert_eq!(lib.ids("확장자(jpg) 그리고 정렬(이름)"), [2, 1]);
     assert_eq!(lib.ids("이름(패턴:b*.jpg)"), [1, 2]);
@@ -140,7 +143,38 @@ fn upsert_keeps_id() {
             duration_ms: None,
             width: None,
             height: None,
+            seen_gen: 2,
         })
         .unwrap();
     assert_eq!(again, 1);
+}
+
+#[test]
+fn rescan_marks_missing_and_invalidates_thumbs() {
+    let lib = library();
+    let ok = ThumbRow { status: ThumbStatus::Ok, pack: 0, offset: 0, len: 10, width: 4, height: 3, mime: "image/jpeg".into() };
+    lib.db.set_thumbnail(1, &ok).unwrap();
+    lib.db.set_thumbnail(2, &ThumbRow::without_data(ThumbStatus::Failed)).unwrap();
+    // Scan generation 2 of source 1 sees item 1 (changed) and item 2 (unchanged); item 4 is gone.
+    lib.db.mark_seen(2, 2).unwrap();
+    lib.db.conn().execute("UPDATE media SET size = 1, seen_gen = 2 WHERE id = 1", []).unwrap();
+    assert_eq!(lib.db.finish_scan(1, 2).unwrap(), 1);
+    assert!(lib.db.thumbnail(1).unwrap().is_none(), "changed file drops its thumbnail");
+    assert_eq!(lib.db.thumbnail(2).unwrap().unwrap().status, ThumbStatus::Failed);
+    assert_eq!(lib.ids("유형(비디오)"), [3, 5], "missing item 4 is hidden");
+    assert_eq!(lib.db.missing_thumbnails(10).unwrap(), [1, 3, 5]);
+    let brief = lib.db.media_brief(&[5, 2, 99]).unwrap();
+    assert_eq!(brief.iter().map(|b| b.id).collect::<Vec<_>>(), [5, 2]);
+    assert_eq!(brief[1].thumb.as_deref(), Some("failed"));
+}
+
+#[test]
+fn batch_rolls_back() {
+    let lib = library();
+    let r: Result<()> = lib.db.batch(|db| {
+        db.remove_source(1)?;
+        Err(DbError::UnknownField("boom".into()))
+    });
+    assert!(r.is_err());
+    assert_eq!(lib.db.sources().unwrap().len(), 2);
 }

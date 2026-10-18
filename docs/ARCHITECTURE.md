@@ -26,6 +26,8 @@ crates/
   vp-db/                SQLite 스키마/마이그레이션, 미디어·확장 필드 저장소
   vp-driver/            스토리지 드라이버 추상화(MediaDriver) + 로컬 드라이버. SMB/WebDAV/FTP/VeraCrypt/샤드가 같은 trait 구현
   vp-bundle/            .vpbun 번들: info.json, 버전 호환 검사, 레이아웃, (예정) 압축 해제/암호화
+  vp-scan/              드라이버로 소스를 순회해 DB에 기록. 크기·수정 시각이 같으면 seen 표시만, 사라진 파일은 missing
+  vp-thumb/             썸네일 생성(EXIF 회전 적용, 불투명=JPEG/투명=PNG)과 팩 파일 저장소
 src-tauri/              Tauri 앱: 커맨드, 상태, 백그라운드 작업 조율
 src/                    SvelteKit UI
 ```
@@ -90,6 +92,20 @@ MyLibrary.vpbun/
 `MediaDriver` trait: `list`, `stat`, `open_read`(Range 지원 `read_at`), 선택적 `write`/`rename`/`delete`, `capabilities()`.
 드라이버마다 `config_schema()`로 설정 필드(호스트, 사용자, 공유명, 볼륨 경로 등)를 자기 기술하여 UI가 폼을 자동 생성한다.
 향후 VeraCrypt 볼륨 파서와 데이터 샤드 저장소도 같은 trait로 들어온다.
+
+## 썸네일
+
+- 번들 `thumbs/NNNNNN.pack`에 append-only로 저장하고, 위치(pack, offset, len)는 DB `thumbnail` 테이블에 둔다.
+  파일 크기·수정 시각이 바뀌면 트리거가 행을 지워 다시 생성된다(팩의 죽은 공간은 추후 압축 작업으로 회수).
+- UI는 `vpthumb://localhost/<id>`(Windows/Android는 `http://vpthumb.localhost/<id>`)로 요청한다. 없으면 즉시 생성하므로
+  화면에 보이는 것이 항상 먼저 처리된다. 스캔 후 백그라운드 작업이 나머지를 채운다. 둘은 `thumbnails.workers` 크기의
+  같은 세마포어를 공유한다.
+- 영상 썸네일은 미디어 파이프라인(FFmpeg) 도입 후 지원. 그 전까지는 `unsupported`로 기록된다.
+
+## 그리드
+
+가상 스크롤: 보이는 행 ± `grid.overscan_rows`만 DOM에 그리고, 이름 등 메타데이터는 보이는 항목만 묶어서 가져온다.
+검색 결과는 id 배열 전체를 한 번에 받는다(10만 개 ≈ 1MB 미만). 정렬이 없는 쿼리에는 `grid.default_sort`가 적용된다.
 
 ## 캐시 (예정)
 

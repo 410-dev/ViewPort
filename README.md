@@ -27,5 +27,7 @@ cargo test --workspace
 | `crates/vp-db` | SQLite 스키마/마이그레이션, 검색 실행 |
 | `crates/vp-driver` | 스토리지 드라이버 추상화, 로컬 드라이버 |
 | `crates/vp-bundle` | `.vpbun` 번들 레이아웃, 버전 호환 검사 |
+| `crates/vp-scan` | 소스 스캐너 (재스캔 시 변경분만 기록) |
+| `crates/vp-thumb` | 썸네일 생성, 팩 파일 저장소 |
 | `src-tauri` | Tauri 앱 |
 | `src` | SvelteKit UI |

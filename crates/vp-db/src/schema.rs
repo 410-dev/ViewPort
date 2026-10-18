@@ -118,6 +118,29 @@ const MIGRATIONS: &[&str] = &[
         ('x.genre',  '[["ko","장르"],["en","genre"]]',  '{"type":"text"}', 1, 2),
         ('x.memo',   '[["ko","메모"],["en","memo"]]',   '{"type":"text"}', 1, 3);
     "#,
+    // v2: rescan bookkeeping and thumbnail index
+    r#"
+    ALTER TABLE media ADD COLUMN seen_gen INTEGER NOT NULL DEFAULT 0;
+
+    -- Location of each item's thumbnail inside the bundle's pack files.
+    CREATE TABLE thumbnail (
+        media_id INTEGER PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,
+        status   TEXT NOT NULL,      -- 'ok' | 'failed' | 'unsupported'
+        pack     INTEGER,
+        offset   INTEGER,
+        len      INTEGER,
+        width    INTEGER,
+        height   INTEGER,
+        mime     TEXT
+    );
+
+    -- A changed file invalidates its thumbnail.
+    CREATE TRIGGER media_content_changed AFTER UPDATE OF size, modified_ms ON media
+    WHEN old.size IS NOT new.size OR old.modified_ms IS NOT new.modified_ms
+    BEGIN
+        DELETE FROM thumbnail WHERE media_id = new.id;
+    END;
+    "#,
 ];
 
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;

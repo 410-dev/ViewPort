@@ -28,4 +28,13 @@ vp-query.workspace = true
 vp-db.workspace = true
 vp-driver.workspace = true
 vp-bundle.workspace = true
+tauri-plugin-dialog = "2.8.3"
+tokio = { version = "1.53.3", features = ["sync"] }
 
+thiserror.workspace = true
+vp-scan.workspace = true
+vp-thumb.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }

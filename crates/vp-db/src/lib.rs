@@ -50,6 +50,89 @@ pub struct NewMedia {
     pub duration_ms: Option<i64>,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    /// Scan generation that saw this file (see [`Db::finish_scan`]).
+    pub seen_gen: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct SourceRow {
+    pub id: i64,
+    pub name: String,
+    pub driver: String,
+    pub config: serde_json::Value,
+    pub root: String,
+    pub enabled: bool,
+}
+
+/// What a rescan needs to know to skip unchanged files.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct KnownFile {
+    pub id: i64,
+    pub size: u64,
+    pub modified_ms: Option<i64>,
+}
+
+/// Grid tile data.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct MediaBrief {
+    pub id: i64,
+    pub name: String,
+    pub kind: String,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub duration_ms: Option<i64>,
+    /// `None` until a thumbnail has been attempted.
+    pub thumb: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MediaLocation {
+    pub source_id: i64,
+    pub rel_path: String,
+    pub kind: MediaKind,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThumbStatus {
+    Ok,
+    Failed,
+    Unsupported,
+}
+
+impl ThumbStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            ThumbStatus::Ok => "ok",
+            ThumbStatus::Failed => "failed",
+            ThumbStatus::Unsupported => "unsupported",
+        }
+    }
+
+    fn parse(s: &str) -> Self {
+        match s {
+            "ok" => ThumbStatus::Ok,
+            "unsupported" => ThumbStatus::Unsupported,
+            _ => ThumbStatus::Failed,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThumbRow {
+    pub status: ThumbStatus,
+    pub pack: u32,
+    pub offset: u64,
+    pub len: u32,
+    pub width: u32,
+    pub height: u32,
+    pub mime: String,
+}
+
+impl ThumbRow {
+    pub fn without_data(status: ThumbStatus) -> Self {
+        Self { status, pack: 0, offset: 0, len: 0, width: 0, height: 0, mime: String::new() }
+    }
 }
 
 /// A value for an extension field. Enum fields may hold several per item.
@@ -155,12 +238,13 @@ impl Db {
         let ext = name.rsplit_once('.').map(|(_, e)| e.to_lowercase()).unwrap_or_default();
         let id = self.conn.query_row(
             "INSERT INTO media (source_id, rel_path, parent_path, name, ext, kind, size,
-                                created_ms, modified_ms, added_ms, duration_ms, width, height)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                                created_ms, modified_ms, added_ms, duration_ms, width, height, seen_gen)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT (source_id, rel_path) DO UPDATE SET
                 kind = excluded.kind, size = excluded.size, created_ms = excluded.created_ms,
                 modified_ms = excluded.modified_ms, duration_ms = excluded.duration_ms,
-                width = excluded.width, height = excluded.height, missing = 0
+                width = excluded.width, height = excluded.height, seen_gen = excluded.seen_gen,
+                missing = 0
              RETURNING id",
             params![
                 m.source_id,
@@ -175,7 +259,8 @@ impl Db {
                 m.added_ms,
                 m.duration_ms,
                 m.width,
-                m.height
+                m.height,
+                m.seen_gen
             ],
             |r| r.get(0),
         )?;
@@ -217,12 +302,30 @@ impl Db {
 
     /// Runs a query over enabled sources and returns matching media ids in result order.
     pub fn search(&self, query: &Query, reg: &FieldRegistry, ctx: &CompileContext) -> Result<Vec<i64>> {
-        let c = vp_query::compile(query, reg, ctx)?;
+        self.search_in(query, reg, ctx, None)
+    }
+
+    /// Like [`Db::search`], optionally limited to one source.
+    pub fn search_in(
+        &self,
+        query: &Query,
+        reg: &FieldRegistry,
+        ctx: &CompileContext,
+        source_id: Option<i64>,
+    ) -> Result<Vec<i64>> {
+        let mut c = vp_query::compile(query, reg, ctx)?;
+        let source_filter = match source_id {
+            Some(id) => {
+                c.params.push(SqlValue::Int(id));
+                format!(" AND m.source_id = ?{}", c.params.len())
+            }
+            None => String::new(),
+        };
         let sql = format!(
             "SELECT m.id FROM media m
              JOIN source src ON src.id = m.source_id
              LEFT JOIN media_stats s ON s.media_id = m.id
-             WHERE src.enabled AND NOT m.missing AND ({})
+             WHERE src.enabled AND NOT m.missing{source_filter} AND ({})
              ORDER BY {}",
             c.where_sql, c.order_sql
         );
@@ -230,6 +333,158 @@ impl Db {
         let binds: Vec<Bind> = c.params.iter().map(Bind).collect();
         let refs: Vec<&dyn ToSql> = binds.iter().map(|b| b as &dyn ToSql).collect();
         let ids = stmt.query_map(refs.as_slice(), |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
+        Ok(ids)
+    }
+
+    /// Runs `f` inside one transaction; rolls back if it fails.
+    pub fn batch<T>(&self, f: impl FnOnce(&Db) -> Result<T>) -> Result<T> {
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        match f(self) {
+            Ok(v) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(v)
+            }
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    }
+
+    pub fn sources(&self) -> Result<Vec<SourceRow>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, name, driver, config, root, enabled FROM source ORDER BY sort_index, id")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, String>(3)?, r.get(4)?, r.get(5)?))
+        })?;
+        rows.map(|row| {
+            let (id, name, driver, config, root, enabled) = row?;
+            Ok(SourceRow { id, name, driver, config: serde_json::from_str(&config)?, root, enabled })
+        })
+        .collect()
+    }
+
+    pub fn source(&self, id: i64) -> Result<Option<SourceRow>> {
+        Ok(self.sources()?.into_iter().find(|s| s.id == id))
+    }
+
+    /// Removes a source and everything recorded about its media.
+    pub fn remove_source(&self, id: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM source WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    pub fn known_files(&self, source_id: i64) -> Result<std::collections::HashMap<String, KnownFile>> {
+        let mut stmt = self.conn.prepare("SELECT rel_path, id, size, modified_ms FROM media WHERE source_id = ?1")?;
+        let rows = stmt.query_map([source_id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                KnownFile { id: r.get(1)?, size: r.get::<_, i64>(2)? as u64, modified_ms: r.get(3)? },
+            ))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn mark_seen(&self, media_id: i64, gen_id: i64) -> Result<()> {
+        self.conn
+            .prepare_cached("UPDATE media SET seen_gen = ?2, missing = 0 WHERE id = ?1")?
+            .execute(params![media_id, gen_id])?;
+        Ok(())
+    }
+
+    /// Marks files of `source_id` not seen in scan `gen_id` as missing; returns how many.
+    /// Missing items keep their tags and stats in case the file comes back.
+    pub fn finish_scan(&self, source_id: i64, gen_id: i64) -> Result<usize> {
+        self.conn
+            .execute("UPDATE media SET missing = (seen_gen <> ?2) WHERE source_id = ?1", params![source_id, gen_id])?;
+        let n: i64 =
+            self.conn.query_row("SELECT COUNT(*) FROM media WHERE source_id = ?1 AND missing", [source_id], |r| r.get(0))?;
+        Ok(n as usize)
+    }
+
+    /// Tile data for `ids`, in the same order. Unknown ids are skipped.
+    pub fn media_brief(&self, ids: &[i64]) -> Result<Vec<MediaBrief>> {
+        let mut by_id = std::collections::HashMap::with_capacity(ids.len());
+        for chunk in ids.chunks(500) {
+            let marks = vec!["?"; chunk.len()].join(",");
+            let sql = format!(
+                "SELECT m.id, m.name, m.kind, m.width, m.height, m.duration_ms, t.status
+                 FROM media m LEFT JOIN thumbnail t ON t.media_id = m.id WHERE m.id IN ({marks})"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(chunk), |r| {
+                Ok(MediaBrief {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    kind: r.get(2)?,
+                    width: r.get(3)?,
+                    height: r.get(4)?,
+                    duration_ms: r.get(5)?,
+                    thumb: r.get(6)?,
+                })
+            })?;
+            for row in rows {
+                let b = row?;
+                by_id.insert(b.id, b);
+            }
+        }
+        Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
+    }
+
+    pub fn media_location(&self, id: i64) -> Result<Option<MediaLocation>> {
+        Ok(self
+            .conn
+            .prepare_cached("SELECT source_id, rel_path, kind, size FROM media WHERE id = ?1")?
+            .query_row([id], |r| {
+                let kind: String = r.get(2)?;
+                Ok(MediaLocation {
+                    source_id: r.get(0)?,
+                    rel_path: r.get(1)?,
+                    kind: if kind == "video" { MediaKind::Video } else { MediaKind::Image },
+                    size: r.get::<_, i64>(3)? as u64,
+                })
+            })
+            .optional()?)
+    }
+
+    pub fn thumbnail(&self, media_id: i64) -> Result<Option<ThumbRow>> {
+        Ok(self
+            .conn
+            .prepare_cached("SELECT status, pack, offset, len, width, height, mime FROM thumbnail WHERE media_id = ?1")?
+            .query_row([media_id], |r| {
+                Ok(ThumbRow {
+                    status: ThumbStatus::parse(&r.get::<_, String>(0)?),
+                    pack: r.get::<_, Option<u32>>(1)?.unwrap_or(0),
+                    offset: r.get::<_, Option<i64>>(2)?.unwrap_or(0) as u64,
+                    len: r.get::<_, Option<u32>>(3)?.unwrap_or(0),
+                    width: r.get::<_, Option<u32>>(4)?.unwrap_or(0),
+                    height: r.get::<_, Option<u32>>(5)?.unwrap_or(0),
+                    mime: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
+                })
+            })
+            .optional()?)
+    }
+
+    pub fn set_thumbnail(&self, media_id: i64, t: &ThumbRow) -> Result<()> {
+        self.conn
+            .prepare_cached(
+                "INSERT OR REPLACE INTO thumbnail (media_id, status, pack, offset, len, width, height, mime)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )?
+            .execute(params![media_id, t.status.as_str(), t.pack, t.offset as i64, t.len, t.width, t.height, t.mime])?;
+        Ok(())
+    }
+
+    /// Present items on enabled sources that have no thumbnail attempt yet.
+    pub fn missing_thumbnails(&self, limit: usize) -> Result<Vec<i64>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT m.id FROM media m JOIN source src ON src.id = m.source_id
+             LEFT JOIN thumbnail t ON t.media_id = m.id
+             WHERE t.media_id IS NULL AND NOT m.missing AND src.enabled
+             ORDER BY m.id LIMIT ?1",
+        )?;
+        let ids = stmt.query_map([limit as i64], |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
         Ok(ids)
     }
 

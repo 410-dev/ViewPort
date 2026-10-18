@@ -1,0 +1,19 @@
+[package]
+name = "vp-scan"
+description = "ViewPort source scanner: walks a driver and records media in the library"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vp-core.workspace = true
+vp-db.workspace = true
+vp-driver.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+imagesize = "0.15.0"
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile = "3"
+vp-query.workspace = true

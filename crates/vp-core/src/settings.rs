@@ -16,6 +16,8 @@ pub struct Settings {
     pub playback: PlaybackSettings,
     pub slideshow: SlideshowSettings,
     pub thumbnails: ThumbnailSettings,
+    pub scan: ScanSettings,
+    pub grid: GridSettings,
     pub hardware: HardwareSettings,
     pub keys: KeyBindings,
 }
@@ -138,8 +140,7 @@ impl Default for SlideshowSettings {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ThumbnailFormat {
-    Webp,
-    Avif,
+    /// Lossy JPEG; images with transparency are stored as PNG.
     Jpeg,
 }
 
@@ -159,18 +160,81 @@ pub struct ThumbnailSettings {
     pub video_frame_position: f32,
     /// Number of thumbnails the grid keeps decoded in memory.
     pub grid_memory_items: u32,
+    /// Images larger than this are not decoded for thumbnails.
+    pub max_source_bytes: u64,
 }
 
 impl Default for ThumbnailSettings {
     fn default() -> Self {
         Self {
             max_edge_px: 320,
-            format: ThumbnailFormat::Webp,
+            format: ThumbnailFormat::Jpeg,
             quality: 80,
             pack_bytes: 256 * MIB,
             workers: 0,
             video_frame_position: 0.1,
             grid_memory_items: 2000,
+            max_source_bytes: 512 * MIB,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScanSettings {
+    /// Lowercase extensions (without dot) treated as images.
+    pub image_extensions: Vec<String>,
+    /// Lowercase extensions (without dot) treated as videos.
+    pub video_extensions: Vec<String>,
+    /// Skip files and folders whose name starts with '.'.
+    pub skip_hidden: bool,
+    /// Bytes read from the start of an image to find its dimensions.
+    pub header_probe_bytes: u32,
+    /// Rows written per database transaction while scanning.
+    pub batch_size: u32,
+    /// Generate missing thumbnails in the background after a scan.
+    pub thumbnails_after_scan: bool,
+}
+
+impl Default for ScanSettings {
+    fn default() -> Self {
+        let v = |exts: &[&str]| exts.iter().map(|e| e.to_string()).collect();
+        Self {
+            image_extensions: v(&["jpg", "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff", "avif", "heic", "heif"]),
+            video_extensions: v(&["mp4", "m4v", "mov", "webm", "mkv", "avi", "wmv", "flv", "ts", "m2ts", "mpg", "mpeg"]),
+            skip_hidden: true,
+            header_probe_bytes: 64 * 1024,
+            batch_size: 500,
+            thumbnails_after_scan: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GridSettings {
+    /// Tile edge in CSS pixels.
+    pub tile_px: u32,
+    pub min_tile_px: u32,
+    pub max_tile_px: u32,
+    /// Rows rendered above and below the viewport.
+    pub overscan_rows: u32,
+    /// Show file names under tiles.
+    pub show_names: bool,
+    /// Sorts applied when a query has none, written as query text (any locale).
+    /// The last sort is the most significant key.
+    pub default_sort: String,
+}
+
+impl Default for GridSettings {
+    fn default() -> Self {
+        Self {
+            tile_px: 180,
+            min_tile_px: 80,
+            max_tile_px: 480,
+            overscan_rows: 3,
+            show_names: true,
+            default_sort: "sort(name) AND sort(folder) AND sort(source)".into(),
         }
     }
 }
