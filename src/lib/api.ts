@@ -86,6 +86,7 @@ export interface KeyBindings {
   toggle_fullscreen: string[];
   toggle_play: string[];
   toggle_slideshow: string[];
+  toggle_info: string[];
   close_viewer: string[];
 }
 
@@ -107,6 +108,57 @@ export interface Settings {
 
 export interface AppSettings {
   hardware: { gpu: boolean; video_decode: boolean; video_encode: boolean };
+}
+
+export type FieldType =
+  | { type: "text" }
+  | { type: "integer" }
+  | { type: "real" }
+  | { type: "date" }
+  | { type: "size" }
+  | { type: "duration" }
+  | { type: "kind" }
+  | { type: "enum" }
+  | { type: "ranged_int"; min: number; max: number };
+
+export interface FieldInfo {
+  key: string;
+  names: [string, string][];
+  aliases: string[];
+  ty: FieldType;
+  builtin: boolean;
+}
+
+export type ExtValue = number | string;
+
+export interface MediaDetail {
+  id: number;
+  source_id: number;
+  source_name: string;
+  rel_path: string;
+  name: string;
+  kind: "image" | "video";
+  size: number;
+  created_ms: number | null;
+  modified_ms: number | null;
+  added_ms: number;
+  duration_ms: number | null;
+  width: number | null;
+  height: number | null;
+  view_count: number;
+  last_viewed_ms: number | null;
+  values: Record<string, ExtValue[]>;
+}
+
+export interface Vocabulary {
+  fields: { key: string; name: string; aliases: string[]; ty: FieldType; ext: boolean }[];
+  ops: { op: string; name: string }[];
+  and: string;
+  or: string;
+  not: string;
+  sort_asc: string;
+  sort_desc: string;
+  kinds: string[];
 }
 
 export interface CacheStats {
@@ -139,6 +191,18 @@ export const api = {
   prefetch: (ids: number[]) => invoke<void>("prefetch", { ids }),
   recordView: (id: number, viewMs: number) => invoke<void>("record_view", { id, viewMs }),
   cacheStats: () => invoke<CacheStats>("cache_stats"),
+  listFields: () => invoke<FieldInfo[]>("list_fields"),
+  createField: (names: [string, string][], aliases: string[], ty: FieldType) =>
+    invoke<string>("create_field", { names, aliases, ty }),
+  renameField: (key: string, names: [string, string][], aliases: string[]) =>
+    invoke<void>("rename_field", { key, names, aliases }),
+  deleteField: (key: string) => invoke<void>("delete_field", { key }),
+  mediaDetail: (id: number) => invoke<MediaDetail | null>("media_detail", { id }),
+  setValues: (ids: number[], key: string, values: ExtValue[]) => invoke<void>("set_values", { ids, key, values }),
+  addValue: (ids: number[], key: string, value: ExtValue) => invoke<void>("add_value", { ids, key, value }),
+  removeValue: (ids: number[], key: string, value: ExtValue) => invoke<void>("remove_value", { ids, key, value }),
+  suggestValues: (key: string, prefix: string) => invoke<string[]>("suggest_values", { key, prefix }),
+  queryVocabulary: (locale: string) => invoke<Vocabulary>("query_vocabulary", { locale }),
   getAppSettings: () => invoke<AppSettings>("get_app_settings"),
   saveAppSettings: (settings: AppSettings) => invoke<void>("save_app_settings", { settings }),
 };

@@ -194,3 +194,45 @@ fn frecency_prefers_recent_and_frequent() {
     assert_eq!(top, [3, 2, 1]);
     assert_eq!(lib.ids("조회수(3)"), [1]);
 }
+
+#[test]
+fn editing_values() {
+    let lib = library();
+    lib.db.add_value_many(&[1, 2, 3], "x.tags", &ExtValue::Text("일몰".into()), "user").unwrap();
+    lib.db.add_value_many(&[1], "x.tags", &ExtValue::Text("일몰".into()), "user").unwrap(); // no duplicate
+    assert_eq!(lib.ids("태그(일몰)"), [1, 2, 3]);
+    let d = lib.db.media_detail(1).unwrap().unwrap();
+    assert_eq!(d.values["x.tags"].iter().filter(|v| **v == ExtValue::Text("일몰".into())).count(), 1);
+    assert_eq!(d.source_name, "사진");
+
+    lib.db.remove_value_many(&[2], "x.tags", &ExtValue::Text("일몰".into())).unwrap();
+    assert_eq!(lib.ids("태그(일몰)"), [1, 3]);
+
+    lib.db.set_values_many(&[1, 2], "x.rating", &[ExtValue::Int(2)], "user").unwrap();
+    assert_eq!(lib.ids("점수(2)"), [1, 2]);
+    assert!(lib.db.set_values_many(&[1], "x.rating", &[ExtValue::Int(9)], "user").is_err(), "outside 0..=5");
+    assert!(lib.db.set_values_many(&[1], "x.rating", &[ExtValue::Text("a".into())], "user").is_err());
+    lib.db.set_values_many(&[1], "x.rating", &[], "user").unwrap();
+    assert_eq!(lib.ids("점수(없음)"), [1]);
+
+    let s = lib.db.suggest_values("x.tags", "", 10).unwrap();
+    assert_eq!(s.len(), 4, "{s:?}");
+    assert!(s.contains(&"일몰".to_string()));
+    assert_eq!(lib.db.suggest_values("x.tags", "일", 10).unwrap(), ["일몰"]);
+}
+
+#[test]
+fn field_management() {
+    let mut lib = library();
+    let key = lib.db.create_ext_field(&[("ko".into(), "감독".into())], &[], FieldType::Text).unwrap();
+    assert!(lib.db.ext_fields().unwrap().iter().any(|f| f.key == key && !f.builtin));
+    lib.db.rename_ext_field(&key, &[("ko".into(), "연출".into())], &["director".into()]).unwrap();
+    assert!(lib.db.rename_ext_field(&key, &[("ko".into(), "점수".into())], &[]).is_err());
+    lib.db.set_values_many(&[3], &key, &[ExtValue::Text("봉".into())], "user").unwrap();
+    lib.reg = lib.db.field_registry().unwrap();
+    assert_eq!(lib.ids("director(봉)"), [3]);
+    lib.db.delete_ext_field(&key).unwrap();
+    lib.db.delete_ext_field("x.tags").unwrap(); // built-in: ignored
+    let keys: Vec<String> = lib.db.ext_fields().unwrap().into_iter().map(|f| f.key).collect();
+    assert!(!keys.contains(&key) && keys.contains(&"x.tags".to_string()));
+}

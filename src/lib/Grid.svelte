@@ -9,6 +9,7 @@
     overscan,
     resetKey,
     onopen,
+    selected,
   }: {
     ids: number[];
     tile: number;
@@ -16,7 +17,41 @@
     overscan: number;
     resetKey: unknown;
     onopen: (index: number) => void;
+    /** Selected media ids; mutated in place. */
+    selected: SvelteSet<number>;
   } = $props();
+
+  let anchor = -1;
+  let lastPointer = "mouse";
+
+  // Click selects (Ctrl toggles, Shift extends); double-click or Enter opens.
+  // On touch screens a tap opens directly.
+  function click(e: MouseEvent, index: number) {
+    const id = ids[index];
+    if (lastPointer === "touch") return onopen(index);
+    if (e.shiftKey && anchor >= 0) {
+      const [a, b] = anchor < index ? [anchor, index] : [index, anchor];
+      if (!e.ctrlKey && !e.metaKey) selected.clear();
+      for (let i = a; i <= b; i++) selected.add(ids[i]);
+    } else if (e.ctrlKey || e.metaKey) {
+      if (selected.has(id)) selected.delete(id);
+      else selected.add(id);
+      anchor = index;
+    } else {
+      selected.clear();
+      selected.add(id);
+      anchor = index;
+    }
+  }
+
+  function onKey(e: KeyboardEvent) {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
+      e.preventDefault();
+      for (const id of ids) selected.add(id);
+    } else if (e.key === "Escape") {
+      selected.clear();
+    }
+  }
 
   const GAP = 6;
   const LABEL = 20;
@@ -70,6 +105,10 @@
   bind:clientWidth={width}
   bind:clientHeight={height}
   onscroll={() => (scrollTop = el.scrollTop)}
+  onkeydown={onKey}
+  role="listbox"
+  aria-multiselectable="true"
+  tabindex="0"
 >
   <div class="spacer" style:height="{Math.max(0, totalRows * rowH - GAP)}px">
     {#each visible as { id, index } (id)}
@@ -82,7 +121,10 @@
         style:width="{tileW}px"
         style:transform="translate({col * (tileW + GAP)}px, {row * rowH}px)"
         title={b?.name}
-        onclick={() => onopen(index)}
+        class:selected={selected.has(id)}
+        onpointerdown={(e) => (lastPointer = e.pointerType)}
+        onclick={(e) => click(e, index)}
+        ondblclick={() => onopen(index)}
         onkeydown={(e) => e.key === "Enter" && onopen(index)}
       >
         <div class="frame" style:height="{tileW}px">
@@ -125,6 +167,13 @@
     background: transparent;
     text-align: left;
     border-radius: 6px;
+  }
+  .tile.selected .frame {
+    outline: 3px solid var(--accent);
+    outline-offset: -3px;
+  }
+  .tile.selected .name {
+    color: var(--accent);
   }
   .tile:focus-visible {
     outline: 2px solid var(--accent);

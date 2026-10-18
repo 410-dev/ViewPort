@@ -25,6 +25,8 @@ pub enum DbError {
     Json(#[from] serde_json::Error),
     #[error("unknown extension field '{0}'")]
     UnknownField(String),
+    #[error("invalid value for field '{0}'")]
+    InvalidValue(String),
 }
 
 pub type Result<T> = std::result::Result<T, DbError>;
@@ -70,6 +72,38 @@ pub struct KnownFile {
     pub id: i64,
     pub size: u64,
     pub modified_ms: Option<i64>,
+}
+
+/// An extension field as shown in the UI.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct FieldInfo {
+    pub key: String,
+    pub names: Vec<(String, String)>,
+    pub aliases: Vec<String>,
+    pub ty: FieldType,
+    pub builtin: bool,
+}
+
+/// Everything the info panel shows for one item.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct MediaDetail {
+    pub id: i64,
+    pub source_id: i64,
+    pub source_name: String,
+    pub rel_path: String,
+    pub name: String,
+    pub kind: String,
+    pub size: u64,
+    pub created_ms: Option<i64>,
+    pub modified_ms: Option<i64>,
+    pub added_ms: i64,
+    pub duration_ms: Option<i64>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub view_count: i64,
+    pub last_viewed_ms: Option<i64>,
+    /// Extension values by field key.
+    pub values: std::collections::BTreeMap<String, Vec<ExtValue>>,
 }
 
 /// Grid tile data.
@@ -136,7 +170,9 @@ impl ThumbRow {
 }
 
 /// A value for an extension field. Enum fields may hold several per item.
-#[derive(Debug, Clone, PartialEq)]
+/// Serialized as a plain JSON number or string.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
 pub enum ExtValue {
     Int(i64),
     Real(f64),
@@ -544,6 +580,196 @@ impl Db {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    pub fn ext_fields(&self) -> Result<Vec<FieldInfo>> {
+        let mut stmt =
+            self.conn.prepare("SELECT key, names, aliases, ty, builtin FROM ext_field ORDER BY sort_index, id")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, bool>(4)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (key, names, aliases, ty, builtin) = row?;
+            Ok(FieldInfo {
+                key,
+                names: serde_json::from_str(&names)?,
+                aliases: serde_json::from_str(&aliases)?,
+                ty: serde_json::from_str(&ty)?,
+                builtin,
+            })
+        })
+        .collect()
+    }
+
+    /// Deletes a user-defined field and all its values. Built-in fields cannot be deleted.
+    pub fn delete_ext_field(&self, key: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM ext_field WHERE key = ?1 AND builtin = 0", [key])?;
+        Ok(())
+    }
+
+    /// Renames a field. Fails if a new name collides with another field or a keyword.
+    pub fn rename_ext_field(&self, key: &str, names: &[(String, String)], aliases: &[String]) -> Result<()> {
+        let (id, ty) = self.ext_field(key)?;
+        let mut reg = FieldRegistry::with_base_fields();
+        for f in self.ext_fields()?.into_iter().filter(|f| f.key != key) {
+            let mut def = FieldDef::ext(&f.key, f.ty, 0);
+            def.names = f.names;
+            def.aliases = f.aliases;
+            reg.add(def)?;
+        }
+        let mut def = FieldDef::ext(key, ty, id);
+        def.names = names.to_vec();
+        def.aliases = aliases.to_vec();
+        reg.add(def)?;
+        self.conn.execute(
+            "UPDATE ext_field SET names = ?2, aliases = ?3 WHERE id = ?1",
+            params![id, serde_json::to_string(names)?, serde_json::to_string(aliases)?],
+        )?;
+        Ok(())
+    }
+
+    pub fn media_detail(&self, id: i64) -> Result<Option<MediaDetail>> {
+        let detail = self
+            .conn
+            .query_row(
+                "SELECT m.id, m.source_id, src.name, m.rel_path, m.name, m.kind, m.size, m.created_ms,
+                        m.modified_ms, m.added_ms, m.duration_ms, m.width, m.height,
+                        COALESCE(s.view_count, 0), s.last_viewed_ms
+                 FROM media m JOIN source src ON src.id = m.source_id
+                 LEFT JOIN media_stats s ON s.media_id = m.id WHERE m.id = ?1",
+                [id],
+                |r| {
+                    Ok(MediaDetail {
+                        id: r.get(0)?,
+                        source_id: r.get(1)?,
+                        source_name: r.get(2)?,
+                        rel_path: r.get(3)?,
+                        name: r.get(4)?,
+                        kind: r.get(5)?,
+                        size: r.get::<_, i64>(6)? as u64,
+                        created_ms: r.get(7)?,
+                        modified_ms: r.get(8)?,
+                        added_ms: r.get(9)?,
+                        duration_ms: r.get(10)?,
+                        width: r.get(11)?,
+                        height: r.get(12)?,
+                        view_count: r.get(13)?,
+                        last_viewed_ms: r.get(14)?,
+                        values: Default::default(),
+                    })
+                },
+            )
+            .optional()?;
+        let Some(mut detail) = detail else { return Ok(None) };
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT f.key, v.int_val, v.real_val, v.text_val FROM ext_value v
+             JOIN ext_field f ON f.id = v.field_id WHERE v.media_id = ?1 ORDER BY v.id",
+        )?;
+        let rows = stmt.query_map([id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<f64>>(2)?, r.get::<_, Option<String>>(3)?))
+        })?;
+        for row in rows {
+            let (key, i, f, t) = row?;
+            let v = match (i, f, t) {
+                (Some(i), _, _) => ExtValue::Int(i),
+                (_, Some(f), _) => ExtValue::Real(f),
+                (_, _, Some(t)) => ExtValue::Text(t),
+                _ => continue,
+            };
+            detail.values.entry(key).or_default().push(v);
+        }
+        Ok(Some(detail))
+    }
+
+    /// Replaces a field's values on every item in `ids` (one transaction).
+    pub fn set_values_many(&self, ids: &[i64], key: &str, values: &[ExtValue], origin: &str) -> Result<()> {
+        let (field_id, ty) = self.ext_field(key)?;
+        let values = coerce_values(ty, values, key)?;
+        self.batch(|db| {
+            for &id in ids {
+                db.conn.execute("DELETE FROM ext_value WHERE media_id = ?1 AND field_id = ?2", params![id, field_id])?;
+                for v in &values {
+                    db.insert_value(id, field_id, v, origin)?;
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// Adds one value of a multi-valued (enum) field to every item that lacks it.
+    pub fn add_value_many(&self, ids: &[i64], key: &str, value: &ExtValue, origin: &str) -> Result<()> {
+        let (field_id, ty) = self.ext_field(key)?;
+        let value = coerce_values(ty, std::slice::from_ref(value), key)?.remove(0);
+        let ExtValue::Text(text) = &value else { return Err(DbError::InvalidValue(key.into())) };
+        self.batch(|db| {
+            for &id in ids {
+                let exists: bool = db.conn.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM ext_value WHERE media_id = ?1 AND field_id = ?2
+                                    AND text_val = ?3 COLLATE NOCASE)",
+                    params![id, field_id, text],
+                    |r| r.get(0),
+                )?;
+                if !exists {
+                    db.insert_value(id, field_id, &value, origin)?;
+                }
+            }
+            db.conn.execute(
+                "INSERT OR IGNORE INTO ext_enum_option (field_id, value) VALUES (?1, ?2)",
+                params![field_id, text],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn remove_value_many(&self, ids: &[i64], key: &str, value: &ExtValue) -> Result<()> {
+        let (field_id, _) = self.ext_field(key)?;
+        let ExtValue::Text(text) = value else { return Err(DbError::InvalidValue(key.into())) };
+        self.batch(|db| {
+            for &id in ids {
+                db.conn.execute(
+                    "DELETE FROM ext_value WHERE media_id = ?1 AND field_id = ?2 AND text_val = ?3 COLLATE NOCASE",
+                    params![id, field_id, text],
+                )?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Values already used for a text or enum field, most used first, for suggestions.
+    pub fn suggest_values(&self, key: &str, prefix: &str, limit: usize) -> Result<Vec<String>> {
+        let (field_id, _) = self.ext_field(key)?;
+        let pattern = format!("{}%", prefix.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT value FROM (
+                SELECT text_val AS value, COUNT(*) AS n FROM ext_value
+                WHERE field_id = ?1 AND text_val LIKE ?2 ESCAPE '\\' GROUP BY text_val COLLATE NOCASE
+                UNION ALL
+                SELECT value, 0 FROM ext_enum_option WHERE field_id = ?1 AND value LIKE ?2 ESCAPE '\\'
+             ) GROUP BY value COLLATE NOCASE ORDER BY MAX(n) DESC, value LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![field_id, pattern, limit as i64], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    fn insert_value(&self, media_id: i64, field_id: i64, v: &ExtValue, origin: &str) -> Result<()> {
+        let (i, r, t) = match v {
+            ExtValue::Int(i) => (Some(*i), None, None),
+            ExtValue::Real(r) => (None, Some(*r), None),
+            ExtValue::Text(t) => (None, None, Some(t.as_str())),
+        };
+        self.conn
+            .prepare_cached(
+                "INSERT INTO ext_value (media_id, field_id, int_val, real_val, text_val, origin)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?
+            .execute(params![media_id, field_id, i, r, t, origin])?;
+        Ok(())
+    }
+
     /// Context for compiling queries against this database.
     pub fn compile_context(now_ms: i64, tz_offset_minutes: i32) -> CompileContext {
         CompileContext {
@@ -557,3 +783,29 @@ impl Db {
 
 #[cfg(test)]
 mod tests;
+
+/// Converts values to the storage form of `ty`, rejecting ones that do not fit
+/// (e.g. text for an integer field, or a rating outside its range).
+fn coerce_values(ty: FieldType, values: &[ExtValue], key: &str) -> Result<Vec<ExtValue>> {
+    let bad = || DbError::InvalidValue(key.into());
+    let single = !matches!(ty, FieldType::Enum);
+    if single && values.len() > 1 {
+        return Err(bad());
+    }
+    values
+        .iter()
+        .map(|v| match (ty, v) {
+            (FieldType::Text | FieldType::Enum, ExtValue::Text(t)) => {
+                let t = t.trim();
+                if t.is_empty() { Err(bad()) } else { Ok(ExtValue::Text(t.to_string())) }
+            }
+            (FieldType::Real, ExtValue::Int(i)) => Ok(ExtValue::Real(*i as f64)),
+            (FieldType::Real, ExtValue::Real(r)) if r.is_finite() => Ok(ExtValue::Real(*r)),
+            (FieldType::RangedInt { min, max }, ExtValue::Int(i)) if (min..=max).contains(i) => Ok(ExtValue::Int(*i)),
+            (FieldType::Integer | FieldType::Date | FieldType::Size | FieldType::Duration, ExtValue::Int(i)) => {
+                Ok(ExtValue::Int(*i))
+            }
+            _ => Err(bad()),
+        })
+        .collect()
+}

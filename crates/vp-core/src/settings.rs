@@ -301,6 +301,7 @@ pub struct KeyBindings {
     pub toggle_fullscreen: Vec<String>,
     pub toggle_play: Vec<String>,
     pub toggle_slideshow: Vec<String>,
+    pub toggle_info: Vec<String>,
     pub close_viewer: Vec<String>,
 }
 
@@ -315,6 +316,7 @@ impl Default for KeyBindings {
             toggle_fullscreen: v(&["f", "F11"]),
             toggle_play: v(&[" "]),
             toggle_slideshow: v(&["s"]),
+            toggle_info: v(&["i"]),
             close_viewer: v(&["Escape"]),
         }
     }

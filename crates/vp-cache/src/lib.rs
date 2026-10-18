@@ -19,6 +19,9 @@ pub type Key = i64;
 
 const PAGE: usize = 4096;
 
+/// One chunk of cache memory; `None` until first allocated.
+type Slot = RwLock<Option<Box<[u8]>>>;
+
 struct Entry {
     len: u64,
     chunks: Vec<u32>,
@@ -35,7 +38,7 @@ struct Meta {
 pub struct MediaCache {
     chunk: usize,
     max_item: u64,
-    slots: Box<[RwLock<Option<Box<[u8]>>>]>,
+    slots: Box<[Slot]>,
     meta: Mutex<Meta>,
     allocated_chunks: AtomicU64,
     hits: AtomicU64,

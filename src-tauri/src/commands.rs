@@ -322,3 +322,127 @@ pub async fn record_view(app: AppHandle, id: i64, view_ms: i64) -> CmdResult<()>
 pub fn cache_stats(state: State<'_, AppState>) -> CmdResult<vp_cache::CacheStats> {
     Ok(workspace(&state)?.cache.stats())
 }
+
+// ---------------------------------------------------------------- fields and values
+
+#[tauri::command]
+pub fn list_fields(state: State<'_, AppState>) -> CmdResult<Vec<vp_db::FieldInfo>> {
+    Ok(workspace(&state)?.read_db.lock().unwrap().ext_fields()?)
+}
+
+#[tauri::command]
+pub fn create_field(
+    state: State<'_, AppState>,
+    names: Vec<(String, String)>,
+    aliases: Vec<String>,
+    ty: vp_query::FieldType,
+) -> CmdResult<String> {
+    let ws = workspace(&state)?;
+    let key = ws.write_db.lock().unwrap().create_ext_field(&names, &aliases, ty)?;
+    Ok(key)
+}
+
+#[tauri::command]
+pub fn rename_field(
+    state: State<'_, AppState>,
+    key: String,
+    names: Vec<(String, String)>,
+    aliases: Vec<String>,
+) -> CmdResult<()> {
+    Ok(workspace(&state)?.write_db.lock().unwrap().rename_ext_field(&key, &names, &aliases)?)
+}
+
+#[tauri::command]
+pub fn delete_field(state: State<'_, AppState>, key: String) -> CmdResult<()> {
+    Ok(workspace(&state)?.write_db.lock().unwrap().delete_ext_field(&key)?)
+}
+
+#[tauri::command]
+pub async fn media_detail(app: AppHandle, id: i64) -> CmdResult<Option<vp_db::MediaDetail>> {
+    let ws = workspace(&app.state::<AppState>())?;
+    blocking(move || Ok(ws.read_db.lock().unwrap().media_detail(id)?)).await
+}
+
+#[tauri::command]
+pub async fn set_values(app: AppHandle, ids: Vec<i64>, key: String, values: Vec<vp_db::ExtValue>) -> CmdResult<()> {
+    let ws = workspace(&app.state::<AppState>())?;
+    blocking(move || Ok(ws.write_db.lock().unwrap().set_values_many(&ids, &key, &values, "user")?)).await
+}
+
+#[tauri::command]
+pub async fn add_value(app: AppHandle, ids: Vec<i64>, key: String, value: vp_db::ExtValue) -> CmdResult<()> {
+    let ws = workspace(&app.state::<AppState>())?;
+    blocking(move || Ok(ws.write_db.lock().unwrap().add_value_many(&ids, &key, &value, "user")?)).await
+}
+
+#[tauri::command]
+pub async fn remove_value(app: AppHandle, ids: Vec<i64>, key: String, value: vp_db::ExtValue) -> CmdResult<()> {
+    let ws = workspace(&app.state::<AppState>())?;
+    blocking(move || Ok(ws.write_db.lock().unwrap().remove_value_many(&ids, &key, &value)?)).await
+}
+
+#[tauri::command]
+pub fn suggest_values(state: State<'_, AppState>, key: String, prefix: String) -> CmdResult<Vec<String>> {
+    Ok(workspace(&state)?.read_db.lock().unwrap().suggest_values(&key, &prefix, 20)?)
+}
+
+/// Words the query editor offers as completions, in the given locale.
+#[derive(Serialize)]
+pub struct Vocabulary {
+    pub fields: Vec<VocabField>,
+    pub ops: Vec<VocabOp>,
+    pub and: String,
+    pub or: String,
+    pub not: String,
+    pub sort_asc: String,
+    pub sort_desc: String,
+    pub kinds: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct VocabField {
+    pub key: String,
+    pub name: String,
+    pub aliases: Vec<String>,
+    pub ty: vp_query::FieldType,
+    pub ext: bool,
+}
+
+#[derive(Serialize)]
+pub struct VocabOp {
+    pub op: vp_query::Op,
+    pub name: String,
+}
+
+#[tauri::command]
+pub fn query_vocabulary(state: State<'_, AppState>, locale: String) -> CmdResult<Vocabulary> {
+    use vp_query::lang;
+    let reg = match workspace(&state) {
+        Ok(ws) => ws.read_db.lock().unwrap().field_registry()?,
+        Err(_) => FieldRegistry::with_base_fields(),
+    };
+    let fields = reg
+        .iter()
+        .map(|d| VocabField {
+            key: d.key.clone(),
+            name: d.display_name(&locale).to_string(),
+            aliases: d.names.iter().map(|(_, n)| n.clone()).chain(d.aliases.iter().cloned()).collect(),
+            ty: d.ty,
+            ext: matches!(d.source, vp_query::FieldSource::Ext { .. }),
+        })
+        .collect();
+    let ops = vp_query::Op::ALL
+        .into_iter()
+        .map(|op| VocabOp { op, name: op.aliases().display(&locale).to_string() })
+        .collect();
+    Ok(Vocabulary {
+        fields,
+        ops,
+        and: lang::AND.display(&locale).into(),
+        or: lang::OR.display(&locale).into(),
+        not: lang::NOT.display(&locale).into(),
+        sort_asc: lang::SORT_ASC.display(&locale).into(),
+        sort_desc: lang::SORT_DESC.display(&locale).into(),
+        kinds: vp_core::MediaKind::ALL.into_iter().map(|k| lang::kind_aliases(k).display(&locale).to_string()).collect(),
+    })
+}

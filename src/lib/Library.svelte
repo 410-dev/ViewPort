@@ -5,6 +5,8 @@
   import Grid from "./Grid.svelte";
   import Viewer from "./Viewer.svelte";
   import SettingsPanel from "./Settings.svelte";
+  import InfoPanel from "./InfoPanel.svelte";
+  import { SvelteSet } from "svelte/reactivity";
   import { t } from "./i18n.svelte";
 
   let { bundle, onclose }: { bundle: BundleSummary; onclose: () => void } = $props();
@@ -21,6 +23,9 @@
   let resetKey = $state(0);
   let viewing = $state<number | null>(null);
   let showSettings = $state(false);
+  let showInfo = $state(true);
+  const selection = new SvelteSet<number>();
+  const selectedIds = $derived([...selection]);
 
   async function refreshSources() {
     sources = await api.listSources();
@@ -149,7 +154,7 @@
     <button class="ghost" onclick={close}>{t("lib.close")}</button>
   </aside>
 
-  <main>
+  <main class:with-info={showInfo}>
     <div class="toolbar">
       <input
         class="query"
@@ -158,6 +163,7 @@
         placeholder={t("lib.searchPlaceholder")}
         spellcheck="false"
       />
+      <button class="toggle" class:on={showInfo} onclick={() => (showInfo = !showInfo)} title={t("lib.info")}>ⓘ</button>
       {#if settings}
         <label class="size" title={t("lib.tileSize")}>
           <input
@@ -184,7 +190,7 @@
       <span>{status}</span>
     </div>
 
-    <div class="content">
+    <div class="content" class:split={showInfo}>
       {#if ids.length === 0}
         <p class="empty">{sources.length === 0 ? t("lib.empty") : t("lib.noResults")}</p>
       {:else if settings}
@@ -195,7 +201,11 @@
           showNames={settings.grid.show_names}
           overscan={settings.grid.overscan_rows}
           onopen={(i) => (viewing = i)}
+          selected={selection}
         />
+      {/if}
+      {#if showInfo}
+        <InfoPanel ids={selectedIds} onchanged={() => runSearch(false)} />
       {/if}
     </div>
   </main>
@@ -206,7 +216,7 @@
 {/if}
 
 {#if viewing !== null && settings && ids.length > 0}
-  <Viewer {ids} bind:index={viewing} {settings} onclose={() => (viewing = null)} />
+  <Viewer {ids} bind:index={viewing} {settings} onclose={() => (viewing = null)} onchanged={() => runSearch(false)} />
 {/if}
 
 <style>
@@ -344,6 +354,18 @@
   .content {
     flex: 1;
     min-height: 0;
+    display: flex;
+  }
+  .content > :global(:first-child) {
+    flex: 1;
+    min-width: 0;
+  }
+  .toggle {
+    padding: 4px 9px;
+  }
+  .toggle.on {
+    color: var(--accent);
+    border-color: var(--accent);
   }
   .empty {
     color: var(--muted);

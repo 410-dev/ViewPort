@@ -3,13 +3,17 @@
   import { onDestroy, onMount } from "svelte";
   import { api, mediaUrl, type MediaBrief, type Settings } from "./api";
   import { isTyping, matches } from "./keys";
+  import InfoPanel from "./InfoPanel.svelte";
 
   let {
     ids,
     index = $bindable(),
     settings,
     onclose,
-  }: { ids: number[]; index: number; settings: Settings; onclose: () => void } = $props();
+    onchanged,
+  }: { ids: number[]; index: number; settings: Settings; onclose: () => void; onchanged?: () => void } = $props();
+
+  let showInfo = $state(false);
 
   const id = $derived(ids[index]);
   let brief = $state<MediaBrief | null>(null);
@@ -110,6 +114,7 @@
     else if (matches(e, k.prev)) go(-1);
     else if (matches(e, k.toggle_play)) togglePlay();
     else if (matches(e, k.toggle_fullscreen)) toggleFullscreen();
+    else if (matches(e, k.toggle_info)) showInfo = !showInfo;
     else if (matches(e, k.close_viewer)) close();
     else handled = false;
     if (handled) {
@@ -182,9 +187,16 @@
     <div class="error">{brief?.name}: cannot be displayed</div>
   {/if}
 
+  {#if showInfo && id !== undefined}
+    <div class="side" role="presentation" onpointerdown={(e) => e.stopPropagation()} onpointerup={(e) => e.stopPropagation()}>
+      <InfoPanel ids={[id]} {onchanged} dark />
+    </div>
+  {/if}
+
   <div class="hud" class:visible={hud}>
     <span class="name">{brief?.name ?? ""}</span>
     <span class="pos">{index + 1} / {ids.length}</span>
+    <button class="icon" onclick={() => (showInfo = !showInfo)} title="Info">ⓘ</button>
     <button class="icon" onclick={() => toggleFullscreen()} title="Fullscreen">⛶</button>
     <button class="icon" onclick={close} title="Close">✕</button>
   </div>
@@ -218,6 +230,14 @@
   .error {
     position: absolute;
     color: #f87171;
+  }
+  .side {
+    position: absolute;
+    top: 44px;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    z-index: 2;
   }
   .hud {
     position: absolute;
