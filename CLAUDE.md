@@ -1,0 +1,114 @@
+# CLAUDE.md
+
+이 저장소에서 작업하는 Claude Code를 위한 안내서. 사용자와는 **한국어**로 대화한다.
+
+ViewPort는 이미지·영상 미디어 관리 앱이다. Tauri 2 + Rust 백엔드, SvelteKit(Svelte 5, adapter-static SPA) 프론트엔드,
+SQLite(rusqlite bundled). 대상 플랫폼: Windows, macOS, Linux, Android, iOS.
+설계 결정의 원문은 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)에 있다. 설계를 바꾸면 그 문서도 함께 고친다.
+
+## 명령어
+
+```bash
+npm install                      # 프론트엔드 의존성
+npm run tauri dev                # 앱 개발 실행
+npm run check                    # svelte-check (TS/Svelte 타입 검사)
+cargo test --workspace           # 전체 Rust 테스트
+cargo test -p vp-query           # 크레이트 하나만
+cargo test -p vp-db spec_query     # 이름으로 필터링한 테스트
+npm run tauri build -- --bundles msi   # Windows MSI (target/release/bundle/msi/)
+```
+
+- 선택적 실제 환경 테스트: `VP_TEST_FFMPEG=<ffmpeg 폴더>`, `VP_TEST_SMB='{"host":..,"share":..,"username":..,"password":..}'`.
+  환경 변수가 없으면 해당 테스트는 건너뛴다.
+- dev 프로필에서도 의존성은 `opt-level = 2`로 빌드한다(이미지 디코딩·SQLite가 너무 느려서). 첫 빌드는 오래 걸린다.
+- FFmpeg는 번들에 포함하지 않는다(GPL). 앱 폴더 → 설정 경로 → `PATH` 순으로 찾고, 없으면 영상 썸네일·길이·변환만 꺼진다.
+
+## 구조
+
+Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
+
+| 크레이트 | 역할 |
+|---|---|
+| `vp-core` | 공용 타입, `settings.rs` = **모든 튜닝값의 단일 출처** (`Settings` 번들별, `AppSettings` 기기별) |
+| `vp-query` | 고급 검색 언어: `lang`(다국어 별칭) → `parser`(AST+span) → `analyze`(필드 레지스트리) → `compile`(SQL) / `render`(AST→로케일 텍스트) |
+| `vp-db` | 스키마 마이그레이션(`schema.rs`, `PRAGMA user_version`), 미디어·확장 필드·저장 쿼리·통계, 검색 실행. 통합 테스트는 `tests.rs` |
+| `vp-driver` | `MediaDriver` trait + `DriverRegistry`. `local`, `smb`(feature `smb`, 순수 Rust `smb2`) |
+| `vp-bundle` | `.vpbun` 레이아웃, `info.json`, 버전 호환 검사(`BUNDLE_FORMAT_VERSION`) |
+| `vp-scan` | 드라이버로 소스 순회 → DB 기록. 크기·수정 시각 같으면 seen만, 사라지면 missing |
+| `vp-thumb` | 썸네일 생성, append-only 팩 파일(`thumbs/NNNNNN.pack`) |
+| `vp-cache` | 선점형 청크 풀 메모리 캐시(LRU, 읽는 중 항목은 축출 안 함) |
+| `vp-media` | 외부 FFmpeg/ffprobe: 분석, 프레임 추출, 고호환 변환(HW 인코더 → libx264) |
+| `vp-crypto` | Argon2id 키 도출, XChaCha20-Poly1305 봉인 |
+
+의존 방향: `src-tauri → vp-* → vp-core`. **vp-query는 DB에 의존하지 않는다** — `(sql, params)`만 만들고 컬럼 매핑은 주입받는다.
+
+### src-tauri
+- `lib.rs`: `AppState`(열린 `Workspace` 하나, `DriverRegistry`), 커맨드 등록, 커스텀 URI 스킴 등록.
+  메인 창은 하드웨어 가속 설정을 WebView 인자에 반영하려고 `tauri.conf.json`이 아닌 코드에서 만든다.
+- `workspace.rs`: 열린 번들. 쓰기/읽기 DB 연결 분리(WAL), 잠긴 번들은 인메모리 DB 하나를 주기적으로 재암호화해 저장,
+  상위 버전 번들은 임시 작업 사본 + 수동 저장.
+- `commands.rs`: 모든 `#[tauri::command]`. 오류는 `error.rs`의 `CmdError { code, message, detail }`로 반환하고
+  프론트엔드는 `code`로 분기한다(예: `locked`).
+- `media.rs`(`vpmedia://`, HTTP Range 지원, 캐시 경유), `thumbs.rs`(`vpthumb://`, 없으면 즉시 생성),
+  `video.rs`(probe 백필·변환), `archive.rs`(zip 번들 해제, zip slip 방지), `secrets.rs`(OS 자격 증명 저장소),
+  `recent.rs`(기기별 상태: 최근 번들, `AppSettings`).
+
+### 프론트엔드 (`src/`)
+- `routes/+page.svelte`가 `StartScreen` ↔ `Library` 전환. `Library`가 `Grid`(가상 스크롤), `Viewer`(캐러셀·슬라이드쇼·구간 반복),
+  `InfoPanel`, `QueryEditor`, `BasicSearch`, `Settings`, `SourceDialog`를 조합한다.
+- `lib/api.ts`: 모든 `invoke` 래퍼와 백엔드 타입 미러. 커맨드를 추가·변경하면 여기 타입도 맞춘다.
+- `lib/query.ts`: 편집기용 토크나이저·자동완성. `normalize`·연산자 허용 규칙이 `vp_query`와 **미러**이므로 함께 수정한다.
+- `lib/i18n.svelte.ts`: `ko`/`en` 문자열 표. 새 UI 문자열은 두 표 모두에 추가한다(`en`은 `Record<Key,string>`라 누락 시 타입 오류).
+- `lib/keys.ts`: 키 바인딩(설정 `keys`에서 읽음).
+
+## 핵심 규칙과 불변식
+
+- **하드코딩 금지**: 용량, 개수, 시간, 비율, 워커 수, 키 바인딩 등 튜닝값은 `vp-core/src/settings.rs`에 필드로 추가하고
+  `Settings.svelte`에 노출한다. 모든 설정 구조체는 `#[serde(default)]` — 구버전/신버전 설정 파일 모두 로드돼야 한다.
+- **미디어 식별자는 `(source_id, rel_path)`**. 절대 경로를 DB에 저장하지 않는다. 번들 내 미디어는 `bundle` 드라이버 소스로
+  번들 루트 기준 상대 경로. 소스 재연결(다른 PC) 시 태그·통계가 보존돼야 한다.
+- **워크스페이스는 여러 소스(디렉터리)를 동시에 가진다** — `source` 테이블 한 행 = 불러온 디렉터리 하나.
+- **DB 스키마 변경은 `schema.rs`의 `MIGRATIONS` 배열 끝에 추가만** 한다. 기존 항목은 절대 수정하지 않는다.
+  번들 레이아웃 호환이 깨지면 `BUNDLE_FORMAT_VERSION`을 올린다.
+- **자동 저장**이 기본. 예외는 앱보다 상위 버전 번들을 사용자 인가 후 연 경우(`OpenMode::ManualSaveOnly`)뿐.
+- **잠긴 번들**: DB·설정·썸네일은 암호화, 평문 DB가 디스크에 남으면 안 된다. 미디어 원본·`converted/`는 암호화하지 않는다.
+  `info.json`은 항상 평문(공개 가능한 정보만, `bundle_version` 필수).
+- **비밀번호·자격 증명**은 번들 평문 설정에 저장하지 않는다(`ConfigKind::Secret` → OS 키체인 또는 암호화된 번들).
+- **지연 최소화**: 파일은 수 KB~수 GB. UI 스레드·커맨드에서 큰 파일을 통째로 읽지 말고 `read_at` 기반 스트리밍, 백그라운드 작업,
+  세마포어(`thumb_permits`, `prefetch_permits`)를 사용한다. 화면에 보이는 것이 먼저 처리돼야 한다.
+- 백그라운드 작업은 `Workspace.closed` 플래그를 확인해 번들이 닫히면 멈춰야 한다.
+
+## 고급 검색 언어 요점
+
+- 문법: `조건(파라미터:파라미터:...)`를 `그리고`/`혹은`/`아님`과 괄호로 결합. 키워드·필드명·연산자는 다국어 별칭이며
+  공백·대소문자를 무시하고 비교(`lang::normalize`).
+- 연산자 파라미터는 위치 무관(`점수(5:이상)` = `점수(이상:5)`). 값만 주면 숫자형은 `같음`, 텍스트형은 `다음을 포함`.
+- **복합 정렬은 순차 안정 정렬: 마지막 정렬이 최우선 키**. `정렬(A) 그리고 정렬(B) 그리고 정렬(C)` ≡ `ORDER BY C, B, A, id`.
+  AND로 연결된 정렬은 위치와 무관하게 쿼리 전체에 적용, NOT 안이나 OR 직속이면 오류.
+- 날짜 `이후`/`이전`은 둘 다 그날을 포함. 로컬 시간대 오프셋은 컴파일 컨텍스트로 받는다.
+- 저장 쿼리는 언어 중립 AST(JSON)로 보관하고 표시할 때 로케일로 렌더한다.
+- 기본 조건은 `fields.rs`의 `base_fields()`, 확장 조건(태그·점수·장르·메모·사용자 정의)은 DB의 필드 정의에서 레지스트리로 들어온다.
+  확장 필드 타입: 정수, 실수, 문자열, 열거형(다중 값), 범위 정수(min/max).
+
+## 확장 지점 (향후 기능을 위해 유지할 것)
+
+- **새 스토리지 드라이버**(WebDAV, FTP, VeraCrypt 볼륨, 데이터 샤드): `MediaDriver` + `DriverFactory` 구현 후
+  `DriverRegistry::with_builtin()`에 등록. 설정 폼은 `config_schema()`로 자기 기술하므로 UI는 수정할 필요가 없어야 한다.
+  선택 기능(`write`/`rename`/`delete`/`local_path`)은 `capabilities()`로 알린다.
+- **기본 조건 추가**: `base_fields()`에 `FieldDef::column(...)` + `ko`/`en` 이름·별칭. 컬럼 별칭(`m.`, `s.`, `src.`)은 검색 쿼리 기준.
+- **자동 태깅/인식**: 확장 필드 값은 `origin`(user / auto:<provider>)으로 출처를 구분한다. 자동 생성 값이 수동 값을 덮어쓰지 않게 유지.
+- **데이터 샤드 저장**: 미디어 경로 모델이 `(source_id, path)`이므로 드라이버 하나로 추가돼야 한다. 샤드 메타데이터는 별도 DB.
+- 하드웨어 가속은 `AppSettings.hardware`(`gpu`, `video_decode`, `video_encode`, 기기별) 옵션으로 제어한다.
+
+## 영상 재생
+
+하이브리드: WebView `<video>` 우선, 재생 불가 포맷은 FFmpeg 리먹스/트랜스코드 변환본(`converted/<id>.mp4`)으로 폴백.
+`playback.fallback_mode` = `auto` | `always` | `never`. 파일 단위 배너에 "이 파일을 무시 목록에 추가"
+(`FLAG_IGNORE_PLAYBACK_WARNING`). 영상은 항상 반복 재생.
+
+## 작업 방식
+
+- `main` 브랜치에 직접 커밋한다. push는 하지 않는다(GitHub는 사용자가 관리).
+- 변경 후 `cargo test --workspace`와 `npm run check`가 통과해야 한다. 쿼리 언어를 바꾸면 `vp-query` 단위 테스트와
+  `vp-db/src/tests.rs`(실제 SQLite 검색) 양쪽에 케이스를 추가한다.
+- 코드 주석·식별자는 영어, 문서(README, ARCHITECTURE)와 UI 기본 로케일은 한국어.
