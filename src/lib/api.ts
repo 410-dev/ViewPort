@@ -8,6 +8,7 @@ export interface BundleSummary {
   name: string;
   mode: OpenMode;
   bundle_version: number;
+  locked: boolean;
 }
 
 export interface CmdError {
@@ -273,6 +274,10 @@ export const api = {
   updateSource: (id: number, name: string, root: string, config: Record<string, any> | null, enabled: boolean) =>
     invoke<SourceRow>("update_source", { id, name, root, config, enabled }),
   sourceConfig: (id: number) => invoke<Record<string, any>>("source_config", { id }),
+  unlockBundle: (path: string, password: string, keyfile: string | null, allowNewer = false) =>
+    invoke<BundleSummary>("unlock_bundle", { path, password, keyfile, allowNewer }),
+  setLock: (password: string, keyfile: string | null) => invoke<BundleSummary>("set_lock", { password, keyfile }),
+  removeLock: () => invoke<BundleSummary>("remove_lock"),
   getAppSettings: () => invoke<AppSettings>("get_app_settings"),
   saveAppSettings: (settings: AppSettings) => invoke<void>("save_app_settings", { settings }),
 };

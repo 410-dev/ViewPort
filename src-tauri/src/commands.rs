@@ -25,6 +25,27 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> CmdResult<T> + Send + '
 
 // ---------------------------------------------------------------- bundles
 
+/// Closes a workspace: stops its background work, writes what is buffered, and waits
+/// (briefly) for other holders to let go so its files are closed. Returns false if
+/// something still holds it after the wait.
+fn retire(ws: Arc<Workspace>) -> bool {
+    ws.closed.store(true, Ordering::Relaxed);
+    for cancel in ws.scans.lock().unwrap().values() {
+        cancel.store(true, Ordering::Relaxed);
+    }
+    for cancel in ws.converts.lock().unwrap().values() {
+        cancel.store(true, Ordering::Relaxed);
+    }
+    ws.flush();
+    for _ in 0..100 {
+        if Arc::strong_count(&ws) == 1 {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    false
+}
+
 fn install(app: &AppHandle, state: &AppState, ws: Workspace) -> CmdResult<BundleSummary> {
     let summary = ws.summary();
     let ws = Arc::new(ws);
@@ -34,7 +55,7 @@ fn install(app: &AppHandle, state: &AppState, ws: Workspace) -> CmdResult<Bundle
     }
     let old = state.workspace.write().unwrap().replace(ws);
     if let Some(old) = old {
-        old.closed.store(true, Ordering::Relaxed);
+        std::thread::spawn(move || retire(old));
     }
     recent::push(app, &summary.path);
     Ok(summary)
@@ -50,22 +71,95 @@ pub async fn create_bundle(app: AppHandle, path: String, name: String) -> CmdRes
     install(&app, &app.state::<AppState>(), ws)
 }
 
-/// Opens a bundle. A bundle newer than this build fails with `bundle_too_new` unless
-/// `allow_newer` is set, in which case it opens without autosave.
+/// A bundle given as an archive is extracted next to it first; returns the folder to open.
+fn resolve_bundle_path(path: &str) -> CmdResult<PathBuf> {
+    let p = PathBuf::from(path);
+    if p.is_file() { crate::archive::extract_bundle(&p) } else { Ok(p) }
+}
+
+/// Opens a bundle folder or archive. Fails with `bundle_too_new` for a bundle newer than
+/// this build unless `allow_newer` (then autosave is off), and with `locked` for a locked
+/// bundle (see `unlock_bundle`). Error details carry the folder actually used.
 #[tauri::command]
 pub async fn open_bundle(app: AppHandle, path: String, allow_newer: bool) -> CmdResult<BundleSummary> {
-    let ws = blocking(move || Workspace::open(&PathBuf::from(path), allow_newer)).await?;
+    let ws = blocking(move || {
+        let dir = resolve_bundle_path(&path)?;
+        Workspace::open(&dir, allow_newer).map_err(|e| e.with_path(&dir))
+    })
+    .await?;
+    install(&app, &app.state::<AppState>(), ws)
+}
+
+/// Opens a locked bundle with its password (and key file, if it was locked with one).
+#[tauri::command]
+pub async fn unlock_bundle(
+    app: AppHandle,
+    path: String,
+    password: String,
+    keyfile: Option<String>,
+    allow_newer: bool,
+) -> CmdResult<BundleSummary> {
+    let ws = blocking(move || {
+        let kf = keyfile.filter(|k| !k.is_empty()).map(std::fs::read).transpose()?;
+        Workspace::open_locked(&PathBuf::from(path), allow_newer, &password, kf.as_deref())
+    })
+    .await?;
     install(&app, &app.state::<AppState>(), ws)
 }
 
 #[tauri::command]
-pub fn close_bundle(state: State<'_, AppState>) {
-    if let Some(ws) = state.workspace.write().unwrap().take() {
-        ws.closed.store(true, Ordering::Relaxed);
-        for cancel in ws.scans.lock().unwrap().values() {
-            cancel.store(true, Ordering::Relaxed);
-        }
+pub async fn close_bundle(app: AppHandle) {
+    let ws = app.state::<AppState>().workspace.write().unwrap().take();
+    if let Some(ws) = ws {
+        let _ = tauri::async_runtime::spawn_blocking(move || retire(ws)).await;
     }
+}
+
+/// Encrypts the open bundle with a password (and optional key file), then reopens it.
+#[tauri::command]
+pub async fn set_lock(app: AppHandle, password: String, keyfile: Option<String>) -> CmdResult<BundleSummary> {
+    let state = app.state::<AppState>();
+    let ws = workspace(&state)?;
+    let root = ws.bundle.root.clone();
+    let (ws, key) = blocking(move || {
+        let kf = keyfile.filter(|k| !k.is_empty()).map(std::fs::read).transpose()?;
+        let key = ws.enable_lock(&password, kf.as_deref())?;
+        Ok((ws, key))
+    })
+    .await?;
+    state.workspace.write().unwrap().take();
+    let next = blocking(move || {
+        if !retire(ws) {
+            return Err(CmdError::new("busy", "the bundle is still in use; plaintext files were kept"));
+        }
+        crate::workspace::remove_files(&root, true)?;
+        Workspace::open_with_key(&root, key)
+    })
+    .await?;
+    install(&app, &state, next)
+}
+
+/// Removes encryption from the open (locked) bundle, then reopens it.
+#[tauri::command]
+pub async fn remove_lock(app: AppHandle) -> CmdResult<BundleSummary> {
+    let state = app.state::<AppState>();
+    let ws = workspace(&state)?;
+    let root = ws.bundle.root.clone();
+    let ws = blocking(move || {
+        ws.disable_lock()?;
+        Ok(ws)
+    })
+    .await?;
+    state.workspace.write().unwrap().take();
+    let next = blocking(move || {
+        if !retire(ws) {
+            return Err(CmdError::new("busy", "the bundle is still in use; encrypted files were kept"));
+        }
+        crate::workspace::remove_files(&root, false)?;
+        Workspace::open(&root, false)
+    })
+    .await?;
+    install(&app, &state, next)
 }
 
 /// Saves a bundle opened in manual-save mode. Does nothing in autosave mode.
@@ -680,7 +774,7 @@ pub async fn update_source(
         let name = if name.trim().is_empty() { old.name.clone() } else { name.trim().to_string() };
         ws.write_db.lock().unwrap().update_source(id, &name, &root, &config, enabled)?;
         ws.forget_driver(id);
-        Ok(ws.read_db.lock().unwrap().source(id)?.ok_or_else(|| CmdError::new("not_found", "source"))?)
+        ws.read_db.lock().unwrap().source(id)?.ok_or_else(|| CmdError::new("not_found", "source"))
     })
     .await
 }

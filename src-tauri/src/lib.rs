@@ -1,3 +1,4 @@
+mod archive;
 mod commands;
 mod error;
 mod media;
@@ -84,9 +85,22 @@ pub fn run() {
             commands::add_source,
             commands::update_source,
             commands::source_config,
+            commands::unlock_bundle,
+            commands::set_lock,
+            commands::remove_lock,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                // Write what a locked bundle still holds in memory before the process ends.
+                use tauri::Manager;
+                if let Some(ws) = app.state::<AppState>().workspace.read().unwrap().as_ref() {
+                    ws.closed.store(true, std::sync::atomic::Ordering::Relaxed);
+                    ws.flush();
+                }
+            }
+        });
 }
 
 /// Chromium switches derived from the device's hardware settings. The first switch is

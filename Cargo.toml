@@ -16,11 +16,12 @@ vp-bundle = { path = "crates/vp-bundle" }
 vp-scan = { path = "crates/vp-scan" }
 vp-cache = { path = "crates/vp-cache" }
 vp-media = { path = "crates/vp-media" }
+vp-crypto = { path = "crates/vp-crypto" }
 vp-thumb = { path = "crates/vp-thumb" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-rusqlite = { version = "0.40", features = ["bundled", "collation"] }
+rusqlite = { version = "0.40", features = ["bundled", "collation", "serialize"] }
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

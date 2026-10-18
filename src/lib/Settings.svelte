@@ -3,7 +3,55 @@
   import { api, type AppSettings, type CacheStats, type FfmpegStatus, type Settings } from "./api";
   import { i18n } from "./i18n.svelte";
 
-  let { settings, onclose }: { settings: Settings; onclose: () => void } = $props();
+  import { open as openDialog, ask } from "@tauri-apps/plugin-dialog";
+  import type { BundleSummary } from "./api";
+
+  let {
+    settings,
+    bundle,
+    onclose,
+    onbundle,
+  }: { settings: Settings; bundle: BundleSummary; onclose: () => void; onbundle: (b: BundleSummary) => void } = $props();
+
+  // ---- workspace lock
+  let lockPw = $state("");
+  let lockPw2 = $state("");
+  let lockKeyfile = $state("");
+  let lockBusy = $state(false);
+  let lockError = $state("");
+  async function pickLockKeyfile() {
+    const p = await openDialog({});
+    if (typeof p === "string") lockKeyfile = p;
+  }
+  async function applyLock() {
+    lockError = "";
+    if (lockPw !== lockPw2) {
+      lockError = lbl({ ko: "비밀번호가 일치하지 않습니다.", en: "Passwords do not match." });
+      return;
+    }
+    lockBusy = true;
+    try {
+      onbundle(await api.setLock(lockPw, lockKeyfile || null));
+      lockPw = lockPw2 = lockKeyfile = "";
+    } catch (e: any) {
+      lockError = e?.message ?? String(e);
+    } finally {
+      lockBusy = false;
+    }
+  }
+  async function liftLock() {
+    const msg = lbl({ ko: "이 번들의 암호화를 해제할까요? 설정과 데이터베이스가 암호화되지 않은 상태로 저장됩니다.", en: "Remove encryption from this bundle? Its settings and database will be stored unencrypted." });
+    if (!(await ask(msg, { kind: "warning" }))) return;
+    lockBusy = true;
+    lockError = "";
+    try {
+      onbundle(await api.removeLock());
+    } catch (e: any) {
+      lockError = e?.message ?? String(e);
+    } finally {
+      lockBusy = false;
+    }
+  }
 
   type L = { ko: string; en: string };
   type Field =
@@ -247,6 +295,33 @@
             })}
           </p>
         {/if}
+      </section>
+
+      <section>
+        <h3>{lbl({ ko: "보안 (워크스페이스 잠금)", en: "Security (workspace lock)" })}</h3>
+        {#if bundle.locked}
+          <p class="note">
+            {lbl({ ko: "이 번들은 암호화되어 있습니다. 미디어 파일은 암호화되지 않습니다.", en: "This bundle is encrypted. Media files are not encrypted." })}
+          </p>
+          <button disabled={lockBusy} onclick={liftLock}>{lbl({ ko: "암호화 해제", en: "Remove encryption" })}</button>
+        {:else}
+          <p class="note">
+            {lbl({
+              ko: "잠그면 데이터베이스·설정·썸네일이 암호화되어 비밀번호 없이는 읽을 수 없습니다. 미디어 파일은 암호화되지 않습니다. 비밀번호를 잃으면 복구할 수 없습니다.",
+              en: "Locking encrypts the database, settings and thumbnails so they cannot be read without the password. Media files are not encrypted. A lost password cannot be recovered.",
+            })}
+          </p>
+          <label class="row"><span>{lbl({ ko: "비밀번호", en: "Password" })}</span><input type="password" autocomplete="new-password" bind:value={lockPw} /></label>
+          <label class="row"><span>{lbl({ ko: "비밀번호 확인", en: "Confirm" })}</span><input type="password" autocomplete="new-password" bind:value={lockPw2} /></label>
+          <label class="row"
+            ><span>{lbl({ ko: "키 파일 (선택)", en: "Key file (optional)" })}</span>
+            <span class="num"><input readonly value={lockKeyfile} /><button type="button" onclick={pickLockKeyfile}>…</button></span>
+          </label>
+          <button class="primary" disabled={lockBusy || !lockPw || bundle.mode !== "autosave"} onclick={applyLock}
+            >{lbl({ ko: "잠금 설정", en: "Lock workspace" })}</button
+          >
+        {/if}
+        {#if lockError}<p class="error">{lockError}</p>{/if}
       </section>
 
       {#each sections as s (s.title.en)}

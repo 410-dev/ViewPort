@@ -29,11 +29,13 @@ pub struct GeneralSettings {
     pub locale: String,
     /// Debounce before writing changes to the bundle.
     pub autosave_debounce_ms: u64,
+    /// How often a locked bundle's in-memory database is re-encrypted to disk when changed.
+    pub encrypted_save_secs: u64,
 }
 
 impl Default for GeneralSettings {
     fn default() -> Self {
-        Self { locale: "ko".into(), autosave_debounce_ms: 500 }
+        Self { locale: "ko".into(), autosave_debounce_ms: 500, encrypted_save_secs: 3 }
     }
 }
 

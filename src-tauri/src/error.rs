@@ -18,6 +18,17 @@ impl CmdError {
         self.detail = detail;
         self
     }
+
+    /// Adds the bundle folder actually used (e.g. after extracting an archive) to the detail.
+    pub fn with_path(mut self, path: &std::path::Path) -> Self {
+        if self.detail.is_null() {
+            self.detail = serde_json::json!({});
+        }
+        if let Some(obj) = self.detail.as_object_mut() {
+            obj.insert("path".into(), serde_json::Value::String(path.display().to_string()));
+        }
+        self
+    }
 }
 
 pub type CmdResult<T> = Result<T, CmdError>;
@@ -61,6 +72,23 @@ impl From<vp_query::QueryError> for CmdError {
 impl From<vp_driver::DriverError> for CmdError {
     fn from(e: vp_driver::DriverError) -> Self {
         CmdError::new("driver", e)
+    }
+}
+
+impl From<vp_crypto::CryptoError> for CmdError {
+    fn from(e: vp_crypto::CryptoError) -> Self {
+        let code = match e {
+            vp_crypto::CryptoError::WrongKey => "wrong_key",
+            vp_crypto::CryptoError::Corrupt => "corrupt",
+            _ => "crypto",
+        };
+        CmdError::new(code, e)
+    }
+}
+
+impl From<vp_db::rusqlite_error::Error> for CmdError {
+    fn from(e: vp_db::rusqlite_error::Error) -> Self {
+        CmdError::new("database", e)
     }
 }
 

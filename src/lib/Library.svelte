@@ -14,7 +14,11 @@
   import { SvelteSet } from "svelte/reactivity";
   import { t } from "./i18n.svelte";
 
-  let { bundle, onclose }: { bundle: BundleSummary; onclose: () => void } = $props();
+  let {
+    bundle,
+    onclose,
+    onbundle,
+  }: { bundle: BundleSummary; onclose: () => void; onbundle: (b: BundleSummary) => void } = $props();
 
   let sources = $state<SourceRow[]>([]);
   let selected = $state<number | null>(null);
@@ -147,7 +151,7 @@
 <div class="layout">
   <aside>
     <div class="bundle">
-      <strong title={bundle.path}>{bundle.name}</strong>
+      <strong title={bundle.path}>{bundle.locked ? "🔒 " : ""}{bundle.name}</strong>
       {#if bundle.mode === "manual_save_only"}
         <span class="warn">{t("lib.manualSave")}</span>
       {/if}
@@ -307,7 +311,7 @@
 {/if}
 
 {#if showSettings && settings}
-  <SettingsPanel {settings} onclose={() => (showSettings = false)} />
+  <SettingsPanel {settings} {bundle} {onbundle} onclose={() => (showSettings = false)} />
 {/if}
 
 {#if viewing !== null && settings && ids.length > 0}

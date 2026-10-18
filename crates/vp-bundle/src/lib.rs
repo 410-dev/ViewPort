@@ -14,6 +14,9 @@ pub const EXTENSION: &str = "vpbun";
 pub const INFO_FILE: &str = "info.json";
 pub const DB_FILE: &str = "db/library.sqlite";
 pub const SETTINGS_FILE: &str = "settings.json";
+/// Encrypted forms used by locked bundles.
+pub const DB_ENC_FILE: &str = "db/library.sqlite.enc";
+pub const SETTINGS_ENC_FILE: &str = "settings.json.enc";
 pub const THUMBS_DIR: &str = "thumbs";
 pub const STATS_DIR: &str = "stats";
 /// Media stored inside the bundle; referenced by paths relative to the bundle root.
@@ -39,18 +42,7 @@ pub type Result<T> = std::result::Result<T, BundleError>;
 
 /// Key derivation parameters for a locked bundle. Public by design: they are needed to
 /// derive the key and reveal nothing about it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct KdfParams {
-    /// Currently always `argon2id`.
-    pub algorithm: String,
-    /// Base64 salt.
-    pub salt: String,
-    pub memory_kib: u32,
-    pub iterations: u32,
-    pub parallelism: u32,
-    /// The key is derived from the password combined with a key file.
-    pub requires_keyfile: bool,
-}
+pub use vp_crypto::KdfParams;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BundleInfo {

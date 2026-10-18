@@ -26,7 +26,7 @@
 {#if ready}
   {#if bundle}
     {#key bundle.path}
-      <Library {bundle} onclose={() => (bundle = null)} />
+      <Library {bundle} onclose={() => (bundle = null)} onbundle={(b) => (bundle = b)} />
     {/key}
   {:else}
     <StartScreen onopened={(b) => (bundle = b)} />

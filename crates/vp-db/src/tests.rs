@@ -297,3 +297,25 @@ fn loop_segments() {
     lib.db.delete_loop_segment(a).unwrap();
     assert_eq!(lib.db.loop_segments(3).unwrap().len(), 1);
 }
+
+#[test]
+fn memory_round_trip() {
+    let lib = library();
+    // From a WAL-mode file database, as bundles use.
+    let dir = std::env::temp_dir().join(format!("vp-db-mem-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("lib.sqlite");
+    let _ = std::fs::remove_file(&path);
+    lib.db.backup_to(&path).unwrap();
+    let bytes = Db::open(&path).unwrap().serialize().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let copy = Db::open_memory_from(Some(&bytes), &DbOptions::default()).unwrap();
+    let reg = copy.field_registry().unwrap();
+    let q = vp_query::parse_query("태그(바다)", &reg).unwrap();
+    assert_eq!(copy.search(&q, &reg, &Db::compile_context(OCT18, 0)).unwrap(), [1, 2]);
+    let before = copy.total_changes();
+    copy.set_flag(1, "x", true).unwrap();
+    assert!(copy.total_changes() > before);
+    let empty = Db::open_memory_from(None, &DbOptions::default()).unwrap();
+    assert_eq!(empty.sources().unwrap().len(), 0);
+}

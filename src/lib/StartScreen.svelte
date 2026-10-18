@@ -8,6 +8,10 @@
   let recent = $state<string[]>([]);
   let error = $state<CmdError | null>(null);
   let pendingNewer = $state<{ path: string; found: number; supported: number } | null>(null);
+  let pendingLock = $state<{ path: string; requiresKeyfile: boolean; allowNewer: boolean } | null>(null);
+  let password = $state("");
+  let keyfile = $state("");
+  let unlockError = $state("");
   let busy = $state(false);
 
   $effect(() => {
@@ -49,8 +53,44 @@
       onopened(await api.openBundle(path, allowNewer));
     } catch (e) {
       const err = asCmdError(e);
-      if (err.code === "bundle_too_new") pendingNewer = { path, ...err.detail };
-      else error = err;
+      // An archive is extracted first; continue with the extracted folder.
+      const dir = err.detail?.path ?? path;
+      if (err.code === "bundle_too_new") pendingNewer = { path: dir, found: err.detail.found, supported: err.detail.supported };
+      else if (err.code === "locked") {
+        password = "";
+        keyfile = "";
+        unlockError = "";
+        pendingLock = { path: dir, requiresKeyfile: !!err.detail?.requires_keyfile, allowNewer };
+      } else error = err;
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function importArchive() {
+    const path = await open({
+      title: t("start.import"),
+      filters: [{ name: "ViewPort bundle archive", extensions: ["zip", "vpbun"] }],
+    });
+    if (typeof path === "string") await openPath(path);
+  }
+
+  async function pickKeyfile() {
+    const p = await open({ title: t("start.keyfile") });
+    if (typeof p === "string") keyfile = p;
+  }
+
+  async function unlock() {
+    if (!pendingLock) return;
+    busy = true;
+    unlockError = "";
+    try {
+      const b = await api.unlockBundle(pendingLock.path, password, keyfile || null, pendingLock.allowNewer);
+      pendingLock = null;
+      password = "";
+      onopened(b);
+    } catch (e) {
+      unlockError = asCmdError(e).message;
     } finally {
       busy = false;
     }
@@ -66,6 +106,7 @@
   <div class="actions">
     <button class="primary" disabled={busy} onclick={create}>{t("start.create")}</button>
     <button disabled={busy} onclick={pickAndOpen}>{t("start.open")}</button>
+    <button disabled={busy} onclick={importArchive}>{t("start.import")}</button>
   </div>
 
   {#if error}
@@ -90,6 +131,35 @@
     {/if}
   </section>
 </div>
+
+{#if pendingLock}
+  <div class="backdrop" role="presentation">
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="lock-title">
+      <h2 id="lock-title">{t("start.locked.title")}</h2>
+      <p class="path">{pendingLock.path}</p>
+      <!-- svelte-ignore a11y_autofocus -->
+      <input
+        type="password"
+        autocomplete="current-password"
+        placeholder={t("start.password")}
+        bind:value={password}
+        autofocus
+        onkeydown={(e) => e.key === "Enter" && password && unlock()}
+      />
+      {#if pendingLock.requiresKeyfile}
+        <div class="row">
+          <input readonly placeholder={t("start.keyfile")} value={keyfile} />
+          <button type="button" onclick={pickKeyfile}>{t("start.browse")}</button>
+        </div>
+      {/if}
+      {#if unlockError}<p class="error">{unlockError}</p>{/if}
+      <div class="actions end">
+        <button type="button" onclick={() => (pendingLock = null)}>{t("common.cancel")}</button>
+        <button class="primary" disabled={busy || !password} onclick={unlock}>{t("start.unlock")}</button>
+      </div>
+    </div>
+  </div>
+{/if}
 
 {#if pendingNewer}
   <div class="backdrop" role="presentation">
@@ -198,5 +268,26 @@
   .dialog p {
     margin: 0;
     line-height: 1.5;
+  }
+  .dialog input {
+    font: inherit;
+    color: inherit;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 7px 10px;
+    min-width: 0;
+  }
+  .dialog .row {
+    display: flex;
+    gap: 6px;
+  }
+  .dialog .row input {
+    flex: 1;
+  }
+  .path {
+    font-size: 12px;
+    color: var(--muted);
+    word-break: break-all;
   }
 </style>
