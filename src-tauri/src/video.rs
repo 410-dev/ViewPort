@@ -1,0 +1,217 @@
+//! Video features backed by FFmpeg: probing, frame thumbnails, and conversion to a
+//! high-compatibility copy stored in the bundle.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, Manager, Runtime};
+use vp_db::MediaLocation;
+use vp_driver::{DriverRegistry, ReaderStream};
+use vp_media::{Ffmpeg, Input, Probe};
+
+use crate::AppState;
+use crate::error::{CmdError, CmdResult};
+use crate::workspace::{Workspace, now_ms};
+
+pub const CONVERTED_DIR: &str = "converted";
+
+/// Folders searched for FFmpeg before `PATH`: next to the executable and its `ffmpeg` subfolder.
+fn default_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
+        dirs.push(dir.join("ffmpeg"));
+        dirs.push(dir.join("ffmpeg").join("bin"));
+        dirs.push(dir);
+    }
+    dirs
+}
+
+pub fn locate(explicit: &str) -> Option<Ffmpeg> {
+    Ffmpeg::locate(explicit, &default_dirs())
+}
+
+impl Workspace {
+    pub fn ffmpeg(&self) -> Option<Ffmpeg> {
+        self.ffmpeg.read().unwrap().clone()
+    }
+
+    /// Re-detects FFmpeg (after the path setting changed). Returns whether it was found.
+    pub fn relocate_ffmpeg(&self) -> bool {
+        let path = self.settings.read().unwrap().playback.ffmpeg_path.clone();
+        let found = locate(&path);
+        let available = found.is_some();
+        let was = std::mem::replace(&mut *self.ffmpeg.write().unwrap(), found).is_some();
+        if available && !was {
+            // Videos may have been recorded as having no thumbnail while FFmpeg was missing.
+            let _ = self.write_db.lock().unwrap().reset_video_thumbnails();
+        }
+        available
+    }
+
+    /// Input for FFmpeg: a direct path for local files, otherwise a stream from the driver.
+    fn media_input(&self, drivers: &DriverRegistry, loc: &MediaLocation) -> CmdResult<Input> {
+        let source =
+            self.read_db.lock().unwrap().source(loc.source_id)?.ok_or_else(|| CmdError::new("not_found", "source"))?;
+        let driver = self.driver(drivers, &source)?;
+        if let Some(p) = driver.local_path(&loc.rel_path) {
+            return Ok(Input::File(p));
+        }
+        Ok(Input::Stream(Box::new(ReaderStream::new(driver.open(&loc.rel_path)?))))
+    }
+
+    /// Probes a video and records codecs, compatibility, duration and size.
+    pub fn probe_video(&self, drivers: &DriverRegistry, id: i64) -> CmdResult<Option<Probe>> {
+        let Some(ff) = self.ffmpeg() else { return Ok(None) };
+        let Some(loc) = self.read_db.lock().unwrap().media_location(id)? else { return Ok(None) };
+        let ext = loc.rel_path.rsplit_once('.').map(|(_, e)| e.to_string()).unwrap_or_default();
+        let result = ff.probe(self.media_input(drivers, &loc)?);
+        let db = self.write_db.lock().unwrap();
+        match result {
+            Ok(p) => {
+                let compatible = p.webview_compatible(&ext);
+                db.set_probe(
+                    id,
+                    true,
+                    Some(&p.container),
+                    p.video_codec.as_deref(),
+                    p.audio_codec.as_deref(),
+                    compatible,
+                    Some((p.duration_ms, p.width, p.height)),
+                    now_ms(),
+                )?;
+                Ok(Some(p))
+            }
+            Err(_) => {
+                db.set_probe(id, false, None, None, None, false, None, now_ms())?;
+                Ok(None)
+            }
+        }
+    }
+
+    /// A JPEG frame for a video thumbnail, or `None` without FFmpeg or on failure.
+    pub fn video_frame(&self, drivers: &DriverRegistry, id: i64, loc: &MediaLocation) -> CmdResult<Option<Vec<u8>>> {
+        let Some(ff) = self.ffmpeg() else { return Ok(None) };
+        let known = self.read_db.lock().unwrap().media_brief(&[id])?.first().and_then(|b| b.duration_ms);
+        let duration = match known {
+            Some(d) => Some(d),
+            None => self.probe_video(drivers, id)?.and_then(|p| p.duration_ms),
+        };
+        let s = self.settings.read().unwrap().thumbnails.clone();
+        let at = duration.map(|d| d as f64 / 1000.0 * s.video_frame_position as f64).unwrap_or(0.0);
+        let hw = crate::recent::cached_app_settings().hardware.video_decode;
+        match ff.frame(self.media_input(drivers, loc)?, at, s.max_edge_px, hw) {
+            Ok(jpeg) => Ok(Some(jpeg)),
+            // Very short clips: the chosen position may be past the end.
+            Err(_) if at > 0.0 => Ok(ff.frame(self.media_input(drivers, loc)?, 0.0, s.max_edge_px, hw).ok()),
+            Err(_) => Ok(None),
+        }
+    }
+
+    pub fn variant_path(&self, id: i64) -> CmdResult<Option<PathBuf>> {
+        Ok(self.read_db.lock().unwrap().variant(id)?.map(|rel| self.bundle.root.join(rel)).filter(|p| p.is_file()))
+    }
+}
+
+#[derive(Clone, Serialize)]
+pub struct ConvertEvent {
+    pub id: i64,
+    pub progress: f64,
+    pub done: bool,
+    pub error: Option<String>,
+}
+
+/// Converts `ids` one after another in the background, emitting `convert-progress`.
+pub fn spawn_convert<R: Runtime>(app: &AppHandle<R>, ws: Arc<Workspace>, ids: Vec<i64>) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let drivers = app.state::<AppState>().drivers.clone();
+        for id in ids {
+            if ws.closed.load(Ordering::Relaxed) {
+                break;
+            }
+            let cancel = Arc::new(AtomicBool::new(false));
+            {
+                let mut jobs = ws.converts.lock().unwrap();
+                if jobs.contains_key(&id) {
+                    continue;
+                }
+                jobs.insert(id, cancel.clone());
+            }
+            let emit = |progress: f64, done: bool, error: Option<String>| {
+                let _ = app.emit("convert-progress", ConvertEvent { id, progress, done, error });
+            };
+            emit(0.0, false, None);
+            let result = convert_one(&ws, &drivers, id, &cancel, &mut |p| emit(p, false, None));
+            ws.converts.lock().unwrap().remove(&id);
+            match result {
+                Ok(()) => emit(1.0, true, None),
+                Err(e) => emit(0.0, true, Some(e.message)),
+            }
+        }
+    });
+}
+
+fn convert_one(
+    ws: &Workspace,
+    drivers: &DriverRegistry,
+    id: i64,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(f64),
+) -> CmdResult<()> {
+    if !ws.autosave() {
+        return Err(CmdError::new("read_only", "conversion is disabled for bundles opened without autosave"));
+    }
+    let ff = ws.ffmpeg().ok_or_else(|| CmdError::new("no_ffmpeg", "FFmpeg was not found"))?;
+    let loc = ws.read_db.lock().unwrap().media_location(id)?.ok_or_else(|| CmdError::new("not_found", "media"))?;
+    let probe = match ws.probe_video(drivers, id)? {
+        Some(p) => p,
+        None => return Err(CmdError::new("probe_failed", "could not read the video")),
+    };
+    let rel = format!("{CONVERTED_DIR}/{id}.mp4");
+    let out = ws.bundle.root.join(&rel);
+    std::fs::create_dir_all(out.parent().unwrap())?;
+    let hw = crate::recent::cached_app_settings().hardware.video_encode;
+    let mut make_input = || ws.media_input(drivers, &loc).map_err(|e| vp_media::MediaError::Failed(e.message));
+    ff.convert(&mut make_input, &out, &probe, hw, progress, cancel).map_err(|e| match e {
+        vp_media::MediaError::Cancelled => CmdError::new("cancelled", "cancelled"),
+        other => CmdError::new("convert_failed", other),
+    })?;
+    let size = std::fs::metadata(&out)?.len();
+    ws.write_db.lock().unwrap().set_variant(id, &rel, size, now_ms())?;
+    ws.cache.remove(-id);
+    Ok(())
+}
+
+/// Probes every unprobed video in the background (duration, size, codecs). One at a time.
+pub fn spawn_probe_backfill<R: Runtime>(app: &AppHandle<R>, ws: Arc<Workspace>) {
+    if ws.ffmpeg().is_none() || ws.probing.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let drivers = app.state::<AppState>().drivers.clone();
+        loop {
+            if ws.closed.load(Ordering::Relaxed) {
+                break;
+            }
+            let batch = ws.read_db.lock().unwrap().unprobed_videos(32).unwrap_or_default();
+            if batch.is_empty() {
+                break;
+            }
+            for id in batch {
+                if ws.closed.load(Ordering::Relaxed) {
+                    break;
+                }
+                if ws.probe_video(&drivers, id).is_err() {
+                    // Record the failure so the loop always advances.
+                    let _ = ws.write_db.lock().unwrap().set_probe(id, false, None, None, None, false, None, now_ms());
+                }
+            }
+            let _ = app.emit("probe-progress", ());
+        }
+        ws.probing.store(false, Ordering::Release);
+        let _ = app.emit("probe-progress", ());
+    });
+}

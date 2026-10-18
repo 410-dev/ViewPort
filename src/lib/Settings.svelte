@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, untrack } from "svelte";
-  import { api, type AppSettings, type CacheStats, type Settings } from "./api";
+  import { api, type AppSettings, type CacheStats, type FfmpegStatus, type Settings } from "./api";
   import { i18n } from "./i18n.svelte";
 
   let { settings, onclose }: { settings: Settings; onclose: () => void } = $props();
@@ -69,6 +69,18 @@
       title: { ko: "슬라이드쇼", en: "Slideshow" },
       fields: [
         { kind: "number", path: "slideshow.image_interval_secs", label: { ko: "이미지 표시 시간 (초)", en: "Image duration (s)" }, min: 0.5, step: 0.5 },
+        {
+          kind: "select",
+          path: "slideshow.video_mode",
+          label: { ko: "영상 진행 방식", en: "Videos" },
+          options: [
+            { value: "play_count", label: { ko: "지정 횟수 재생 후 다음", en: "Play N times, then next" } },
+            { value: "clip", label: { ko: "지정 지점부터 n초 재생", en: "Play n seconds from a point" } },
+          ],
+        },
+        { kind: "number", path: "slideshow.video_play_count", label: { ko: "영상 재생 횟수", en: "Plays per video" }, min: 1, step: 1 },
+        { kind: "number", path: "slideshow.clip_start_secs", label: { ko: "재생 시작 지점 (초, 음수는 끝에서부터)", en: "Clip start (s, negative = from end)" }, step: 1 },
+        { kind: "number", path: "slideshow.clip_secs", label: { ko: "재생 시간 (초)", en: "Clip length (s)" }, min: 1, step: 1 },
         { kind: "bool", path: "slideshow.wrap_around", label: { ko: "끝나면 처음부터", en: "Loop at the end" } },
       ],
     },
@@ -101,6 +113,8 @@
         { kind: "list", path: "keys.toggle_play", label: { ko: "재생/일시정지", en: "Play/pause" } },
         { kind: "list", path: "keys.toggle_fullscreen", label: { ko: "전체 화면", en: "Fullscreen" } },
         { kind: "list", path: "keys.toggle_slideshow", label: { ko: "슬라이드쇼", en: "Slideshow" } },
+        { kind: "list", path: "keys.toggle_info", label: { ko: "정보 패널", en: "Info panel" } },
+        { kind: "list", path: "keys.toggle_loops", label: { ko: "구간 반복 패널", en: "Loop segments panel" } },
         { kind: "list", path: "keys.close_viewer", label: { ko: "뷰어 닫기", en: "Close viewer" } },
       ],
     },
@@ -133,6 +147,15 @@
     keys.reduce((o, k) => (o[k] ??= {}), obj)[last] = value;
   }
   const target = (s: Section) => (s.app ? appDraft : draft);
+
+  let ffmpeg = $state<FfmpegStatus | null>(null);
+  let incompatible = $state<number[]>([]);
+  let convertStarted = $state(false);
+  const refreshVideo = () => {
+    api.ffmpegStatus().then((f) => (ffmpeg = f)).catch(() => {});
+    api.incompatibleVideos().then((ids) => (incompatible = ids)).catch(() => {});
+  };
+  refreshVideo();
 
   let stats = $state<CacheStats | null>(null);
   const timer = setInterval(() => api.cacheStats().then((s) => (stats = s)).catch(() => {}), 1000);
@@ -190,6 +213,41 @@
           </dl>
         </section>
       {/if}
+
+      <section class="stats">
+        <h3>{lbl({ ko: "영상 호환성", en: "Video compatibility" })}</h3>
+        {#if ffmpeg?.available}
+          <p class="note">FFmpeg: {ffmpeg.version ?? ffmpeg.path}</p>
+          {#if incompatible.length > 0 && draft.playback.suggest_conversion}
+            <div class="notice">
+              <span
+                >{lbl({
+                  ko: `재생이 안 될 수 있는 영상이 ${incompatible.length}개 있습니다. 고호환 포맷(MP4)으로 변환할까요?`,
+                  en: `${incompatible.length} videos may not play. Convert them to a compatible format (MP4)?`,
+                })}</span
+              >
+              <button
+                class="primary"
+                disabled={convertStarted}
+                onclick={() => {
+                  convertStarted = true;
+                  api.convertMedia(incompatible);
+                }}
+                >{convertStarted ? lbl({ ko: "변환 중…", en: "Converting…" }) : lbl({ ko: "모두 변환", en: "Convert all" })}</button
+              >
+            </div>
+          {:else}
+            <p class="note">{lbl({ ko: "변환이 필요한 영상이 없습니다.", en: "No videos need conversion." })}</p>
+          {/if}
+        {:else}
+          <p class="note warn">
+            {lbl({
+              ko: "FFmpeg를 찾을 수 없습니다. 영상 썸네일·길이 정보·변환을 쓰려면 FFmpeg를 설치하거나 아래 재생 설정에서 경로를 지정하세요.",
+              en: "FFmpeg was not found. Install it or set its path under Playback to enable video thumbnails, durations and conversion.",
+            })}
+          </p>
+        {/if}
+      </section>
 
       {#each sections as s (s.title.en)}
         {@const obj = target(s)}
@@ -367,6 +425,21 @@
   .error {
     color: var(--danger);
     margin-right: auto;
+  }
+  .notice {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    background: var(--accent-soft);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 13px;
+  }
+  .notice span {
+    flex: 1;
+  }
+  .warn {
+    color: var(--warn);
   }
   @media (max-width: 520px) {
     .row {

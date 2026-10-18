@@ -133,13 +133,13 @@ impl Default for PlaybackSettings {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "mode", rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SlideshowVideoMode {
-    /// Play the whole video `count` times, then advance.
-    PlayCount { count: u32 },
-    /// Play `duration_secs` starting at `start_secs` (negative = from the end), then advance.
-    Clip { start_secs: f64, duration_secs: f64 },
+    /// Play the whole video (or its auto-play loop segment) `count` times, then advance.
+    PlayCount,
+    /// Play `clip_secs` starting at `clip_start_secs`, then advance.
+    Clip,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -147,7 +147,12 @@ pub enum SlideshowVideoMode {
 pub struct SlideshowSettings {
     /// Time each image stays on screen.
     pub image_interval_secs: f64,
-    pub video: SlideshowVideoMode,
+    pub video_mode: SlideshowVideoMode,
+    /// Plays per video in `PlayCount` mode.
+    pub video_play_count: u32,
+    /// Start of the clip in `Clip` mode; negative counts from the end.
+    pub clip_start_secs: f64,
+    pub clip_secs: f64,
     /// Restart from the first item after the last one.
     pub wrap_around: bool,
 }
@@ -156,7 +161,10 @@ impl Default for SlideshowSettings {
     fn default() -> Self {
         Self {
             image_interval_secs: 5.0,
-            video: SlideshowVideoMode::PlayCount { count: 1 },
+            video_mode: SlideshowVideoMode::PlayCount,
+            video_play_count: 1,
+            clip_start_secs: 0.0,
+            clip_secs: 10.0,
             wrap_around: true,
         }
     }
@@ -310,6 +318,7 @@ pub struct KeyBindings {
     pub toggle_play: Vec<String>,
     pub toggle_slideshow: Vec<String>,
     pub toggle_info: Vec<String>,
+    pub toggle_loops: Vec<String>,
     pub close_viewer: Vec<String>,
 }
 
@@ -325,6 +334,7 @@ impl Default for KeyBindings {
             toggle_play: v(&[" "]),
             toggle_slideshow: v(&["s"]),
             toggle_info: v(&["i"]),
+            toggle_loops: v(&["l"]),
             close_viewer: v(&["Escape"]),
         }
     }

@@ -32,6 +32,31 @@ export interface MediaBrief {
   height: number | null;
   duration_ms: number | null;
   thumb: "ok" | "failed" | "unsupported" | null;
+  compatible: boolean | null;
+  has_variant: boolean;
+  ignore_warning: boolean;
+}
+
+export interface LoopSegment {
+  id: number;
+  media_id: number;
+  label: string;
+  start_ms: number;
+  end_ms: number;
+  autoplay: boolean;
+}
+
+export interface ConvertEvent {
+  id: number;
+  progress: number;
+  done: boolean;
+  error: string | null;
+}
+
+export interface FfmpegStatus {
+  available: boolean;
+  path: string | null;
+  version: string | null;
 }
 
 export interface SearchResult {
@@ -87,6 +112,7 @@ export interface KeyBindings {
   toggle_play: string[];
   toggle_slideshow: string[];
   toggle_info: string[];
+  toggle_loops: string[];
   close_viewer: string[];
 }
 
@@ -218,6 +244,15 @@ export const api = {
   saveQuery: (id: number | null, label: string, text: string) => invoke<number>("save_query", { id, label, text }),
   deleteSavedQuery: (id: number) => invoke<void>("delete_saved_query", { id }),
   checkQuery: (src: string, locale: string) => invoke<QueryCheck>("check_query", { src, locale }),
+  ffmpegStatus: () => invoke<FfmpegStatus>("ffmpeg_status"),
+  convertMedia: (ids: number[]) => invoke<void>("convert_media", { ids }),
+  cancelConvert: (id: number) => invoke<void>("cancel_convert", { id }),
+  incompatibleVideos: () => invoke<number[]>("incompatible_videos"),
+  setIgnoreWarning: (id: number, ignore: boolean) => invoke<void>("set_ignore_warning", { id, ignore }),
+  probeMedia: (id: number) => invoke<MediaBrief | null>("probe_media", { id }),
+  loopSegments: (id: number) => invoke<LoopSegment[]>("loop_segments", { id }),
+  saveLoopSegment: (segment: LoopSegment) => invoke<number>("save_loop_segment", { segment }),
+  deleteLoopSegment: (id: number) => invoke<void>("delete_loop_segment", { id }),
   getAppSettings: () => invoke<AppSettings>("get_app_settings"),
   saveAppSettings: (settings: AppSettings) => invoke<void>("save_app_settings", { settings }),
 };
@@ -227,6 +262,9 @@ export const onScan = (f: (e: ScanEvent) => void): Promise<UnlistenFn> =>
 
 export const onThumbs = (f: (e: ThumbsEvent) => void): Promise<UnlistenFn> =>
   listen<ThumbsEvent>("thumbs-progress", (e) => f(e.payload));
+
+export const onConvert = (f: (e: ConvertEvent) => void): Promise<UnlistenFn> =>
+  listen<ConvertEvent>("convert-progress", (e) => f(e.payload));
 
 export const thumbUrl = (id: number) => convertFileSrc(String(id), "vpthumb");
 export const mediaUrl = (id: number) => convertFileSrc(String(id), "vpmedia");

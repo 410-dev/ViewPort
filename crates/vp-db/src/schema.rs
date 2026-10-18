@@ -141,6 +141,37 @@ const MIGRATIONS: &[&str] = &[
         DELETE FROM thumbnail WHERE media_id = new.id;
     END;
     "#,
+    // v3: video probing and converted playback variants
+    r#"
+    CREATE TABLE media_probe (
+        media_id    INTEGER PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,
+        ok          INTEGER NOT NULL,       -- 0 if probing failed
+        container   TEXT,
+        video_codec TEXT,
+        audio_codec TEXT,
+        compatible  INTEGER NOT NULL,       -- plays natively in the WebView
+        probed_ms   INTEGER NOT NULL
+    );
+
+    -- High-compatibility copies made by conversion, stored inside the bundle.
+    CREATE TABLE media_variant (
+        media_id   INTEGER PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,
+        rel_path   TEXT NOT NULL,           -- relative to the bundle root
+        size       INTEGER NOT NULL,
+        created_ms INTEGER NOT NULL
+    );
+
+    CREATE TRIGGER media_content_changed_video AFTER UPDATE OF size, modified_ms ON media
+    WHEN old.size IS NOT new.size OR old.modified_ms IS NOT new.modified_ms
+    BEGIN
+        DELETE FROM media_probe WHERE media_id = new.id;
+        DELETE FROM media_variant WHERE media_id = new.id;
+    END;
+    "#,
+    // v4: a loop segment can start automatically when the video opens
+    r#"
+    ALTER TABLE loop_segment ADD COLUMN autoplay INTEGER NOT NULL DEFAULT 0;
+    "#,
 ];
 
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;

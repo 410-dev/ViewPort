@@ -106,6 +106,18 @@ pub struct MediaDetail {
     pub values: std::collections::BTreeMap<String, Vec<ExtValue>>,
 }
 
+/// A labelled A-B loop inside a video.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LoopSegment {
+    pub id: i64,
+    pub media_id: i64,
+    pub label: String,
+    pub start_ms: i64,
+    pub end_ms: i64,
+    /// Jump to and loop this segment as soon as the video opens.
+    pub autoplay: bool,
+}
+
 /// Grid tile data.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct MediaBrief {
@@ -117,6 +129,24 @@ pub struct MediaBrief {
     pub duration_ms: Option<i64>,
     /// `None` until a thumbnail has been attempted.
     pub thumb: Option<String>,
+    /// Videos: whether it plays natively (`None` = not probed yet).
+    pub compatible: Option<bool>,
+    /// A converted copy exists.
+    pub has_variant: bool,
+    /// The user chose not to be warned about playback for this file.
+    pub ignore_warning: bool,
+}
+
+/// Flag set by "add this file to the ignore list" on the playback banner.
+pub const FLAG_IGNORE_PLAYBACK_WARNING: &str = "ignore_playback_warning";
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ProbeRow {
+    pub ok: bool,
+    pub container: Option<String>,
+    pub video_codec: Option<String>,
+    pub audio_codec: Option<String>,
+    pub compatible: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -462,8 +492,13 @@ impl Db {
         for chunk in ids.chunks(500) {
             let marks = vec!["?"; chunk.len()].join(",");
             let sql = format!(
-                "SELECT m.id, m.name, m.kind, m.width, m.height, m.duration_ms, t.status
-                 FROM media m LEFT JOIN thumbnail t ON t.media_id = m.id WHERE m.id IN ({marks})"
+                "SELECT m.id, m.name, m.kind, m.width, m.height, m.duration_ms, t.status,
+                        p.compatible, v.media_id IS NOT NULL,
+                        EXISTS (SELECT 1 FROM media_flag f WHERE f.media_id = m.id AND f.flag = '{FLAG_IGNORE_PLAYBACK_WARNING}')
+                 FROM media m LEFT JOIN thumbnail t ON t.media_id = m.id
+                 LEFT JOIN media_probe p ON p.media_id = m.id AND p.ok
+                 LEFT JOIN media_variant v ON v.media_id = m.id
+                 WHERE m.id IN ({marks})"
             );
             let mut stmt = self.conn.prepare(&sql)?;
             let rows = stmt.query_map(rusqlite::params_from_iter(chunk), |r| {
@@ -475,6 +510,9 @@ impl Db {
                     height: r.get(4)?,
                     duration_ms: r.get(5)?,
                     thumb: r.get(6)?,
+                    compatible: r.get(7)?,
+                    has_variant: r.get(8)?,
+                    ignore_warning: r.get(9)?,
                 })
             })?;
             for row in rows {
@@ -805,6 +843,159 @@ impl Db {
 
     pub fn delete_saved_query(&self, id: i64) -> Result<()> {
         self.conn.execute("DELETE FROM saved_query WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// Videos that have not been probed yet.
+    pub fn unprobed_videos(&self, limit: usize) -> Result<Vec<i64>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT m.id FROM media m JOIN source src ON src.id = m.source_id
+             LEFT JOIN media_probe p ON p.media_id = m.id
+             WHERE m.kind = 'video' AND p.media_id IS NULL AND NOT m.missing AND src.enabled
+             ORDER BY m.id LIMIT ?1",
+        )?;
+        let ids = stmt.query_map([limit as i64], |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
+        Ok(ids)
+    }
+
+    /// Stores a probe result; on success also fills the item's duration and dimensions.
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_probe(
+        &self,
+        media_id: i64,
+        ok: bool,
+        container: Option<&str>,
+        video_codec: Option<&str>,
+        audio_codec: Option<&str>,
+        compatible: bool,
+        meta: Option<(Option<i64>, Option<u32>, Option<u32>)>,
+        now_ms: i64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO media_probe (media_id, ok, container, video_codec, audio_codec, compatible, probed_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![media_id, ok, container, video_codec, audio_codec, compatible, now_ms],
+        )?;
+        if let Some((duration, w, h)) = meta {
+            self.conn.execute(
+                "UPDATE media SET duration_ms = COALESCE(?2, duration_ms), width = COALESCE(?3, width),
+                                  height = COALESCE(?4, height) WHERE id = ?1",
+                params![media_id, duration, w, h],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn probe_info(&self, media_id: i64) -> Result<Option<ProbeRow>> {
+        Ok(self
+            .conn
+            .prepare_cached("SELECT ok, container, video_codec, audio_codec, compatible FROM media_probe WHERE media_id = ?1")?
+            .query_row([media_id], |r| {
+                Ok(ProbeRow {
+                    ok: r.get(0)?,
+                    container: r.get(1)?,
+                    video_codec: r.get(2)?,
+                    audio_codec: r.get(3)?,
+                    compatible: r.get(4)?,
+                })
+            })
+            .optional()?)
+    }
+
+    pub fn variant(&self, media_id: i64) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .prepare_cached("SELECT rel_path FROM media_variant WHERE media_id = ?1")?
+            .query_row([media_id], |r| r.get(0))
+            .optional()?)
+    }
+
+    pub fn set_variant(&self, media_id: i64, rel_path: &str, size: u64, now_ms: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO media_variant (media_id, rel_path, size, created_ms) VALUES (?1, ?2, ?3, ?4)",
+            params![media_id, rel_path, size as i64, now_ms],
+        )?;
+        Ok(())
+    }
+
+    /// Probed videos that will not play natively, have no converted copy and are not ignored.
+    pub fn incompatible_videos(&self) -> Result<Vec<i64>> {
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT m.id FROM media m JOIN media_probe p ON p.media_id = m.id AND p.ok AND NOT p.compatible
+             JOIN source src ON src.id = m.source_id
+             LEFT JOIN media_variant v ON v.media_id = m.id
+             WHERE v.media_id IS NULL AND NOT m.missing AND src.enabled
+               AND NOT EXISTS (SELECT 1 FROM media_flag f WHERE f.media_id = m.id AND f.flag = '{FLAG_IGNORE_PLAYBACK_WARNING}')
+             ORDER BY m.id"
+        ))?;
+        let ids = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
+        Ok(ids)
+    }
+
+    pub fn set_flag(&self, media_id: i64, flag: &str, on: bool) -> Result<()> {
+        if on {
+            self.conn.execute("INSERT OR IGNORE INTO media_flag (media_id, flag) VALUES (?1, ?2)", params![media_id, flag])?;
+        } else {
+            self.conn.execute("DELETE FROM media_flag WHERE media_id = ?1 AND flag = ?2", params![media_id, flag])?;
+        }
+        Ok(())
+    }
+
+    /// Forgets failed or unsupported video thumbnails so they are retried (e.g. once FFmpeg is found).
+    pub fn reset_video_thumbnails(&self) -> Result<usize> {
+        Ok(self.conn.execute(
+            "DELETE FROM thumbnail WHERE status <> 'ok' AND media_id IN (SELECT id FROM media WHERE kind = 'video')",
+            [],
+        )?)
+    }
+
+    pub fn loop_segments(&self, media_id: i64) -> Result<Vec<LoopSegment>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, media_id, label, start_ms, end_ms, autoplay FROM loop_segment
+             WHERE media_id = ?1 ORDER BY sort_index, start_ms, id",
+        )?;
+        let rows = stmt.query_map([media_id], |r| {
+            Ok(LoopSegment {
+                id: r.get(0)?,
+                media_id: r.get(1)?,
+                label: r.get(2)?,
+                start_ms: r.get(3)?,
+                end_ms: r.get(4)?,
+                autoplay: r.get(5)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Creates (`seg.id == 0`) or updates a segment and returns its id. Only one segment per
+    /// video can auto-play; setting it clears the others.
+    pub fn save_loop_segment(&self, seg: &LoopSegment) -> Result<i64> {
+        if seg.end_ms <= seg.start_ms || seg.start_ms < 0 {
+            return Err(DbError::InvalidValue("loop segment".into()));
+        }
+        self.batch(|db| {
+            if seg.autoplay {
+                db.conn.execute("UPDATE loop_segment SET autoplay = 0 WHERE media_id = ?1", [seg.media_id])?;
+            }
+            let id = if seg.id == 0 {
+                db.conn.execute(
+                    "INSERT INTO loop_segment (media_id, label, start_ms, end_ms, autoplay) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![seg.media_id, seg.label, seg.start_ms, seg.end_ms, seg.autoplay],
+                )?;
+                db.conn.last_insert_rowid()
+            } else {
+                db.conn.execute(
+                    "UPDATE loop_segment SET label = ?2, start_ms = ?3, end_ms = ?4, autoplay = ?5 WHERE id = ?1",
+                    params![seg.id, seg.label, seg.start_ms, seg.end_ms, seg.autoplay],
+                )?;
+                seg.id
+            };
+            Ok(id)
+        })
+    }
+
+    pub fn delete_loop_segment(&self, id: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM loop_segment WHERE id = ?1", [id])?;
         Ok(())
     }
 

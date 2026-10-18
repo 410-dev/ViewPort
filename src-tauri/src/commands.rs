@@ -29,6 +29,9 @@ fn install(app: &AppHandle, state: &AppState, ws: Workspace) -> CmdResult<Bundle
     let summary = ws.summary();
     let ws = Arc::new(ws);
     ws.start_background(state.drivers.clone());
+    if ws.autosave() {
+        crate::video::spawn_probe_backfill(app, ws.clone());
+    }
     let old = state.workspace.write().unwrap().replace(ws);
     if let Some(old) = old {
         old.closed.store(true, Ordering::Relaxed);
@@ -195,6 +198,9 @@ fn start_scan(app: &AppHandle, ws: Arc<Workspace>, source: SourceRow) {
             Err(e) => emit(&empty, true, Some(e.clone())),
         }
         ws.scans.lock().unwrap().remove(&source.id);
+        if result.is_ok() && ws.autosave() {
+            crate::video::spawn_probe_backfill(&app, ws.clone());
+        }
         if result.is_ok() && settings.thumbnails_after_scan && ws.autosave() {
             crate::thumbs::spawn_backfill(app.clone(), ws.clone());
         }
@@ -491,4 +497,84 @@ pub fn save_query(state: State<'_, AppState>, id: Option<i64>, label: String, te
 #[tauri::command]
 pub fn delete_saved_query(state: State<'_, AppState>, id: i64) -> CmdResult<()> {
     Ok(workspace(&state)?.write_db.lock().unwrap().delete_saved_query(id)?)
+}
+
+// ---------------------------------------------------------------- video pipeline
+
+#[derive(Serialize)]
+pub struct FfmpegStatus {
+    pub available: bool,
+    pub path: Option<String>,
+    pub version: Option<String>,
+}
+
+#[tauri::command]
+pub async fn ffmpeg_status(app: AppHandle) -> CmdResult<FfmpegStatus> {
+    let ws = workspace(&app.state::<AppState>())?;
+    blocking(move || {
+        let ff = ws.ffmpeg();
+        Ok(FfmpegStatus {
+            available: ff.is_some(),
+            path: ff.as_ref().map(|f| f.ffmpeg.display().to_string()),
+            version: ff.and_then(|f| f.version()),
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+pub fn convert_media(app: AppHandle, state: State<'_, AppState>, ids: Vec<i64>) -> CmdResult<()> {
+    crate::video::spawn_convert(&app, workspace(&state)?, ids);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn cancel_convert(state: State<'_, AppState>, id: i64) -> CmdResult<()> {
+    if let Some(c) = workspace(&state)?.converts.lock().unwrap().get(&id) {
+        c.store(true, Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+/// Probed videos that need conversion to play, for the settings notice.
+#[tauri::command]
+pub fn incompatible_videos(state: State<'_, AppState>) -> CmdResult<Vec<i64>> {
+    Ok(workspace(&state)?.read_db.lock().unwrap().incompatible_videos()?)
+}
+
+/// "Add this file to the ignore list": stop suggesting conversion for it.
+#[tauri::command]
+pub fn set_ignore_warning(state: State<'_, AppState>, id: i64, ignore: bool) -> CmdResult<()> {
+    let ws = workspace(&state)?;
+    ws.write_db.lock().unwrap().set_flag(id, vp_db::FLAG_IGNORE_PLAYBACK_WARNING, ignore)?;
+    Ok(())
+}
+
+/// Probes one video now (the viewer calls this when it opens an unprobed video).
+#[tauri::command]
+pub async fn probe_media(app: AppHandle, id: i64) -> CmdResult<Option<vp_db::MediaBrief>> {
+    let ws = workspace(&app.state::<AppState>())?;
+    let drivers = app.state::<AppState>().drivers.clone();
+    blocking(move || {
+        ws.probe_video(&drivers, id)?;
+        Ok(ws.read_db.lock().unwrap().media_brief(&[id])?.pop())
+    })
+    .await
+}
+
+// ---------------------------------------------------------------- loop segments
+
+#[tauri::command]
+pub fn loop_segments(state: State<'_, AppState>, id: i64) -> CmdResult<Vec<vp_db::LoopSegment>> {
+    Ok(workspace(&state)?.read_db.lock().unwrap().loop_segments(id)?)
+}
+
+#[tauri::command]
+pub fn save_loop_segment(state: State<'_, AppState>, segment: vp_db::LoopSegment) -> CmdResult<i64> {
+    Ok(workspace(&state)?.write_db.lock().unwrap().save_loop_segment(&segment)?)
+}
+
+#[tauri::command]
+pub fn delete_loop_segment(state: State<'_, AppState>, id: i64) -> CmdResult<()> {
+    Ok(workspace(&state)?.write_db.lock().unwrap().delete_loop_segment(id)?)
 }

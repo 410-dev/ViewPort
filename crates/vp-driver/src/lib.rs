@@ -95,6 +95,12 @@ pub trait MediaDriver: Send + Sync {
     fn stat(&self, path: &str) -> Result<Entry>;
     fn open(&self, path: &str) -> Result<Box<dyn MediaReader>>;
 
+    /// A local file path for `path`, if the driver is backed by the local file system.
+    /// Lets tools such as FFmpeg seek directly instead of reading a stream.
+    fn local_path(&self, _path: &str) -> Option<std::path::PathBuf> {
+        None
+    }
+
     fn write(&self, _path: &str, _data: &[u8]) -> Result<()> {
         Err(DriverError::Unsupported(self.kind()))
     }
@@ -169,6 +175,26 @@ impl DriverRegistry {
 
     pub fn kinds(&self) -> impl Iterator<Item = &'static str> + '_ {
         self.factories.keys().copied()
+    }
+}
+
+/// Sequential `Read` over a [`MediaReader`], for consumers that want a stream.
+pub struct ReaderStream {
+    reader: Box<dyn MediaReader>,
+    pos: u64,
+}
+
+impl ReaderStream {
+    pub fn new(reader: Box<dyn MediaReader>) -> Self {
+        Self { reader, pos: 0 }
+    }
+}
+
+impl std::io::Read for ReaderStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.reader.read_at(self.pos, buf)?;
+        self.pos += n as u64;
+        Ok(n)
     }
 }
 

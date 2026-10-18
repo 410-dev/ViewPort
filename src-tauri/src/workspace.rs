@@ -48,6 +48,11 @@ pub struct Workspace {
     pub closed: Arc<AtomicBool>,
     /// In manual-save mode the database is a temporary working copy; see [`Workspace::save`].
     working_db: Option<PathBuf>,
+    pub ffmpeg: RwLock<Option<vp_media::Ffmpeg>>,
+    /// Running conversions by media id, with their cancel flags.
+    pub converts: Mutex<HashMap<i64, Arc<AtomicBool>>>,
+    /// A video probe backfill is running.
+    pub probing: AtomicBool,
 }
 
 impl Workspace {
@@ -96,6 +101,11 @@ impl Workspace {
             0 => std::thread::available_parallelism().map(|n| (n.get() / 2).max(1)).unwrap_or(2),
             n => n as usize,
         };
+        let ffmpeg = crate::video::locate(&settings.playback.ffmpeg_path);
+        if ffmpeg.is_some() && !manual {
+            // Retry video thumbnails that failed while FFmpeg was unavailable.
+            write_db.reset_video_thumbnails()?;
+        }
         let c = &settings.cache;
         let cache = MediaCache::new(c.memory_bytes, c.chunk_bytes, c.max_item_bytes);
         let prefetch_permits = Arc::new(tokio::sync::Semaphore::new(c.prefetch_workers.max(1) as usize));
@@ -111,6 +121,9 @@ impl Workspace {
             prefetch_permits,
             closed: Arc::new(AtomicBool::new(false)),
             working_db,
+            ffmpeg: RwLock::new(ffmpeg),
+            converts: Mutex::default(),
+            probing: AtomicBool::new(false),
             settings: RwLock::new(settings),
         })
     }
@@ -207,7 +220,11 @@ impl Workspace {
             let path = self.bundle.path(vp_bundle::SETTINGS_FILE);
             vp_driver::local::write_atomic(&path, &serde_json::to_vec_pretty(&settings)?)?;
         }
+        let ffmpeg_changed = self.settings.read().unwrap().playback.ffmpeg_path != settings.playback.ffmpeg_path;
         *self.settings.write().unwrap() = settings;
+        if ffmpeg_changed {
+            self.relocate_ffmpeg();
+        }
         Ok(())
     }
 
@@ -265,8 +282,30 @@ impl Workspace {
             }
             Ok(())
         };
-        // Video frames need the media pipeline, which is not in place yet.
-        if loc.kind == MediaKind::Video || loc.size > settings.max_source_bytes {
+        if loc.kind == MediaKind::Video {
+            return match self.video_frame(registry, media_id, &loc)? {
+                Some(jpeg) if self.autosave() => {
+                    let (pack, offset) = self.thumbs.append(&jpeg)?;
+                    let row = ThumbRow {
+                        status: ThumbStatus::Ok,
+                        pack,
+                        offset,
+                        len: jpeg.len() as u32,
+                        width: 0,
+                        height: 0,
+                        mime: "image/jpeg".into(),
+                    };
+                    record(row)?;
+                    Ok(Some((jpeg, "image/jpeg".into())))
+                }
+                Some(jpeg) => Ok(Some((jpeg, "image/jpeg".into()))),
+                None => {
+                    record(ThumbRow::without_data(ThumbStatus::Unsupported))?;
+                    Ok(None)
+                }
+            };
+        }
+        if loc.size > settings.max_source_bytes {
             record(ThumbRow::without_data(ThumbStatus::Unsupported))?;
             return Ok(None);
         }

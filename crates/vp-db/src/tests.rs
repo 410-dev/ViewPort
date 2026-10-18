@@ -252,3 +252,48 @@ fn saved_queries_round_trip() {
     lib.db.delete_saved_query(other).unwrap();
     assert_eq!(lib.db.saved_queries().unwrap().len(), 1);
 }
+
+#[test]
+fn video_probe_variant_and_flags() {
+    let lib = library();
+    assert_eq!(lib.db.unprobed_videos(10).unwrap(), [3, 4, 5]);
+    lib.db.set_probe(3, true, Some("matroska,webm"), Some("hevc"), None, false, Some((Some(8000), Some(960), Some(540))), 1).unwrap();
+    lib.db.set_probe(5, true, Some("mov,mp4"), Some("h264"), Some("aac"), true, None, 1).unwrap();
+    lib.db.set_probe(4, false, None, None, None, false, None, 1).unwrap();
+    assert!(lib.db.unprobed_videos(10).unwrap().is_empty());
+    assert_eq!(lib.db.incompatible_videos().unwrap(), [3], "failed probes are not reported as incompatible");
+    let b = &lib.db.media_brief(&[3]).unwrap()[0];
+    assert_eq!((b.compatible, b.has_variant, b.ignore_warning, b.duration_ms), (Some(false), false, false, Some(8000)));
+
+    lib.db.set_flag(3, FLAG_IGNORE_PLAYBACK_WARNING, true).unwrap();
+    assert!(lib.db.incompatible_videos().unwrap().is_empty());
+    assert!(lib.db.media_brief(&[3]).unwrap()[0].ignore_warning);
+    lib.db.set_flag(3, FLAG_IGNORE_PLAYBACK_WARNING, false).unwrap();
+
+    lib.db.set_variant(3, "converted/3.mp4", 100, 2).unwrap();
+    assert_eq!(lib.db.variant(3).unwrap().as_deref(), Some("converted/3.mp4"));
+    assert!(lib.db.incompatible_videos().unwrap().is_empty());
+
+    // A changed file drops its probe and variant.
+    lib.db.conn().execute("UPDATE media SET size = size + 1 WHERE id = 3", []).unwrap();
+    assert!(lib.db.variant(3).unwrap().is_none());
+    assert_eq!(lib.db.unprobed_videos(10).unwrap(), [3]);
+}
+
+#[test]
+fn loop_segments() {
+    let lib = library();
+    let mut seg = LoopSegment { id: 0, media_id: 3, label: "인트로".into(), start_ms: 0, end_ms: 5000, autoplay: true };
+    let a = lib.db.save_loop_segment(&seg).unwrap();
+    seg.label = "후렴".into();
+    seg.start_ms = 20_000;
+    seg.end_ms = 30_000;
+    let b = lib.db.save_loop_segment(&seg).unwrap();
+    let segs = lib.db.loop_segments(3).unwrap();
+    assert_eq!(segs.iter().map(|s| (s.id, s.autoplay)).collect::<Vec<_>>(), [(a, false), (b, true)], "one auto-play");
+    seg.id = b;
+    seg.end_ms = 10_000;
+    assert!(lib.db.save_loop_segment(&seg).is_err(), "end before start");
+    lib.db.delete_loop_segment(a).unwrap();
+    assert_eq!(lib.db.loop_segments(3).unwrap().len(), 1);
+}

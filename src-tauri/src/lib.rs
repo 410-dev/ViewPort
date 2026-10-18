@@ -3,6 +3,7 @@ mod error;
 mod media;
 mod recent;
 mod thumbs;
+mod video;
 mod workspace;
 
 use std::sync::atomic::AtomicBool;
@@ -68,6 +69,15 @@ pub fn run() {
             commands::list_saved_queries,
             commands::save_query,
             commands::delete_saved_query,
+            commands::ffmpeg_status,
+            commands::convert_media,
+            commands::cancel_convert,
+            commands::incompatible_videos,
+            commands::set_ignore_warning,
+            commands::probe_media,
+            commands::loop_segments,
+            commands::save_loop_segment,
+            commands::delete_loop_segment,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

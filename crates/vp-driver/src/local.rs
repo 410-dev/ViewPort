@@ -105,6 +105,10 @@ impl MediaDriver for LocalDriver {
         Ok(Box::new(LocalReader { file, len }))
     }
 
+    fn local_path(&self, path: &str) -> Option<PathBuf> {
+        self.resolve(path).ok()
+    }
+
     fn write(&self, path: &str, data: &[u8]) -> Result<()> {
         let full = self.resolve(path)?;
         if let Some(parent) = full.parent() {

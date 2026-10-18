@@ -4329,6 +4329,7 @@ dependencies = [
  "vp-core",
  "vp-db",
  "vp-driver",
+ "vp-media",
  "vp-query",
  "vp-scan",
  "vp-thumb",
@@ -4378,6 +4379,15 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "vp-media"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
