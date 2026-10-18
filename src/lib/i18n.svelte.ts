@@ -1,108 +1,42 @@
-const ko = {
-  "app.tagline": "미디어 라이브러리",
-  "start.create": "새 번들 만들기",
-  "start.open": "번들 열기",
-  "start.recent": "최근 번들",
-  "start.import": "압축 번들 가져오기",
-  "start.locked.title": "잠긴 번들",
-  "start.password": "비밀번호",
-  "start.keyfile": "키 파일",
-  "start.browse": "찾아보기",
-  "start.unlock": "잠금 해제",
-  "start.none": "최근에 연 번들이 없습니다",
-  "start.newName": "새 라이브러리",
-  "start.tooNew.title": "더 새로운 버전의 번들",
-  "start.tooNew.body":
-    "이 번들은 형식 v{found}로 저장되어 있지만 이 앱은 v{supported}까지만 지원합니다. 열면 자동 저장이 꺼지고, 일부 데이터가 보이지 않을 수 있습니다.",
-  "start.tooNew.confirm": "읽기 전용으로 열기",
-  "common.cancel": "취소",
-  "lib.sources": "소스",
-  "lib.addFolder": "폴더 추가",
-  "lib.addNetwork": "네트워크 소스",
-  "lib.all": "전체",
-  "lib.rescan": "다시 스캔",
-  "lib.remove": "제거",
-  "lib.removeConfirm": "'{name}' 소스를 제거할까요? 태그와 통계도 함께 삭제됩니다.",
-  "lib.close": "번들 닫기",
-  "lib.save": "번들에 저장",
-  "lib.settings": "설정",
-  "lib.info": "정보 패널",
-  "lib.recursive": "하위 폴더 포함",
-  "lib.saved": "저장된 검색",
-  "lib.noSaved": "고급 편집기에서 검색을 저장할 수 있습니다",
-  "lib.deleteSaved": "저장된 검색 '{name}'을(를) 삭제할까요?",
-  "lib.edit": "편집",
-  "lib.modeQuick": "빠른 검색",
-  "lib.modeBasic": "기본 검색",
-  "lib.modeEditor": "고급 편집기",
-  "lib.manualSave": "자동 저장 꺼짐 (상위 버전 번들)",
-  "lib.searchPlaceholder": "고급 검색 — 예: 유형(이미지) 그리고 내림차순 정렬(생성 날짜)",
-  "lib.count": "{n}개",
-  "lib.scanning": "스캔 중… 파일 {files}개",
-  "lib.scanDone": "스캔 완료: 추가 {added}, 변경 {updated}, 누락 {missing}",
-  "lib.thumbs": "썸네일 생성 중… {done}",
-  "lib.empty": "폴더를 추가하면 미디어가 여기에 표시됩니다",
-  "lib.noResults": "검색 결과가 없습니다",
-  "lib.tileSize": "타일 크기",
-  "err.query": "쿼리 오류",
-};
+/**
+ * UI strings. Each language is one dictionary file in `./i18n/`; to add a language,
+ * add a file that satisfies `Dict` and register it in `LOCALES`. Missing entries fall
+ * back to English. Query keywords are localized by the backend (`vp_query::lang`).
+ */
+import en from "./i18n/en";
+import ko, { type Key } from "./i18n/ko";
 
-type Key = keyof typeof ko;
+export type { Key };
+export type Dict = Record<Key, string>;
 
-const en: Record<Key, string> = {
-  "app.tagline": "Media library",
-  "start.create": "New bundle",
-  "start.open": "Open bundle",
-  "start.recent": "Recent bundles",
-  "start.import": "Import archive",
-  "start.locked.title": "Locked bundle",
-  "start.password": "Password",
-  "start.keyfile": "Key file",
-  "start.browse": "Browse",
-  "start.unlock": "Unlock",
-  "start.none": "No recently opened bundles",
-  "start.newName": "New Library",
-  "start.tooNew.title": "Bundle from a newer version",
-  "start.tooNew.body":
-    "This bundle uses format v{found}, but this app supports up to v{supported}. If you open it, autosave is turned off and some data may not be shown.",
-  "start.tooNew.confirm": "Open without autosave",
-  "common.cancel": "Cancel",
-  "lib.sources": "Sources",
-  "lib.addFolder": "Add folder",
-  "lib.addNetwork": "Network source",
-  "lib.all": "All",
-  "lib.rescan": "Rescan",
-  "lib.remove": "Remove",
-  "lib.removeConfirm": "Remove source '{name}'? Its tags and statistics are deleted too.",
-  "lib.close": "Close bundle",
-  "lib.save": "Save to bundle",
-  "lib.settings": "Settings",
-  "lib.info": "Info panel",
-  "lib.recursive": "Include subfolders",
-  "lib.saved": "Saved searches",
-  "lib.noSaved": "Save searches from the advanced editor",
-  "lib.deleteSaved": "Delete saved search '{name}'?",
-  "lib.edit": "Edit",
-  "lib.modeQuick": "Quick",
-  "lib.modeBasic": "Basic",
-  "lib.modeEditor": "Advanced",
-  "lib.manualSave": "Autosave off (newer bundle)",
-  "lib.searchPlaceholder": "Advanced search — e.g. type(image) AND sort desc(created)",
-  "lib.count": "{n} items",
-  "lib.scanning": "Scanning… {files} files",
-  "lib.scanDone": "Scan done: {added} added, {updated} changed, {missing} missing",
-  "lib.thumbs": "Generating thumbnails… {done}",
-  "lib.empty": "Add a folder to see your media here",
-  "lib.noResults": "No results",
-  "lib.tileSize": "Tile size",
-  "err.query": "Query error",
-};
+export const LOCALES: { code: string; name: string; dict: Dict }[] = [
+  { code: "ko", name: "한국어", dict: ko },
+  { code: "en", name: "English", dict: en },
+];
 
-const tables: Record<string, Record<Key, string>> = { ko, en };
+/** Languages the query engine understands. */
+export const QUERY_LOCALES = ["ko", "en"];
 
-export const i18n = $state({ locale: navigator.language.startsWith("ko") ? "ko" : "en" });
+function systemLocale(): string {
+  const lang = (typeof navigator !== "undefined" ? navigator.language : "en").toLowerCase();
+  return LOCALES.find((l) => lang.startsWith(l.code))?.code ?? "en";
+}
+
+export function resolveLocale(code: string): string {
+  return !code || code === "auto" ? systemLocale() : LOCALES.some((l) => l.code === code) ? code : "en";
+}
+
+export const i18n = $state({ locale: systemLocale(), queryLocale: systemLocale() });
 
 export function t(key: Key, vars: Record<string, string | number | null | undefined> = {}): string {
-  const s = (tables[i18n.locale] ?? en)[key] ?? key;
+  const dict = LOCALES.find((l) => l.code === i18n.locale)?.dict ?? en;
+  const s = dict[key] ?? en[key] ?? key;
   return s.replace(/\{(\w+)\}/g, (_, k) => String(vars[k] ?? ""));
+}
+
+/** Like `t`, for keys built at runtime (e.g. `task.kind.${kind}`); unknown keys give `fallback`. */
+export function tx(key: string, fallback = "", vars: Record<string, string | number> = {}): string {
+  const dict = (LOCALES.find((l) => l.code === i18n.locale)?.dict ?? en) as Record<string, string>;
+  const s = dict[key] ?? (en as Record<string, string>)[key];
+  return s == null ? fallback : s.replace(/\{(\w+)\}/g, (_, k) => String(vars[k] ?? ""));
 }

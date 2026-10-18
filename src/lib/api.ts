@@ -36,6 +36,11 @@ export interface MediaBrief {
   compatible: boolean | null;
   has_variant: boolean;
   ignore_warning: boolean;
+  size: number;
+  created_ms: number | null;
+  modified_ms: number | null;
+  folder: string;
+  ext: string;
 }
 
 export interface LoopSegment {
@@ -86,6 +91,7 @@ export interface ScanEvent {
   updated: number;
   unchanged: number;
   missing: number | null;
+  current: string;
   errors: string[];
   done: boolean;
   error: string | null;
@@ -128,6 +134,12 @@ export interface KeyBindings {
   toggle_info: string[];
   toggle_loops: string[];
   close_viewer: string[];
+  focus_search: string[];
+  query_editor: string[];
+  toggle_panel: string[];
+  view_grid: string[];
+  view_list: string[];
+  view_tree: string[];
 }
 
 export interface Settings {
@@ -146,9 +158,61 @@ export interface Settings {
   [section: string]: any;
 }
 
+export interface UiSettings {
+  locale: string;
+  query_locale: string;
+  theme: "dark" | "light" | "system";
+  accent: string;
+  font_ui: string;
+  font_editor: string;
+  font_size: number;
+  view_mode: "grid" | "list" | "tree";
+  recursive: boolean;
+  panel_mode: "preview" | "both" | "info";
+  panel_visible: boolean;
+  panel_width: number;
+  sidebar_width: number;
+  preview_split: number;
+  row_px: number;
+  columns: string[];
+  preview_autoplay: boolean;
+  preview_delay_ms: number;
+  preview_max_bytes: number;
+  reduce_motion: boolean;
+  search_debounce_ms: number;
+}
+
 export interface AppSettings {
-  hardware: { gpu: boolean; video_decode: boolean; video_encode: boolean };
+  hardware: {
+    gpu: boolean;
+    gpu_rasterization: boolean;
+    zero_copy: boolean;
+    video_decode: boolean;
+    ffmpeg_hwaccel: string;
+    video_encode: boolean;
+    encoders: string[];
+  };
   reopen_last_bundle: boolean;
+  ui: UiSettings;
+  progress: { emit_interval_ms: number; slow_read_ms: number; read_piece_bytes: number; keep_finished_secs: number };
+}
+
+export type TaskState = "running" | "done" | "failed" | "cancelled";
+
+export interface TaskInfo {
+  id: number;
+  kind: string;
+  label: string;
+  detail: string;
+  media_id: number | null;
+  done: number;
+  total: number | null;
+  unit: "items" | "bytes" | "permille";
+  state: TaskState;
+  error: string | null;
+  cancellable: boolean;
+  started_ms: number;
+  rate: number;
 }
 
 export type FieldType =
@@ -282,7 +346,11 @@ export const api = {
   removeLock: () => invoke<BundleSummary>("remove_lock"),
   getAppSettings: () => invoke<AppSettings>("get_app_settings"),
   saveAppSettings: (settings: AppSettings) => invoke<void>("save_app_settings", { settings }),
+  listTasks: () => invoke<TaskInfo[]>("list_tasks"),
+  cancelTask: (id: number) => invoke<boolean>("cancel_task", { id }),
 };
+
+export const onTask = (f: (e: TaskInfo) => void): Promise<UnlistenFn> => listen<TaskInfo>("task", (e) => f(e.payload));
 
 export const onScan = (f: (e: ScanEvent) => void): Promise<UnlistenFn> =>
   listen<ScanEvent>("scan-progress", (e) => f(e.payload));

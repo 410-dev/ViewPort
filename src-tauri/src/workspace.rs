@@ -226,8 +226,8 @@ impl Workspace {
                 let total_bytes = ws.cache.capacity_bytes();
                 let task = crate::tasks::begin("reserve", "", crate::tasks::Unit::Bytes, Some(total_bytes));
                 ws.cache.preallocate_with(&ws.closed, &mut |done, total| {
-                    if total > 0 {
-                        task.set(total_bytes / total * done, None);
+                    if let Some(per_chunk) = total_bytes.checked_div(total) {
+                        task.set(per_chunk * done, None);
                     }
                 });
             }
@@ -265,7 +265,7 @@ impl Workspace {
         }
         let reader = self.open_media(drivers, &loc)?;
         let len = reader.len();
-        let mut tracker = crate::tasks::ReadTracker::new(file_name(&loc.rel_path), len);
+        let mut tracker = crate::tasks::ReadTracker::new(file_name(&loc.rel_path), len, Some(id));
         let result = self.cache.insert_with(id, len, |offset, buf| {
             let n = reader.read_full_at(offset, buf)?;
             if n < buf.len() {
@@ -496,7 +496,7 @@ impl Workspace {
         }
         let _generating = GENERATING.guard();
         let reader = self.open_media(registry, &loc)?;
-        let bytes = read_tracked(reader.as_ref(), &loc.rel_path)?;
+        let bytes = read_tracked(reader.as_ref(), &loc.rel_path, Some(media_id))?;
 
         match vp_thumb::generate(&bytes, &settings) {
             Ok(t) if !self.autosave() => Ok(Some((t.data, t.mime.into()))),
@@ -550,11 +550,11 @@ pub fn file_name(rel_path: &str) -> String {
 }
 
 /// Reads a whole file in pieces of `progress.read_piece_bytes`, reporting slow reads.
-pub fn read_tracked(reader: &dyn MediaReader, rel_path: &str) -> CmdResult<Vec<u8>> {
+pub fn read_tracked(reader: &dyn MediaReader, rel_path: &str, media_id: Option<i64>) -> CmdResult<Vec<u8>> {
     let len = reader.len() as usize;
     let piece = (crate::recent::cached_app_settings().progress.read_piece_bytes as usize).max(64 * 1024);
     let mut bytes = vec![0u8; len];
-    let mut tracker = crate::tasks::ReadTracker::new(file_name(rel_path), len as u64);
+    let mut tracker = crate::tasks::ReadTracker::new(file_name(rel_path), len as u64, media_id);
     let mut off = 0usize;
     while off < len {
         let end = (off + piece).min(len);

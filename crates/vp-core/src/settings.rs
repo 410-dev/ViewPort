@@ -318,6 +318,8 @@ pub struct UiSettings {
     pub font_size: u32,
     /// Main view: "grid", "list" or "tree".
     pub view_mode: String,
+    /// Show files of subfolders too when browsing a folder (flat view).
+    pub recursive: bool,
     /// Right panel content: "preview", "both" or "info".
     pub panel_mode: String,
     pub panel_visible: bool,
@@ -339,6 +341,8 @@ pub struct UiSettings {
     pub preview_max_bytes: u64,
     /// Turn off UI animations.
     pub reduce_motion: bool,
+    /// Pause after typing before the search runs.
+    pub search_debounce_ms: u32,
 }
 
 impl Default for UiSettings {
@@ -352,6 +356,7 @@ impl Default for UiSettings {
             font_editor: String::new(),
             font_size: 13,
             view_mode: "grid".into(),
+            recursive: false,
             panel_mode: "both".into(),
             panel_visible: true,
             panel_width: 340,
@@ -363,6 +368,7 @@ impl Default for UiSettings {
             preview_delay_ms: 150,
             preview_max_bytes: 0,
             reduce_motion: false,
+            search_debounce_ms: 200,
         }
     }
 }
@@ -458,6 +464,13 @@ pub struct KeyBindings {
     pub toggle_info: Vec<String>,
     pub toggle_loops: Vec<String>,
     pub close_viewer: Vec<String>,
+    /// Library window.
+    pub focus_search: Vec<String>,
+    pub query_editor: Vec<String>,
+    pub toggle_panel: Vec<String>,
+    pub view_grid: Vec<String>,
+    pub view_list: Vec<String>,
+    pub view_tree: Vec<String>,
 }
 
 impl Default for KeyBindings {
@@ -474,6 +487,12 @@ impl Default for KeyBindings {
             toggle_info: v(&["i"]),
             toggle_loops: v(&["l"]),
             close_viewer: v(&["Escape"]),
+            focus_search: v(&["Ctrl+f", "Meta+f"]),
+            query_editor: v(&["Ctrl+e", "Meta+e"]),
+            toggle_panel: v(&["Ctrl+p", "Meta+p"]),
+            view_grid: v(&["Ctrl+1", "Meta+1"]),
+            view_list: v(&["Ctrl+2", "Meta+2"]),
+            view_tree: v(&["Ctrl+3", "Meta+3"]),
         }
     }
 }

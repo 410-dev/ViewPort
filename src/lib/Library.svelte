@@ -1,18 +1,25 @@
 <script lang="ts">
   import { ask, open } from "@tauri-apps/plugin-dialog";
   import { onDestroy } from "svelte";
-  import { api, asCmdError, onScan, onThumbs, type BundleSummary, type ScanEvent, type Settings, type SourceRow } from "./api";
-  import Grid from "./Grid.svelte";
-  import Viewer from "./Viewer.svelte";
-  import SettingsPanel from "./Settings.svelte";
-  import InfoPanel from "./InfoPanel.svelte";
-  import QueryEditor from "./QueryEditor.svelte";
-  import BasicSearch from "./BasicSearch.svelte";
+  import { api, asCmdError, onScan, type BundleSummary, type SavedQuery, type ScanEvent, type Settings, type SourceRow } from "./api";
+  import { i18n, t } from "./i18n.svelte";
+  import { isTyping, matches } from "./keys";
+  import RightPanel from "./panel/RightPanel.svelte";
+  import { savePrefs, ui } from "./prefs.svelte";
+  import { quoteParam } from "./query";
+  import QueryModal from "./query/QueryModal.svelte";
+  import SettingsPanel from "./settings/SettingsPanel.svelte";
+  import Sidebar from "./shell/Sidebar.svelte";
+  import Toolbar from "./shell/Toolbar.svelte";
   import SourceDialog from "./SourceDialog.svelte";
-  import { i18n } from "./i18n.svelte";
-  import type { SavedQuery } from "./api";
-  import { SvelteSet } from "svelte/reactivity";
-  import { t } from "./i18n.svelte";
+  import StatusBar from "./StatusBar.svelte";
+  import Icon from "./ui/Icon.svelte";
+  import Viewer from "./Viewer.svelte";
+  import { invalidate } from "./views/briefs.svelte";
+  import { columnsFor, type SortSpec } from "./views/columns";
+  import { VIEWS } from "./views";
+  import { Selection } from "./views/selection.svelte";
+  import type { FolderItem } from "./views/types";
 
   let {
     bundle,
@@ -20,63 +27,62 @@
     onbundle,
   }: { bundle: BundleSummary; onclose: () => void; onbundle: (b: BundleSummary) => void } = $props();
 
+  let settings = $state<Settings | null>(null);
   let sources = $state<SourceRow[]>([]);
   let selected = $state<number | null>(null);
+  let folder = $state("");
   let query = $state("");
+  let sort = $state<SortSpec | null>(null);
   let ids = $state<number[]>([]);
   let elapsed = $state(0);
-  let queryError = $state<{ message: string; start: number; end: number } | null>(null);
-  let scans = $state<Record<number, ScanEvent>>({});
-  let thumbsDone = $state<number | null>(null);
-  let settings = $state<Settings | null>(null);
-  let resetKey = $state(0);
-  // Folder browsing within the selected source ("" = its root).
-  let folder = $state("");
-  let recursive = $state(true);
+  let queryError = $state<string | null>(null);
   let subfolders = $state<{ name: string; count: number }[]>([]);
-  let viewing = $state<number | null>(null);
-  let showSettings = $state(false);
-  let showInfo = $state(true);
-  let mode = $state<"quick" | "basic" | "editor">("quick");
-  let sourceDialog = $state<{ source: SourceRow | null } | null>(null);
+  let scans = $state<Record<number, ScanEvent>>({});
   let saved = $state<SavedQuery[]>([]);
-  let editingSaved = $state<SavedQuery | null>(null);
+  let resetKey = $state(0);
 
-  async function refreshSaved() {
-    saved = await api.listSavedQueries(i18n.locale).catch(() => []);
-  }
+  let viewing = $state<{ list: number[]; index: number } | null>(null);
+  let modal = $state<{ editing: SavedQuery | null } | null>(null);
+  let showSettings = $state(false);
+  let sourceDialog = $state<{ source: SourceRow | null } | null>(null);
 
-  async function deleteSaved(q: SavedQuery) {
-    if (!(await ask(t("lib.deleteSaved", { name: q.label }), { kind: "warning" }))) return;
-    await api.deleteSavedQuery(q.id);
-    refreshSaved();
-  }
-  const selection = new SvelteSet<number>();
-  const selectedIds = $derived([...selection]);
+  const selection = new Selection();
+  const selectedIds = $derived([...selection.set]);
+  const view = $derived(VIEWS.find((v) => v.key === ui().view_mode) ?? VIEWS[0]);
+  const columns = $derived(columnsFor(ui().columns));
 
+  // ---- data
   async function refreshSources() {
     sources = await api.listSources();
   }
+  async function refreshSaved() {
+    saved = await api.listSavedQueries(i18n.queryLocale).catch(() => []);
+  }
 
+  /** What is sent to the engine: plain words search names; header sorting is appended. */
+  const effectiveQuery = $derived.by(() => {
+    let q = query.trim();
+    if (q && !/[()]/.test(q)) q = `name(contains:${quoteParam(q)})`;
+    if (sort) q = `${q ? q + " AND " : ""}${sort.desc ? "sort desc" : "sort asc"}(${sort.field})`;
+    return q;
+  });
+
+  let searchSeq = 0;
   async function runSearch(reset: boolean) {
+    const seq = ++searchSeq;
     try {
-      const r = await api.search(query, selected, selected === null ? null : folder, recursive);
+      const r = await api.search(effectiveQuery, selected, selected === null ? null : folder, ui().recursive);
+      if (seq !== searchSeq) return;
       ids = r.ids;
       elapsed = r.elapsed_ms;
       queryError = null;
+      selection.retain(r.ids);
       if (reset) resetKey++;
     } catch (e) {
-      const err = asCmdError(e);
-      queryError =
-        err.code === "query"
-          ? { message: err.message, start: err.detail.span.start, end: err.detail.span.end }
-          : { message: err.message, start: 0, end: 0 };
+      if (seq === searchSeq) queryError = asCmdError(e).message;
     }
   }
 
-  // Re-run the search while typing, after a short pause.
-  let debounce: ReturnType<typeof setTimeout> | undefined;
-  // Changing source starts at its root.
   let lastSource: number | null = null;
   $effect(() => {
     if (selected !== lastSource) {
@@ -93,15 +99,19 @@
   });
 
   $effect(() => {
-    query;
+    effectiveQuery;
     selected;
     folder;
-    recursive;
-    clearTimeout(debounce);
-    debounce = setTimeout(() => runSearch(true), 250);
+    ui().recursive;
+    const timer = setTimeout(() => runSearch(true), ui().search_debounce_ms);
+    return () => clearTimeout(timer);
   });
 
-  // While scanning, refresh results at most every 1.5 s so new files show up.
+  const folders = $derived<FolderItem[]>(
+    selected !== null && !query.trim() ? subfolders.map((s) => ({ ...s, path: folder ? `${folder}/${s.name}` : s.name })) : [],
+  );
+
+  // While scanning, refresh at most every 1.5 s so new files show up.
   let lastRefresh = 0;
   const unlisten = [
     onScan((e) => {
@@ -109,24 +119,26 @@
       const now = performance.now();
       if (e.done || now - lastRefresh > 1500) {
         lastRefresh = now;
+        if (e.done) invalidate();
         runSearch(false);
+        if (e.done && selected === e.source_id) api.childFolders(e.source_id, folder).then((l) => (subfolders = l)).catch(() => {});
       }
     }),
-    onThumbs((e) => (thumbsDone = e.finished ? null : e.done)),
   ];
   onDestroy(() => unlisten.forEach((p) => p.then((f) => f())));
 
   $effect(() => {
     refreshSources();
+    api.getSettings().then((s) => (settings = s));
+  });
+  $effect(() => {
+    i18n.queryLocale;
     refreshSaved();
-    api.getSettings().then((s) => {
-      settings = s;
-      i18n.locale = s.general.locale;
-    });
   });
 
+  // ---- actions
   async function addFolder() {
-    const path = await open({ title: t("lib.addFolder"), directory: true });
+    const path = await open({ title: t("side.addFolder"), directory: true });
     if (typeof path !== "string") return;
     try {
       const s = await api.addLocalSource(path);
@@ -138,20 +150,43 @@
   }
 
   async function removeSource(s: SourceRow) {
-    if (!(await ask(t("lib.removeConfirm", { name: s.name }), { kind: "warning" }))) return;
+    if (!(await ask(t("side.removeConfirm", { name: s.name }), { kind: "warning" }))) return;
     await api.removeSource(s.id);
     if (selected === s.id) selected = null;
     delete scans[s.id];
     await refreshSources();
+    invalidate();
     runSearch(false);
   }
 
-  let saveTimer: ReturnType<typeof setTimeout> | undefined;
+  async function deleteSaved(q: SavedQuery) {
+    if (!(await ask(t("side.deleteSaved", { name: q.label }), { kind: "warning" }))) return;
+    await api.deleteSavedQuery(q.id);
+    refreshSaved();
+  }
+
+  function openViewer(id: number, list: number[]) {
+    const index = list.indexOf(id);
+    if (index >= 0) viewing = { list, index };
+  }
+
+  function toggleSort(field: string) {
+    if (sort?.field !== field) sort = { field, desc: false };
+    else if (!sort.desc) sort = { field, desc: true };
+    else sort = null;
+  }
+
+  function setView(key: "grid" | "list" | "tree") {
+    ui().view_mode = key;
+    savePrefs();
+  }
+
+  let tileTimer: ReturnType<typeof setTimeout> | undefined;
   function setTile(px: number) {
     if (!settings) return;
     settings.grid.tile_px = px;
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => api.saveSettings($state.snapshot(settings!)), settings.general.autosave_debounce_ms);
+    clearTimeout(tileTimer);
+    tileTimer = setTimeout(() => api.saveSettings($state.snapshot(settings!) as Settings), settings.general.autosave_debounce_ms);
   }
 
   async function close() {
@@ -159,187 +194,159 @@
     onclose();
   }
 
-  const status = $derived.by(() => {
-    const running = Object.values(scans).find((s) => !s.done);
-    if (running) return t("lib.scanning", { files: running.files });
-    if (thumbsDone != null) return t("lib.thumbs", { done: thumbsDone });
-    const last = Object.values(scans).at(-1);
-    if (last?.error) return last.error;
-    if (last) return t("lib.scanDone", { added: last.added, updated: last.updated, missing: last.missing ?? 0 });
-    return "";
-  });
+  // ---- resizable columns
+  function drag(e: PointerEvent, which: "sidebar" | "panel") {
+    const el = e.currentTarget as HTMLElement;
+    el.setPointerCapture(e.pointerId);
+    const startX = e.clientX;
+    const start = which === "sidebar" ? ui().sidebar_width : ui().panel_width;
+    const move = (ev: PointerEvent) => {
+      const dx = ev.clientX - startX;
+      if (which === "sidebar") ui().sidebar_width = Math.round(Math.min(420, Math.max(180, start + dx)));
+      else ui().panel_width = Math.round(Math.min(720, Math.max(260, start - dx)));
+    };
+    const up = () => {
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+      savePrefs();
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+  }
+
+  // ---- keyboard
+  let toolbar: Toolbar;
+  function onKey(e: KeyboardEvent) {
+    if (!settings || viewing || modal || showSettings || sourceDialog) return;
+    const k = settings.keys;
+    if (matches(e, k.focus_search)) toolbar?.focusSearch();
+    else if (matches(e, k.query_editor)) modal = { editing: null };
+    else if (isTyping(e)) return;
+    else if (matches(e, k.toggle_panel)) {
+      ui().panel_visible = !ui().panel_visible;
+      savePrefs();
+    } else if (matches(e, k.view_grid)) setView("grid");
+    else if (matches(e, k.view_list)) setView("list");
+    else if (matches(e, k.view_tree)) setView("tree");
+    else if (e.key === "Backspace" && selected !== null && folder) folder = folder.split("/").slice(0, -1).join("/");
+    else return;
+    e.preventDefault();
+  }
+
+  const scope = $derived(selected === null ? null : (sources.find((s) => s.id === selected) ?? null));
 </script>
 
-<div class="layout">
-  <aside>
-    <div class="bundle">
-      <strong title={bundle.path}>{bundle.locked ? "🔒 " : ""}{bundle.name}</strong>
-      {#if bundle.mode === "manual_save_only"}
-        <span class="warn">{t("lib.manualSave")}</span>
-      {/if}
-    </div>
+<svelte:window onkeydown={onKey} />
 
-    <h2>{t("lib.sources")}</h2>
-    <nav>
-      <button class="src" class:active={selected === null} onclick={() => (selected = null)}>{t("lib.all")}</button>
-      {#each sources as s (s.id)}
-        <div class="src-row">
-          <button class="src" class:active={selected === s.id} onclick={() => (selected = s.id)} title={s.root}>
-            {s.name}
-            {#if scans[s.id] && !scans[s.id].done}<span class="spin">⟳</span>{/if}
-          </button>
-          <button class="icon" title={t("lib.rescan")} onclick={() => api.scanSource(s.id)}>⟳</button>
-          <button class="icon" title={t("lib.edit")} onclick={() => (sourceDialog = { source: s })}>✎</button>
-          <button class="icon" title={t("lib.remove")} onclick={() => removeSource(s)}>✕</button>
+<div
+  class="app"
+  style:--sidebar="{ui().sidebar_width}px"
+  style:--panel="{ui().panel_visible ? ui().panel_width : 0}px"
+  class:no-panel={!ui().panel_visible}
+>
+  <div class="sidebar">
+    <Sidebar
+      {bundle}
+      {sources}
+      {selected}
+      {scans}
+      {saved}
+      activeQuery={query}
+      onselect={(id) => (selected = id)}
+      onaddfolder={addFolder}
+      onaddnetwork={() => (sourceDialog = { source: null })}
+      onrescan={(s) => api.scanSource(s.id)}
+      onedit={(s) => (sourceDialog = { source: s })}
+      onremove={removeSource}
+      onrunsaved={(q) => (query = q.text)}
+      oneditsaved={(q) => (modal = { editing: q })}
+      ondeletesaved={deleteSaved}
+      onsettings={() => (showSettings = true)}
+      onclose={close}
+      onsave={() => api.saveBundle().catch((e) => alert(asCmdError(e).message))}
+    />
+    <div class="resizer" role="separator" aria-orientation="vertical" onpointerdown={(e) => drag(e, "sidebar")}></div>
+  </div>
+
+  <main>
+    <Toolbar
+      bind:this={toolbar}
+      bind:query
+      {scope}
+      {folder}
+      {settings}
+      error={queryError}
+      viewKey={view.key}
+      onfolder={(f) => (folder = f)}
+      onview={setView}
+      ontile={setTile}
+      onadvanced={() => (modal = { editing: null })}
+    />
+    {#if queryError}
+      <div class="qerror"><Icon name="alert" size={13} /><span>{queryError}</span></div>
+    {/if}
+    <div class="view">
+      {#if sources.length === 0}
+        <div class="empty">
+          <Icon name="folderPlus" size={36} stroke={1.2} />
+          <p>{t("lib.empty")}</p>
+          <button class="btn primary" onclick={addFolder}><Icon name="plus" size={14} />{t("side.addFolder")}</button>
         </div>
-      {/each}
-    </nav>
-    <button onclick={addFolder}>+ {t("lib.addFolder")}</button>
-    <button onclick={() => (sourceDialog = { source: null })}>+ {t("lib.addNetwork")}</button>
-
-    <h2>{t("lib.saved")}</h2>
-    <nav>
-      {#each saved as q (q.id)}
-        <div class="src-row">
-          <button class="src" class:active={query === q.text} title={q.text} onclick={() => (query = q.text)}>{q.label}</button>
-          <button
-            class="icon"
-            title={t("lib.edit")}
-            onclick={() => {
-              editingSaved = q;
-              query = q.text;
-              mode = "editor";
-            }}>✎</button
-          >
-          <button class="icon" title={t("lib.remove")} onclick={() => deleteSaved(q)}>✕</button>
-        </div>
-      {:else}
-        <p class="hint">{t("lib.noSaved")}</p>
-      {/each}
-    </nav>
-
-    <div class="grow"></div>
-    {#if bundle.mode === "manual_save_only"}
-      <button onclick={() => api.saveBundle().catch((e) => alert(asCmdError(e).message))}>{t("lib.save")}</button>
-    {/if}
-    <button class="ghost" onclick={() => (showSettings = true)}>{t("lib.settings")}</button>
-    <button class="ghost" onclick={close}>{t("lib.close")}</button>
-  </aside>
-
-  <main class:with-info={showInfo}>
-    <div class="toolbar">
-      <div class="modes" role="tablist">
-        <button role="tab" class:on={mode === "quick"} aria-selected={mode === "quick"} onclick={() => (mode = "quick")}
-          >{t("lib.modeQuick")}</button
-        >
-        <button role="tab" class:on={mode === "basic"} aria-selected={mode === "basic"} onclick={() => (mode = "basic")}
-          >{t("lib.modeBasic")}</button
-        >
-        <button
-          role="tab"
-          class:on={mode === "editor"}
-          aria-selected={mode === "editor"}
-          onclick={() => {
-            editingSaved = null;
-            mode = "editor";
-          }}>{t("lib.modeEditor")}</button
-        >
-      </div>
-      <input
-        class="query"
-        class:invalid={queryError}
-        bind:value={query}
-        placeholder={t("lib.searchPlaceholder")}
-        spellcheck="false"
-      />
-      <button class="toggle" class:on={showInfo} onclick={() => (showInfo = !showInfo)} title={t("lib.info")}>ⓘ</button>
-      {#if settings}
-        <label class="size" title={t("lib.tileSize")}>
-          <input
-            type="range"
-            min={settings.grid.min_tile_px}
-            max={settings.grid.max_tile_px}
-            value={settings.grid.tile_px}
-            oninput={(e) => setTile(+e.currentTarget.value)}
-          />
-        </label>
-      {/if}
-    </div>
-    {#if mode === "editor"}
-      {#key editingSaved?.id}
-        <QueryEditor
-          bind:value={query}
-          editing={editingSaved}
-          onrun={(text) => {
-            query = text;
-            runSearch(true);
-          }}
-          onclose={() => (mode = "quick")}
-          onsaved={() => {
-            refreshSaved();
-            editingSaved = null;
-          }}
-        />
-      {/key}
-    {:else if mode === "basic"}
-      <BasicSearch onquery={(text) => (query = text)} />
-    {/if}
-    {#if queryError && mode !== "editor"}
-      <div class="query-error">
-        <code
-          >{query.slice(0, queryError.start)}<mark>{query.slice(queryError.start, queryError.end) || " "}</mark
-          >{query.slice(queryError.end)}</code
-        >
-        <span>{t("err.query")}: {queryError.message}</span>
-      </div>
-    {/if}
-    {#if selected !== null}
-      <div class="folders">
-        <nav class="crumbs" aria-label="folder">
-          <button class:cur={folder === ""} onclick={() => (folder = "")}>{sources.find((s) => s.id === selected)?.name ?? ""}</button>
-          {#each folder ? folder.split("/") : [] as part, i (i)}
-            <span>/</span>
-            <button
-              class:cur={i === folder.split("/").length - 1}
-              onclick={() => (folder = folder.split("/").slice(0, i + 1).join("/"))}>{part}</button
-            >
-          {/each}
-        </nav>
-        <label class="rec"><input type="checkbox" bind:checked={recursive} />{t("lib.recursive")}</label>
-        {#if subfolders.length}
-          <div class="subs">
-            {#each subfolders as f (f.name)}
-              <button onclick={() => (folder = folder ? `${folder}/${f.name}` : f.name)}>📁 {f.name} <small>{f.count}</small></button>
-            {/each}
-          </div>
-        {/if}
-      </div>
-    {/if}
-    <div class="meta">
-      <span>{t("lib.count", { n: ids.length.toLocaleString() })} · {elapsed.toFixed(1)} ms</span>
-      <span>{status}</span>
-    </div>
-
-    <div class="content" class:split={showInfo}>
-      {#if ids.length === 0}
-        <p class="empty">{sources.length === 0 ? t("lib.empty") : t("lib.noResults")}</p>
       {:else if settings}
-        <Grid
-          {ids}
-          {resetKey}
-          tile={settings.grid.tile_px}
-          showNames={settings.grid.show_names}
-          overscan={settings.grid.overscan_rows}
-          onopen={(i) => (viewing = i)}
-          selected={selection}
-        />
-      {/if}
-      {#if showInfo}
-        <InfoPanel ids={selectedIds} onchanged={() => runSearch(false)} />
+        {#if ids.length === 0 && folders.length === 0 && view.key !== "tree"}
+          <div class="empty"><Icon name="search" size={30} stroke={1.3} /><p>{t("lib.noResults")}</p></div>
+        {:else}
+          <view.component
+            {ids}
+            {folders}
+            {selection}
+            {resetKey}
+            tile={settings.grid.tile_px}
+            showNames={settings.grid.show_names}
+            overscan={settings.grid.overscan_rows}
+            {columns}
+            rowPx={ui().row_px}
+            {sort}
+            tree={{ sources: sources.map((s) => ({ id: s.id, name: s.name })), sourceId: selected, folder, query: effectiveQuery }}
+            onsort={toggleSort}
+            onopen={openViewer}
+            onfolder={(p) => (folder = p)}
+          />
+        {/if}
       {/if}
     </div>
   </main>
+
+  {#if ui().panel_visible}
+    <div class="panel">
+      <div class="resizer left" role="separator" aria-orientation="vertical" onpointerdown={(e) => drag(e, "panel")}></div>
+      <RightPanel
+        focus={selection.focus}
+        selected={selectedIds}
+        onopen={(id) => openViewer(id, ids.includes(id) ? ids : [id])}
+        onchanged={() => {
+          invalidate(selectedIds);
+          runSearch(false);
+        }}
+      />
+    </div>
+  {/if}
+
+  <div class="status"><StatusBar count={ids.length} {elapsed} selected={selection.set.size} /></div>
 </div>
+
+{#if modal}
+  <QueryModal
+    initial={modal.editing?.text ?? query}
+    editing={modal.editing}
+    onapply={(text) => {
+      query = text;
+      modal = null;
+    }}
+    onclose={() => (modal = null)}
+    onsaved={refreshSaved}
+  />
+{/if}
 
 {#if sourceDialog}
   <SourceDialog
@@ -358,94 +365,39 @@
   <SettingsPanel {settings} {bundle} {onbundle} onclose={() => (showSettings = false)} />
 {/if}
 
-{#if viewing !== null && settings && ids.length > 0}
-  <Viewer {ids} bind:index={viewing} {settings} onclose={() => (viewing = null)} onchanged={() => runSearch(false)} />
+{#if viewing && settings}
+  <Viewer
+    ids={viewing.list}
+    bind:index={viewing.index}
+    {settings}
+    onclose={() => {
+      const id = viewing?.list[viewing.index];
+      viewing = null;
+      if (id !== undefined) {
+        selection.set.clear();
+        selection.set.add(id);
+        selection.focus = id;
+      }
+    }}
+    onchanged={() => runSearch(false)}
+  />
 {/if}
 
 <style>
-  .layout {
+  .app {
     display: grid;
-    grid-template-columns: 240px 1fr;
+    grid-template-columns: var(--sidebar) minmax(0, 1fr) var(--panel);
+    grid-template-rows: minmax(0, 1fr) auto;
     height: 100vh;
   }
-  aside {
-    border-right: 1px solid var(--border);
-    background: var(--panel);
-    padding: 16px 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
+  .sidebar,
+  .panel {
+    position: relative;
     min-width: 0;
+    min-height: 0;
   }
-  .bundle {
-    display: grid;
-    gap: 4px;
-    padding: 0 4px 8px;
-  }
-  .bundle strong {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .warn {
-    font-size: 12px;
-    color: var(--warn);
-  }
-  h2 {
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--muted);
-    margin: 8px 4px 0;
-  }
-  nav {
-    display: grid;
-    gap: 2px;
-  }
-  .src-row {
-    display: flex;
-    align-items: center;
-  }
-  .src {
-    flex: 1;
-    min-width: 0;
-    text-align: left;
-    border: 0;
-    background: transparent;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .src.active {
-    background: var(--accent-soft);
-    color: var(--accent);
-  }
-  .icon {
-    border: 0;
-    background: transparent;
-    padding: 4px 6px;
-    color: var(--muted);
-    opacity: 0;
-  }
-  .src-row:hover .icon {
-    opacity: 1;
-  }
-  .spin {
-    display: inline-block;
-    animation: spin 1s linear infinite;
-  }
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-  .grow {
-    flex: 1;
-  }
-  .ghost {
-    border: 0;
-    background: transparent;
-    color: var(--muted);
+  .status {
+    grid-column: 1 / -1;
   }
   main {
     display: flex;
@@ -453,153 +405,69 @@
     min-width: 0;
     min-height: 0;
   }
-  .toolbar {
-    display: flex;
-    gap: 12px;
-    align-items: center;
-    padding: 12px 16px 0;
-  }
-  .modes {
-    display: flex;
-  }
-  .modes button {
-    border-radius: 0;
-    padding: 6px 10px;
-  }
-  .modes button:first-child {
-    border-radius: 6px 0 0 6px;
-  }
-  .modes button:last-child {
-    border-radius: 0 6px 6px 0;
-  }
-  .modes button + button {
-    border-left: 0;
-  }
-  .modes button.on {
-    background: var(--accent-soft);
-    color: var(--accent);
-  }
-  .hint {
-    font-size: 12px;
-    color: var(--muted);
-    margin: 0 4px;
-  }
-  .query {
-    flex: 1;
-    min-width: 0;
-    font: 14px ui-monospace, monospace;
-  }
-  .query.invalid {
-    border-color: var(--danger);
-  }
-  .size input {
-    width: 120px;
-  }
-  .query-error {
-    margin: 6px 16px 0;
-    display: grid;
-    gap: 2px;
-    font-size: 12px;
-    color: var(--danger);
-  }
-  .query-error code {
-    white-space: pre-wrap;
-    word-break: break-all;
-    color: var(--fg);
-  }
-  mark {
-    background: var(--danger);
-    color: #fff;
-  }
-  .folders {
-    padding: 8px 16px 0;
-    display: grid;
-    gap: 6px;
-    font-size: 13px;
-  }
-  .crumbs {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 2px;
-  }
-  .crumbs button {
-    border: 0;
-    background: transparent;
-    padding: 2px 4px;
-    color: var(--accent);
-  }
-  .crumbs button.cur {
-    color: var(--fg);
-    font-weight: 600;
-  }
-  .crumbs span {
-    color: var(--muted);
-  }
-  .rec {
-    display: flex;
-    gap: 4px;
-    align-items: center;
-    font-size: 12px;
-    color: var(--muted);
-  }
-  .folders {
-    grid-template-columns: 1fr auto;
-  }
-  .subs {
-    grid-column: 1 / -1;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    max-height: 96px;
-    overflow-y: auto;
-  }
-  .subs button {
-    padding: 3px 8px;
-    font-size: 12px;
-  }
-  .subs small {
-    color: var(--muted);
-  }
-  .meta {
-    display: flex;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 6px 16px 8px;
-    font-size: 12px;
-    color: var(--muted);
-  }
-  .content {
+  .view {
     flex: 1;
     min-height: 0;
+    position: relative;
+  }
+  .resizer {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    right: -4px;
+    width: 8px;
+    z-index: 5;
+    cursor: col-resize;
+  }
+  .resizer.left {
+    left: -4px;
+    right: auto;
+  }
+  .resizer:hover,
+  .resizer:active {
+    background: linear-gradient(to right, transparent 3px, var(--accent-line) 3px, var(--accent-line) 5px, transparent 5px);
+  }
+  .qerror {
     display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 16px 6px;
+    padding: 6px 12px;
+    border-radius: var(--radius-pill);
+    background: color-mix(in srgb, var(--danger) 12%, transparent);
+    color: var(--danger);
+    font-size: 12px;
   }
-  .content > :global(:first-child) {
-    flex: 1;
-    min-width: 0;
-  }
-  .toggle {
-    padding: 4px 9px;
-  }
-  .toggle.on {
-    color: var(--accent);
-    border-color: var(--accent);
+  .qerror span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .empty {
-    color: var(--muted);
-    text-align: center;
-    margin-top: 80px;
+    height: 100%;
+    display: grid;
+    place-items: center;
+    align-content: center;
+    gap: 12px;
+    color: var(--faint);
   }
-  @media (max-width: 640px) {
-    .layout {
-      grid-template-columns: 1fr;
-      grid-template-rows: auto 1fr;
+  .empty p {
+    margin: 0;
+    color: var(--muted);
+  }
+  @media (max-width: 760px) {
+    .app {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: auto minmax(0, 1fr) auto;
     }
-    aside {
-      border-right: 0;
-      border-bottom: 1px solid var(--border);
-      max-height: 40vh;
-      overflow-y: auto;
+    .sidebar {
+      max-height: 34vh;
+    }
+    .panel {
+      display: none;
+    }
+    .resizer {
+      display: none;
     }
   }
 </style>

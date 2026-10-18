@@ -24,9 +24,118 @@ const OPS_FOR: Record<string, (t: FieldType["type"]) => boolean> = {
   between: (t) => numeric(t),
   contains_all: (t) => t === "text" || t === "enum",
   starts_with: (t) => t === "text",
+  not_starts_with: (t) => t === "text",
   ends_with: (t) => t === "text",
+  not_ends_with: (t) => t === "text",
+  has_ext: (t) => t === "text",
+  not_has_ext: (t) => t === "text",
   glob: (t) => t === "text",
 };
+
+/** Operators written after their values (mirrors `Op::is_postfix`). */
+export const POSTFIX_OPS = new Set([
+  "eq",
+  "ne",
+  "gt",
+  "ge",
+  "lt",
+  "le",
+  "between",
+  "starts_with",
+  "not_starts_with",
+  "ends_with",
+  "not_ends_with",
+  "has_ext",
+  "not_has_ext",
+]);
+
+/** How many values an operator takes: `[required, maximum]`. */
+export function opArity(op: string, multiMax: number): [number, number] {
+  switch (op) {
+    case "exists":
+    case "not_exists":
+      return [0, 0];
+    case "between":
+      return [2, 2];
+    case "contains_any":
+    case "contains_all":
+    case "contains_none":
+    case "has_ext":
+    case "not_has_ext":
+      return [1, multiMax];
+    default:
+      return [1, 1];
+  }
+}
+
+/** Mirrors `FieldType::default_op`. */
+export function defaultOp(t: FieldType["type"]): string {
+  return numeric(t) ? "eq" : "contains_any";
+}
+
+/** Splits call parameters on ':' outside quotes and removes quoting. */
+export function splitParams(inner: string): string[] {
+  const out: string[] = [];
+  let cur = "";
+  let quoted = false;
+  let wasQuoted = false;
+  for (let i = 0; i < inner.length; i++) {
+    const c = inner[i];
+    if (quoted) {
+      if (c === "\\" && i + 1 < inner.length) cur += inner[++i];
+      else if (c === '"') quoted = false;
+      else cur += c;
+    } else if (c === '"') {
+      quoted = wasQuoted = true;
+    } else if (c === ":") {
+      out.push(wasQuoted ? cur : cur.trim());
+      cur = "";
+      wasQuoted = false;
+    } else cur += c;
+  }
+  out.push(wasQuoted ? cur : cur.trim());
+  return out.filter((p, i) => p !== "" || i < out.length - 1);
+}
+
+export interface CallSpan {
+  start: number;
+  end: number;
+  name: string;
+  inner: string;
+  sort: boolean;
+}
+
+/** The call (`name(...)`) the caret is in or touching, with its span in `src`. */
+export function callAt(lang: Lang, src: string, caret: number): CallSpan | null {
+  const tokens = lang.tokenize(src);
+  for (let i = 0; i < tokens.length; i++) {
+    const tk = tokens[i];
+    if (tk.kind !== "field" && tk.kind !== "sort") continue;
+    // Find the matching ')' for the '(' that follows.
+    let depth = 0;
+    let j = i + 1;
+    let end = src.length;
+    for (; j < tokens.length; j++) {
+      const x = tokens[j];
+      if (x.kind === "punct" && x.text === "(") depth++;
+      else if (x.kind === "punct" && x.text === ")") {
+        depth--;
+        if (depth === 0) {
+          end = x.start + 1;
+          break;
+        }
+      }
+    }
+    const start = tk.start;
+    if (caret >= start && caret <= end) {
+      const open = src.indexOf("(", start + tk.text.length - 1);
+      const inner = src.slice(open + 1, end === src.length && src[end - 1] !== ")" ? end : end - 1);
+      return { start, end, name: tk.text.trim(), inner, sort: tk.kind === "sort" };
+    }
+    i = j;
+  }
+  return null;
+}
 
 function numeric(t: FieldType["type"]) {
   return ["integer", "real", "date", "size", "duration", "ranged_int"].includes(t);

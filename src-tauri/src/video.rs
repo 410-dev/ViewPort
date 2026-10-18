@@ -165,7 +165,8 @@ pub fn spawn_convert<R: Runtime>(app: &AppHandle<R>, ws: Arc<Workspace>, ids: Ve
                 crate::tasks::Unit::Permille,
                 Some(1000),
                 Some(cancel.clone()),
-            );
+            )
+            .media(id);
             let emit = |progress: f64, done: bool, error: Option<String>| {
                 task.set((progress.clamp(0.0, 1.0) * 1000.0) as u64, None);
                 let _ = app.emit("convert-progress", ConvertEvent { id, progress, done, error });

@@ -1,7 +1,11 @@
 <script lang="ts">
   import { open, save } from "@tauri-apps/plugin-dialog";
   import { api, asCmdError, type BundleSummary, type CmdError } from "./api";
-  import { t } from "./i18n.svelte";
+  import { LOCALES, t } from "./i18n.svelte";
+  import { prefs, savePrefs } from "./prefs.svelte";
+  import Icon from "./ui/Icon.svelte";
+
+  const THEMES = ["dark", "light", "system"] as const;
 
   let { onopened }: { onopened: (b: BundleSummary) => void } = $props();
 
@@ -98,196 +102,275 @@
 </script>
 
 <div class="start">
-  <header>
-    <h1>ViewPort</h1>
-    <p>{t("app.tagline")}</p>
-  </header>
+  <div class="card">
+    <header>
+      <span class="logo"><Icon name="layers" size={22} /></span>
+      <div>
+        <h1>ViewPort</h1>
+        <p>{t("app.tagline")}</p>
+      </div>
+    </header>
 
-  <div class="actions">
-    <button class="primary" disabled={busy} onclick={create}>{t("start.create")}</button>
-    <button disabled={busy} onclick={pickAndOpen}>{t("start.open")}</button>
-    <button disabled={busy} onclick={importArchive}>{t("start.import")}</button>
+    <div class="actions">
+      <button class="btn primary" disabled={busy} onclick={create}><Icon name="plus" size={14} />{t("start.create")}</button>
+      <button class="btn" disabled={busy} onclick={pickAndOpen}><Icon name="folder" size={14} />{t("start.open")}</button>
+      <button class="btn" disabled={busy} onclick={importArchive}><Icon name="archive" size={14} />{t("start.import")}</button>
+    </div>
+
+    {#if error}
+      <p class="error">{error.message}</p>
+    {/if}
+
+    <section>
+      <div class="eyebrow">{t("start.recent")}</div>
+      {#if recent.length === 0}
+        <p class="muted">{t("start.none")}</p>
+      {:else}
+        <ul>
+          {#each recent as path (path)}
+            <li>
+              <button class="recent" disabled={busy} onclick={() => openPath(path)}>
+                <span class="ico"><Icon name="layers" size={15} /></span>
+                <span class="txt">
+                  <span class="name">{path.split(/[\\/]/).pop()}</span>
+                  <span class="path">{path}</span>
+                </span>
+                <Icon name="chevronRight" size={14} />
+              </button>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </section>
   </div>
 
-  {#if error}
-    <p class="error">{error.message}</p>
-  {/if}
-
-  <section>
-    <h2>{t("start.recent")}</h2>
-    {#if recent.length === 0}
-      <p class="muted">{t("start.none")}</p>
-    {:else}
-      <ul>
-        {#each recent as path (path)}
-          <li>
-            <button class="recent" disabled={busy} onclick={() => openPath(path)}>
-              <span class="name">{path.split(/[\\/]/).pop()}</span>
-              <span class="path">{path}</span>
-            </button>
-          </li>
+  {#if prefs.app}
+    <div class="prefs">
+      <Icon name="globe" size={14} />
+      <select
+        class="input"
+        value={prefs.app.ui.locale}
+        onchange={(e) => {
+          prefs.app!.ui.locale = e.currentTarget.value;
+          savePrefs(0);
+        }}
+      >
+        <option value="auto">{t("set.locale.auto")}</option>
+        {#each LOCALES as l (l.code)}<option value={l.code}>{l.name}</option>{/each}
+      </select>
+      <div class="seg sm">
+        {#each THEMES as th (th)}
+          <button
+            class:on={prefs.app.ui.theme === th}
+            onclick={() => {
+              prefs.app!.ui.theme = th;
+              savePrefs(0);
+            }}>{t(`set.theme.${th}`)}</button
+          >
         {/each}
-      </ul>
-    {/if}
-  </section>
+      </div>
+    </div>
+  {/if}
 </div>
 
 {#if pendingLock}
-  <div class="backdrop" role="presentation">
+  <div class="scrim" role="presentation">
     <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="lock-title">
-      <h2 id="lock-title">{t("start.locked.title")}</h2>
-      <p class="path">{pendingLock.path}</p>
-      <!-- svelte-ignore a11y_autofocus -->
-      <input
-        type="password"
-        autocomplete="current-password"
-        placeholder={t("start.password")}
-        bind:value={password}
-        autofocus
-        onkeydown={(e) => e.key === "Enter" && password && unlock()}
-      />
-      {#if pendingLock.requiresKeyfile}
-        <div class="row">
-          <input readonly placeholder={t("start.keyfile")} value={keyfile} />
-          <button type="button" onclick={pickKeyfile}>{t("start.browse")}</button>
-        </div>
-      {/if}
-      {#if unlockError}<p class="error">{unlockError}</p>{/if}
-      <div class="actions end">
-        <button type="button" onclick={() => (pendingLock = null)}>{t("common.cancel")}</button>
-        <button class="primary" disabled={busy || !password} onclick={unlock}>{t("start.unlock")}</button>
+      <header><h2 id="lock-title">{t("start.locked.title")}</h2></header>
+      <div class="body form">
+        <p class="path">{pendingLock.path}</p>
+        <!-- svelte-ignore a11y_autofocus -->
+        <input
+          class="input"
+          type="password"
+          autocomplete="current-password"
+          placeholder={t("start.password")}
+          bind:value={password}
+          autofocus
+          onkeydown={(e) => e.key === "Enter" && password && unlock()}
+        />
+        {#if pendingLock.requiresKeyfile}
+          <div class="row">
+            <input class="input" readonly placeholder={t("start.keyfile")} value={keyfile} />
+            <button class="btn" type="button" onclick={pickKeyfile}>{t("common.browse")}</button>
+          </div>
+        {/if}
+        {#if unlockError}<p class="error">{unlockError}</p>{/if}
       </div>
+      <footer>
+        <span class="grow"></span>
+        <button class="btn ghost" type="button" onclick={() => (pendingLock = null)}>{t("common.cancel")}</button>
+        <button class="btn primary" disabled={busy || !password} onclick={unlock}><Icon name="key" size={14} />{t("start.unlock")}</button>
+      </footer>
     </div>
   </div>
 {/if}
 
 {#if pendingNewer}
-  <div class="backdrop" role="presentation">
+  <div class="scrim" role="presentation">
     <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="newer-title">
-      <h2 id="newer-title">{t("start.tooNew.title")}</h2>
-      <p>{t("start.tooNew.body", pendingNewer)}</p>
-      <div class="actions end">
-        <button onclick={() => (pendingNewer = null)}>{t("common.cancel")}</button>
+      <header><h2 id="newer-title">{t("start.tooNew.title")}</h2></header>
+      <div class="body"><p class="text">{t("start.tooNew.body", pendingNewer)}</p></div>
+      <footer>
+        <span class="grow"></span>
+        <button class="btn ghost" onclick={() => (pendingNewer = null)}>{t("common.cancel")}</button>
         <button
-          class="primary"
+          class="btn primary"
           onclick={() => {
             const p = pendingNewer!.path;
             pendingNewer = null;
             openPath(p, true);
           }}>{t("start.tooNew.confirm")}</button
         >
-      </div>
+      </footer>
     </div>
   </div>
 {/if}
 
 <style>
   .start {
-    max-width: 560px;
-    margin: 0 auto;
-    padding: 64px 16px;
+    height: 100vh;
     display: grid;
-    gap: 24px;
+    place-items: center;
+    align-content: center;
+    gap: 18px;
+    padding: 24px;
+    overflow-y: auto;
+  }
+  .card {
+    width: min(560px, 100%);
+    display: grid;
+    gap: 22px;
+    padding: 28px;
+    border-radius: 18px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow);
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .logo {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    border-radius: 13px;
+    background: var(--accent);
+    color: var(--accent-fg);
   }
   h1 {
     margin: 0;
-    font-size: 32px;
+    font-size: 22px;
+    font-weight: 650;
     letter-spacing: -0.02em;
   }
   header p {
-    margin: 4px 0 0;
+    margin: 2px 0 0;
     color: var(--muted);
-  }
-  h2 {
-    font-size: 13px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--muted);
-    margin: 0 0 8px;
   }
   .actions {
     display: flex;
     gap: 8px;
     flex-wrap: wrap;
   }
-  .actions.end {
-    justify-content: flex-end;
+  section {
+    display: grid;
+    gap: 8px;
   }
   ul {
     list-style: none;
     margin: 0;
     padding: 0;
     display: grid;
-    gap: 4px;
+    gap: 2px;
+    max-height: 320px;
+    overflow-y: auto;
   }
   .recent {
     width: 100%;
-    text-align: left;
-    display: grid;
-    gap: 2px;
-    background: var(--panel);
-  }
-  .recent .path {
-    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 14px 8px 8px;
+    border: 0;
+    border-radius: var(--radius-md);
+    background: transparent;
     color: var(--muted);
+    text-align: left;
+    transition: background var(--t-fast) var(--ease);
+  }
+  .recent:hover:not(:disabled) {
+    background: var(--hover);
+  }
+  .recent .ico {
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 9px;
+    background: var(--surface-2);
+    color: var(--accent);
+    flex-shrink: 0;
+  }
+  .txt {
+    flex: 1;
+    min-width: 0;
+    display: grid;
+  }
+  .name {
+    color: var(--fg);
+    font-weight: 500;
+  }
+  .path,
+  .name {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .path {
+    font-size: 12px;
+    color: var(--faint);
+  }
   .muted {
-    color: var(--muted);
+    margin: 0;
+    color: var(--faint);
   }
   .error {
     color: var(--danger);
     margin: 0;
+    font-size: 12px;
   }
-  .backdrop {
-    position: fixed;
-    inset: 0;
-    background: #0008;
+  .prefs {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--faint);
+  }
+  .prefs .input {
+    height: var(--h-control-sm);
+    font-size: 12px;
+  }
+  .form {
     display: grid;
-    place-items: center;
-    padding: 16px;
+    gap: 10px;
   }
-  .dialog {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 20px;
-    max-width: 440px;
-    display: grid;
-    gap: 12px;
+  .form .path {
+    white-space: normal;
+    word-break: break-all;
   }
-  .dialog h2 {
-    text-transform: none;
-    letter-spacing: 0;
-    font-size: 17px;
-    color: var(--fg);
-    margin: 0;
-  }
-  .dialog p {
-    margin: 0;
-    line-height: 1.5;
-  }
-  .dialog input {
-    font: inherit;
-    color: inherit;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 7px 10px;
-    min-width: 0;
-  }
-  .dialog .row {
+  .row {
     display: flex;
     gap: 6px;
   }
-  .dialog .row input {
+  .row .input {
     flex: 1;
   }
-  .path {
-    font-size: 12px;
-    color: var(--muted);
-    word-break: break-all;
+  .text {
+    margin: 0;
+    line-height: 1.6;
+    color: var(--fg-2);
   }
 </style>

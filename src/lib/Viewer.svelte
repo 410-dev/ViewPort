@@ -2,9 +2,12 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { onDestroy, onMount } from "svelte";
   import { api, mediaUrl, onConvert, type ConvertEvent, type LoopSegment, type MediaBrief, type Settings } from "./api";
-  import { i18n } from "./i18n.svelte";
+  import { t } from "./i18n.svelte";
+  import { fraction, tasks } from "./tasks.svelte";
+  import { fmtBytes } from "./format";
+  import Icon from "./ui/Icon.svelte";
   import { isTyping, matches } from "./keys";
-  import InfoPanel from "./InfoPanel.svelte";
+  import InfoPanel from "./panel/InfoPanel.svelte";
 
   let {
     ids,
@@ -26,8 +29,6 @@
   const win = getCurrentWindow();
 
   // ---- playback compatibility / conversion
-  type L = { ko: string; en: string };
-  const lbl = (l: L) => (i18n.locale === "ko" ? l.ko : l.en);
   let converting = $state<Record<number, ConvertEvent>>({});
   let convertError = $state<string | null>(null);
   let dismissed = $state<Set<number>>(new Set());
@@ -85,6 +86,9 @@
 
   const src = (id: number) => (srcVersion[id] ? `${mediaUrl(id)}?v=${srcVersion[id]}` : mediaUrl(id));
 
+
+  // A slow read of the current file shows its progress in the HUD.
+  const loadingTask = $derived(tasks.list.find((x) => x.kind === "read" && x.media_id === id && x.state === "running") ?? null);
 
   // ---- navigation
   function go(delta: number) {
@@ -386,40 +390,41 @@
   {/key}
 
   {#if error && !(brief?.kind === "video")}
-    <div class="error">{brief?.name}: {lbl({ ko: "표시할 수 없습니다", en: "cannot be displayed" })}</div>
+    <div class="error">{brief?.name}: {t("viewer.cannotDisplay")}</div>
   {/if}
 
   {#if brief && converting[brief.id]}
     <div class="banner" role="status">
-      <span>{lbl({ ko: "고호환 포맷으로 변환 중…", en: "Converting to a compatible format…" })}</span>
-      <progress max="1" value={converting[brief.id].progress}></progress>
-      <span>{Math.round(converting[brief.id].progress * 100)}%</span>
-      <button onclick={() => api.cancelConvert(brief!.id)}>{lbl({ ko: "취소", en: "Cancel" })}</button>
+      <span class="spinner"></span>
+      <span>{t("viewer.converting")}</span>
+      <span class="bar"><i style:width="{converting[brief.id].progress * 100}%"></i></span>
+      <span class="tabular">{Math.round(converting[brief.id].progress * 100)}%</span>
+      <button class="btn sm" onclick={() => api.cancelConvert(brief!.id)}>{t("common.cancel")}</button>
     </div>
   {:else if showBanner && brief}
     <div class="banner" role="alert" onpointerdown={(e) => e.stopPropagation()} onpointerup={(e) => e.stopPropagation()}>
       {#if hasFfmpeg}
-        <span>{lbl({ ko: "이 영상은 재생되지 않을 수 있습니다. 고호환 포맷(MP4)으로 변환할까요?", en: "This video may not play. Convert it to a compatible format (MP4)?" })}</span>
-        <button class="primary" onclick={() => convert(brief!.id)}>{lbl({ ko: "변환", en: "Convert" })}</button>
+        <span>{t("viewer.mayNotPlay")}</span>
+        <button class="btn sm primary" onclick={() => convert(brief!.id)}>{t("viewer.convert")}</button>
       {:else}
-        <span>{lbl({ ko: "이 영상을 재생하려면 FFmpeg가 필요합니다. 설정에서 경로를 지정하세요.", en: "FFmpeg is needed to play this video. Set its path in Settings." })}</span>
+        <span>{t("viewer.needFfmpeg")}</span>
       {/if}
-      <button onclick={() => ignoreFile(brief!.id)}>{lbl({ ko: "이 파일을 무시 목록에 추가", en: "Add this file to the ignore list" })}</button>
-      <button class="icon" aria-label="Dismiss" onclick={() => (dismissed = new Set([...dismissed, brief!.id]))}>✕</button>
+      <button class="btn sm" onclick={() => ignoreFile(brief!.id)}>{t("viewer.ignore")}</button>
+      <button class="icon-btn sm" aria-label={t("common.close")} onclick={() => (dismissed = new Set([...dismissed, brief!.id]))}><Icon name="x" size={13} /></button>
     </div>
   {/if}
   {#if convertError}
     <div class="banner err" role="alert">
-      <span>{lbl({ ko: "변환 실패", en: "Conversion failed" })}: {convertError}</span>
-      <button class="icon" onclick={() => (convertError = null)}>✕</button>
+      <span>{t("viewer.convertFailed")}: {convertError}</span>
+      <button class="icon-btn sm" aria-label={t("common.close")} onclick={() => (convertError = null)}><Icon name="x" size={13} /></button>
     </div>
   {/if}
 
   {#if showLoops && brief?.kind === "video"}
     <div class="loops" role="presentation" onpointerdown={(e) => e.stopPropagation()} onpointerup={(e) => e.stopPropagation()}>
       <div class="loops-head">
-        <strong>{lbl({ ko: "구간 반복", en: "Loop segments" })}</strong>
-        {#if activeSeg}<button onclick={() => playSegment(null)}>{lbl({ ko: "반복 해제", en: "Stop looping" })}</button>{/if}
+        <strong>{t("viewer.loops")}</strong>
+        {#if activeSeg}<button class="btn sm" onclick={() => playSegment(null)}>{t("viewer.stopLoop")}</button>{/if}
       </div>
       <ul>
         {#each segments as seg (seg.id)}
@@ -427,20 +432,22 @@
             <button class="seg" onclick={() => playSegment(seg)}>
               <span>{seg.label}</span><small>{fmtTime(seg.start_ms)}–{fmtTime(seg.end_ms)}</small>
             </button>
-            <label title={lbl({ ko: "열 때 바로 이 구간 재생", en: "Start here when opened" })}>
-              <input type="checkbox" checked={seg.autoplay} onchange={(e) => saveSegment({ ...seg, autoplay: e.currentTarget.checked })} />
-              {lbl({ ko: "자동", en: "Auto" })}
-            </label>
-            <button class="icon" onclick={() => deleteSegment(seg)} aria-label="delete">✕</button>
+            <button
+              class="auto"
+              class:on={seg.autoplay}
+              title={t("viewer.autoHint")}
+              onclick={() => saveSegment({ ...seg, autoplay: !seg.autoplay })}>{t("viewer.auto")}</button
+            >
+            <button class="icon-btn sm" onclick={() => deleteSegment(seg)} aria-label={t("common.remove")}><Icon name="trash" size={13} /></button>
           </li>
         {/each}
       </ul>
       <div class="marks">
-        <button onclick={() => (markA = video?.currentTime ?? 0)}>A {markA != null ? fmtTime(markA * 1000) : ""}</button>
-        <button onclick={() => (markB = video?.currentTime ?? 0)}>B {markB != null ? fmtTime(markB * 1000) : ""}</button>
-        <input placeholder={lbl({ ko: "이름", en: "Label" })} bind:value={segLabel} />
-        <button class="primary" disabled={markA == null || markB == null || markB <= markA} onclick={() => saveSegment()}
-          >{lbl({ ko: "저장", en: "Save" })}</button
+        <button class="btn sm" onclick={() => (markA = video?.currentTime ?? 0)}>A {markA != null ? fmtTime(markA * 1000) : ""}</button>
+        <button class="btn sm" onclick={() => (markB = video?.currentTime ?? 0)}>B {markB != null ? fmtTime(markB * 1000) : ""}</button>
+        <input class="input" placeholder={t("viewer.label")} bind:value={segLabel} />
+        <button class="btn sm primary" disabled={markA == null || markB == null || markB <= markA} onclick={() => saveSegment()}
+          >{t("common.save")}</button
         >
       </div>
       {#if segError}<p class="seg-err">{segError}</p>{/if}
@@ -449,7 +456,7 @@
 
   {#if showInfo && id !== undefined}
     <div class="side" role="presentation" onpointerdown={(e) => e.stopPropagation()} onpointerup={(e) => e.stopPropagation()}>
-      <InfoPanel ids={[id]} {onchanged} dark />
+      <InfoPanel ids={[id]} {onchanged} />
     </div>
   {/if}
 
@@ -457,100 +464,121 @@
     <span class="name">{brief?.name ?? ""}</span>
     <span class="pos">{index + 1} / {ids.length}</span>
     {#if slideshow}
-      <span class="ss">{ssPaused ? lbl({ ko: "슬라이드쇼 일시정지", en: "Slideshow paused" }) : lbl({ ko: "슬라이드쇼", en: "Slideshow" })}</span>
+      <span class="ss">{ssPaused ? t("viewer.slideshowPaused") : t("viewer.slideshow")}</span>
     {/if}
-    <button class="icon" onclick={toggleSlideshow} title={lbl({ ko: "슬라이드쇼", en: "Slideshow" })}>{slideshow ? "⏹" : "▶"}</button>
-    {#if brief?.kind === "video"}
-      <button class="icon" class:on={showLoops} onclick={() => (showLoops = !showLoops)} title={lbl({ ko: "구간 반복", en: "Loop segments" })}>⟲</button>
+    {#if loadingTask}
+      {@const f = fraction(loadingTask)}
+      <span class="load"><span class="spinner"></span><span class="tabular">{fmtBytes(loadingTask.done)} / {fmtBytes(loadingTask.total)}</span>
+        <span class="bar"><i style:width="{(f ?? 0) * 100}%"></i></span></span>
     {/if}
-    <button class="icon" onclick={() => (showInfo = !showInfo)} title="Info">ⓘ</button>
-    <button class="icon" onclick={() => toggleFullscreen()} title="Fullscreen">⛶</button>
-    <button class="icon" onclick={close} title="Close">✕</button>
+    <span class="tools">
+      <button class="hb" class:on={slideshow} onclick={toggleSlideshow} title={t("viewer.slideshow")}><Icon name={slideshow ? "stop" : "play"} size={15} /></button>
+      {#if brief?.kind === "video"}
+        <button class="hb" class:on={showLoops} onclick={() => (showLoops = !showLoops)} title={t("viewer.loops")}><Icon name="loop" size={15} /></button>
+      {/if}
+      <button class="hb" class:on={showInfo} onclick={() => (showInfo = !showInfo)} title={t("viewer.info")}><Icon name="info" size={15} /></button>
+      <button class="hb" onclick={() => toggleFullscreen()} title={t("viewer.fullscreen")}><Icon name="maximize" size={15} /></button>
+      <button class="hb" onclick={close} title={t("common.close")}><Icon name="x" size={15} /></button>
+    </span>
   </div>
-  <button class="nav prev" class:visible={hud} onclick={() => go(-1)} aria-label="Previous">‹</button>
-  <button class="nav next" class:visible={hud} onclick={() => go(1)} aria-label="Next">›</button>
+  <button class="nav prev" class:visible={hud} onclick={() => go(-1)} aria-label={t("viewer.prev")}><Icon name="chevronLeft" size={26} /></button>
+  <button class="nav next" class:visible={hud} onclick={() => go(1)} aria-label={t("viewer.next")}><Icon name="chevronRight" size={26} /></button>
 </div>
 
 <style>
   .viewer {
     position: fixed;
     inset: 0;
-    background: #000;
+    z-index: 20;
     display: grid;
     place-items: center;
-    z-index: 10;
+    background: #000;
+    color: #eee;
     outline: none;
     touch-action: none;
     user-select: none;
+    /* The viewer is always dark. */
+    --surface: #17191f;
+    --surface-2: #20232b;
+    --surface-3: #2a2e38;
+    --hover: #2c303b;
+    --border: #2b2f39;
+    --fg: #ecedf1;
+    --fg-2: #c8cbd4;
+    --muted: #9095a3;
+    --faint: #626877;
+    --tile: #1d2028;
+    color-scheme: dark;
   }
   .hide-cursor {
     cursor: none;
   }
   img,
   video {
-    max-width: 100%;
-    max-height: 100%;
     width: 100%;
     height: 100%;
+    max-width: 100%;
+    max-height: 100%;
     object-fit: contain;
   }
   .error {
     position: absolute;
-    color: #f87171;
+    color: var(--danger);
   }
   .banner {
     position: absolute;
-    bottom: 72px;
+    bottom: 76px;
     left: 50%;
     transform: translateX(-50%);
+    z-index: 3;
     display: flex;
     align-items: center;
-    gap: 10px;
-    background: #1d1d1df2;
-    color: #eee;
-    border: 1px solid #444;
-    border-radius: 8px;
-    padding: 8px 12px;
-    font-size: 13px;
-    max-width: calc(100% - 32px);
     flex-wrap: wrap;
-    z-index: 3;
+    gap: 10px;
+    max-width: calc(100% - 32px);
+    min-height: 44px;
+    padding: 6px 8px 6px 18px;
+    border-radius: var(--radius-pill);
+    background: rgb(23 25 31 / 0.92);
+    backdrop-filter: blur(10px);
+    border: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .banner .bar {
+    width: 120px;
   }
   .banner.err {
-    border-color: #f87171;
-    bottom: 120px;
-  }
-  .banner button {
-    background: #2a2a2a;
-    border-color: #555;
-    color: #eee;
-  }
-  .banner button.primary {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: #fff;
+    bottom: 128px;
+    border-color: color-mix(in srgb, var(--danger) 60%, transparent);
   }
   .ss {
     font-size: 12px;
-    color: #9cf;
+    color: var(--accent);
   }
-  .icon.on {
-    color: #60a5fa;
+  .load {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--fg-2);
+  }
+  .load .bar {
+    width: 90px;
   }
   .loops {
     position: absolute;
     left: 16px;
-    bottom: 72px;
-    width: min(380px, calc(100% - 32px));
-    background: #161616f0;
-    border: 1px solid #333;
-    border-radius: 8px;
-    color: #eee;
-    padding: 10px;
-    font-size: 13px;
-    display: grid;
-    gap: 8px;
+    bottom: 76px;
     z-index: 3;
+    width: min(400px, calc(100% - 32px));
+    display: grid;
+    gap: 10px;
+    padding: 14px;
+    border-radius: var(--radius-lg);
+    background: rgb(23 25 31 / 0.94);
+    backdrop-filter: blur(10px);
+    border: 1px solid var(--border);
+    font-size: 13px;
   }
   .loops-head {
     display: flex;
@@ -563,7 +591,7 @@
     padding: 0;
     display: grid;
     gap: 2px;
-    max-height: 200px;
+    max-height: 220px;
     overflow-y: auto;
   }
   .loops li {
@@ -572,59 +600,64 @@
     gap: 6px;
   }
   .loops li.active .seg {
-    color: #60a5fa;
+    color: var(--accent);
+    background: var(--accent-soft);
   }
   .loops .seg {
     flex: 1;
     display: flex;
     justify-content: space-between;
-    background: transparent;
+    height: 30px;
+    padding: 0 12px;
     border: 0;
+    border-radius: var(--radius-pill);
+    background: transparent;
     color: inherit;
     text-align: left;
   }
-  .loops small {
-    color: #aaa;
+  .loops .seg:hover {
+    background: var(--hover);
   }
-  .loops label {
-    display: flex;
-    align-items: center;
-    gap: 2px;
-    font-size: 12px;
+  .loops small {
+    color: var(--muted);
+  }
+  .auto {
+    height: 24px;
+    padding: 0 10px;
+    border-radius: var(--radius-pill);
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--muted);
+    font-size: 11px;
+  }
+  .auto.on {
+    border-color: var(--accent);
+    color: var(--accent);
   }
   .marks {
     display: flex;
     gap: 6px;
   }
-  .marks input {
+  .marks .input {
     flex: 1;
-    min-width: 0;
-    background: #222;
-    color: #eee;
-    border: 1px solid #444;
-    border-radius: 6px;
-    padding: 4px 6px;
-  }
-  .loops button {
-    background: #2a2a2a;
-    border-color: #555;
-    color: #eee;
-  }
-  .loops button.primary {
-    background: var(--accent);
-    border-color: var(--accent);
+    height: var(--h-control-sm);
   }
   .seg-err {
-    color: #f87171;
+    color: var(--danger);
     margin: 0;
   }
   .side {
     position: absolute;
-    top: 44px;
-    right: 0;
-    bottom: 0;
-    display: flex;
+    top: 56px;
+    right: 12px;
+    bottom: 12px;
     z-index: 2;
+    width: 320px;
+    border-radius: var(--radius-lg);
+    background: rgb(23 25 31 / 0.94);
+    backdrop-filter: blur(10px);
+    border: 1px solid var(--border);
+    overflow: hidden;
   }
   .hud {
     position: absolute;
@@ -633,13 +666,13 @@
     right: 0;
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 10px 16px;
-    background: linear-gradient(#000a, transparent);
-    color: #eee;
+    gap: 14px;
+    height: 56px;
+    padding: 0 12px 0 20px;
+    background: linear-gradient(rgb(0 0 0 / 0.66), transparent);
     opacity: 0;
-    transition: opacity 0.2s;
     pointer-events: none;
+    transition: opacity var(--t-med) var(--ease);
   }
   .hud.visible,
   .nav.visible {
@@ -648,38 +681,71 @@
   }
   .name {
     flex: 1;
+    min-width: 0;
+    font-weight: 500;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .pos {
     font-variant-numeric: tabular-nums;
-    opacity: 0.8;
+    color: var(--muted);
+    font-size: 12px;
   }
-  .icon {
-    background: transparent;
+  .tools {
+    display: flex;
+    gap: 2px;
+    padding: 3px;
+    border-radius: var(--radius-pill);
+    background: rgb(23 25 31 / 0.7);
+    backdrop-filter: blur(8px);
+  }
+  .hb {
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
     border: 0;
-    color: #eee;
-    font-size: 16px;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--fg-2);
+    transition:
+      background var(--t-fast) var(--ease),
+      color var(--t-fast) var(--ease);
+  }
+  .hb:hover {
+    background: var(--hover);
+    color: #fff;
+  }
+  .hb.on {
+    color: var(--accent);
   }
   .nav {
     position: absolute;
     top: 50%;
     transform: translateY(-50%);
-    background: #0006;
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
     border: 0;
+    border-radius: 50%;
+    background: rgb(23 25 31 / 0.6);
+    backdrop-filter: blur(6px);
     color: #fff;
-    font-size: 32px;
-    width: 48px;
-    height: 72px;
     opacity: 0;
-    transition: opacity 0.2s;
     pointer-events: none;
+    transition:
+      opacity var(--t-med) var(--ease),
+      background var(--t-fast) var(--ease);
+  }
+  .nav:hover {
+    background: rgb(40 44 54 / 0.85);
   }
   .prev {
-    left: 8px;
+    left: 16px;
   }
   .next {
-    right: 8px;
+    right: 16px;
   }
 </style>

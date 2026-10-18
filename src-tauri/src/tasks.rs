@@ -45,6 +45,8 @@ pub struct TaskInfo {
     pub label: String,
     /// Current step, e.g. the folder being listed.
     pub detail: String,
+    /// The media item this task works on, if any (the preview shows its read progress).
+    pub media_id: Option<i64>,
     pub done: u64,
     pub total: Option<u64>,
     pub unit: Unit,
@@ -101,6 +103,7 @@ pub fn begin_with_cancel(
             kind,
             label: label.into(),
             detail: String::new(),
+            media_id: None,
             done: 0,
             total,
             unit,
@@ -174,6 +177,11 @@ impl Task {
         self.emit(false);
     }
 
+    pub fn media(self, id: i64) -> Self {
+        self.inner.info.lock().unwrap().media_id = Some(id);
+        self
+    }
+
     pub fn detail(&self, detail: impl Into<String>) {
         self.inner.info.lock().unwrap().detail = detail.into();
         self.emit(false);
@@ -241,6 +249,7 @@ impl Drop for Task {
 /// finish within `progress.slow_read_ms`, so fast local files never flash in the UI.
 pub struct ReadTracker {
     label: String,
+    media_id: Option<i64>,
     total: u64,
     done: u64,
     started: Instant,
@@ -249,15 +258,19 @@ pub struct ReadTracker {
 }
 
 impl ReadTracker {
-    pub fn new(label: impl Into<String>, total: u64) -> Self {
+    pub fn new(label: impl Into<String>, total: u64, media_id: Option<i64>) -> Self {
         let threshold = Duration::from_millis(crate::recent::cached_app_settings().progress.slow_read_ms);
-        Self { label: label.into(), total, done: 0, started: Instant::now(), threshold, task: None }
+        Self { label: label.into(), media_id, total, done: 0, started: Instant::now(), threshold, task: None }
     }
 
     pub fn advance(&mut self, n: u64) {
         self.done += n;
         if self.task.is_none() && self.started.elapsed() >= self.threshold && self.done < self.total {
-            self.task = Some(begin("read", std::mem::take(&mut self.label), Unit::Bytes, Some(self.total)));
+            let task = begin("read", std::mem::take(&mut self.label), Unit::Bytes, Some(self.total));
+            self.task = Some(match self.media_id {
+                Some(id) => task.media(id),
+                None => task,
+            });
         }
         if let Some(t) = &self.task {
             t.set(self.done, None);

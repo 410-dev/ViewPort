@@ -1,0 +1,50 @@
+/**
+ * Device preferences (`AppSettings`): theme, language, fonts, layout. Loaded once at
+ * startup, applied to the document as CSS variables, and saved back with a short delay
+ * so dragging a splitter or a slider does not write on every frame.
+ */
+import { api, type AppSettings, type UiSettings } from "./api";
+import { i18n, resolveLocale } from "./i18n.svelte";
+
+export const prefs = $state<{ app: AppSettings | null }>({ app: null });
+
+/** The UI part of the preferences. Only valid after `loadPrefs()`. */
+export function ui(): UiSettings {
+  return prefs.app!.ui;
+}
+
+const systemDark = typeof matchMedia !== "undefined" ? matchMedia("(prefers-color-scheme: dark)") : null;
+systemDark?.addEventListener("change", () => prefs.app && applyPrefs(prefs.app));
+
+export async function loadPrefs() {
+  prefs.app = await api.getAppSettings();
+  applyPrefs(prefs.app);
+}
+
+/** Applies preferences to the document. Also used to preview unsaved settings. */
+export function applyPrefs(app: AppSettings) {
+  const u = app.ui;
+  const root = document.documentElement;
+  const theme = u.theme === "system" ? (systemDark?.matches === false ? "light" : "dark") : u.theme;
+  root.dataset.theme = theme;
+  root.dataset.motion = u.reduce_motion ? "reduce" : "full";
+  const set = (k: string, v: string | null) => (v ? root.style.setProperty(k, v) : root.style.removeProperty(k));
+  set("--accent", /^#[0-9a-f]{6}$/i.test(u.accent) ? u.accent : null);
+  set("--font-ui", u.font_ui.trim() ? `${u.font_ui}, ${FALLBACK_FONTS}` : null);
+  set("--font-editor", u.font_editor.trim() ? `${u.font_editor}, var(--font-ui)` : null);
+  set("--font-size", `${Math.min(20, Math.max(11, u.font_size || 13))}px`);
+  i18n.locale = resolveLocale(u.locale);
+  i18n.queryLocale = u.query_locale === "auto" ? i18n.locale : resolveLocale(u.query_locale);
+  root.lang = i18n.locale;
+}
+
+const FALLBACK_FONTS = `"Segoe UI", "Malgun Gothic", -apple-system, "Apple SD Gothic Neo", system-ui, sans-serif`;
+
+let timer: ReturnType<typeof setTimeout> | undefined;
+/** Applies and saves the current preferences after `delay` ms. */
+export function savePrefs(delay = 400) {
+  if (!prefs.app) return;
+  applyPrefs(prefs.app);
+  clearTimeout(timer);
+  timer = setTimeout(() => api.saveAppSettings($state.snapshot(prefs.app!) as AppSettings).catch(() => {}), delay);
+}

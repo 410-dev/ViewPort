@@ -2,24 +2,17 @@
   import { open } from "@tauri-apps/plugin-dialog";
   import { untrack } from "svelte";
   import { api, asCmdError, type DriverKind, type SourceRow } from "./api";
-  import { i18n } from "./i18n.svelte";
+  import { t, tx } from "./i18n.svelte";
+  import Icon from "./ui/Icon.svelte";
 
   /** Adds a network source, or edits any source (`source` given). */
   let { source = null, onclose, ondone }: { source?: SourceRow | null; onclose: () => void; ondone: (s: SourceRow) => void } =
     $props();
 
-  type L = { ko: string; en: string };
-  const lbl = (l: L) => (i18n.locale === "ko" ? l.ko : l.en);
-  const fieldLabels: Record<string, L> = {
-    host: { ko: "서버 주소", en: "Server" },
-    port: { ko: "포트", en: "Port" },
-    share: { ko: "공유 이름", en: "Share" },
-    username: { ko: "사용자", en: "User" },
-    password: { ko: "비밀번호", en: "Password" },
-    domain: { ko: "도메인", en: "Domain" },
-    timeout_secs: { ko: "시간 제한 (초)", en: "Timeout (s)" },
-  };
-  const driverLabels: Record<string, L> = { smb: { ko: "SMB (Windows 공유, NAS)", en: "SMB (Windows share, NAS)" } };
+  // Driver and field labels come from the dictionary (`src.driver.<kind>`, `src.field.<key>`);
+  // unknown drivers fall back to their own names.
+  const fieldLabel = (key: string) => tx(`src.field.${key}`, key);
+  const driverLabel = (kind: string) => tx(`src.driver.${kind}`, kind);
 
   // The dialog edits a snapshot of the source it was opened with.
   const initial = untrack(() => source);
@@ -60,7 +53,7 @@
     message = null;
     try {
       const n = await api.testSource(driver, root, values());
-      message = { ok: true, text: lbl({ ko: `연결됨 · 항목 ${n}개`, en: `Connected · ${n} entries` }) };
+      message = { ok: true, text: t("src.connected", { n }) };
     } catch (e) {
       message = { ok: false, text: asCmdError(e).message };
     } finally {
@@ -89,115 +82,91 @@
   }
 </script>
 
-<div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
-  <div class="panel" role="dialog" aria-modal="true">
-    <h2>{source ? lbl({ ko: "소스 편집", en: "Edit source" }) : lbl({ ko: "네트워크 소스 추가", en: "Add network source" })}</h2>
+<div class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
+  <div class="dialog" role="dialog" aria-modal="true">
+    <header>
+      <h2>{source ? t("src.edit") : t("src.add")}</h2>
+      <button class="icon-btn" onclick={onclose} aria-label={t("common.close")}><Icon name="x" size={15} /></button>
+    </header>
 
-    {#if !source}
-      <label>
-        <span>{lbl({ ko: "종류", en: "Type" })}</span>
-        <select bind:value={driver}>
-          {#each kinds as k (k.kind)}<option value={k.kind}>{driverLabels[k.kind] ? lbl(driverLabels[k.kind]) : k.kind}</option>{/each}
-        </select>
-      </label>
-    {/if}
-
-    <label>
-      <span>{lbl({ ko: "표시 이름", en: "Name" })}</span>
-      <input bind:value={name} placeholder={lbl({ ko: "비우면 자동", en: "Automatic if empty" })} />
-    </label>
-
-    {#if !isLocal}
-      {#each fields as f (f.key)}
+    <div class="body form">
+      {#if !source}
         <label>
-          <span>{fieldLabels[f.key] ? lbl(fieldLabels[f.key]) : f.key}{f.required ? " *" : ""}</span>
-          {#if f.kind.type === "secret"}
-            <input type="password" autocomplete="off" bind:value={config[f.key]} />
-          {:else if f.kind.type === "integer"}
-            <input type="number" min={f.kind.min} max={f.kind.max} bind:value={config[f.key]} />
-          {:else if f.kind.type === "bool"}
-            <input type="checkbox" bind:checked={config[f.key]} />
-          {:else}
-            <input bind:value={config[f.key]} />
-          {/if}
+          <span>{t("src.type")}</span>
+          <select class="input" bind:value={driver}>
+            {#each kinds as k (k.kind)}<option value={k.kind}>{driverLabel(k.kind)}</option>{/each}
+          </select>
         </label>
-      {/each}
+      {/if}
+
       <label>
-        <span>{lbl({ ko: "공유 안 폴더 (선택)", en: "Folder in share (optional)" })}</span>
-        <input bind:value={root} placeholder="photos/2026" />
+        <span>{t("src.name")}</span>
+        <input class="input" bind:value={name} placeholder={t("src.nameAuto")} />
       </label>
-    {:else}
-      <label>
-        <span>{lbl({ ko: "폴더", en: "Folder" })}</span>
-        <span class="row">
-          <input bind:value={root} readonly={driver === "bundle"} />
-          {#if driver === "local"}<button onclick={pickFolder}>{lbl({ ko: "찾아보기", en: "Browse" })}</button>{/if}
-        </span>
-      </label>
-      <p class="hint">
-        {lbl({
-          ko: "다른 컴퓨터에서 번들을 열어 경로가 바뀌었다면 새 위치를 지정하세요. 태그와 통계는 그대로 유지됩니다.",
-          en: "If the bundle was opened on another computer and the path changed, point it at the new location. Tags and stats are kept.",
-        })}
-      </p>
-    {/if}
 
-    {#if source}
-      <label class="check">
-        <input type="checkbox" bind:checked={enabled} />
-        <span>{lbl({ ko: "사용", en: "Enabled" })}</span>
-      </label>
-    {/if}
+      {#if !isLocal}
+        {#each fields as f (f.key)}
+          {#if f.kind.type === "bool"}
+            <label class="check">
+              <button type="button" class="switch" class:on={!!config[f.key]} aria-label={fieldLabel(f.key)} onclick={() => (config[f.key] = !config[f.key])}></button>
+              <span>{fieldLabel(f.key)}</span>
+            </label>
+          {:else}
+            <label>
+              <span>{fieldLabel(f.key)}{f.required ? " *" : ""}</span>
+              {#if f.kind.type === "secret"}
+                <input class="input" type="password" autocomplete="off" bind:value={config[f.key]} />
+              {:else if f.kind.type === "integer"}
+                <input class="input" type="number" min={f.kind.min} max={f.kind.max} bind:value={config[f.key]} />
+              {:else}
+                <input class="input" bind:value={config[f.key]} />
+              {/if}
+            </label>
+          {/if}
+        {/each}
+        <label>
+          <span>{t("src.subfolder")}</span>
+          <input class="input" bind:value={root} placeholder="photos/2026" />
+        </label>
+        <p class="hint"><Icon name="key" size={12} />{t("src.secretHint")}</p>
+      {:else}
+        <label>
+          <span>{t("src.folder")}</span>
+          <span class="row">
+            <input class="input" bind:value={root} readonly={driver === "bundle"} />
+            {#if driver === "local"}<button class="btn" onclick={pickFolder}>{t("common.browse")}</button>{/if}
+          </span>
+        </label>
+        <p class="hint">{t("src.movedHint")}</p>
+      {/if}
 
-    {#if !isLocal}
-      <p class="hint">
-        {lbl({
-          ko: "비밀번호는 번들이 아닌 이 기기의 자격 증명 저장소에 보관됩니다.",
-          en: "Passwords are kept in this device's credential store, not in the bundle.",
-        })}
-      </p>
-    {/if}
+      {#if source}
+        <label class="check">
+          <button type="button" class="switch" class:on={enabled} aria-label={t("src.enabled")} onclick={() => (enabled = !enabled)}></button>
+          <span>{t("src.enabled")}</span>
+        </label>
+      {/if}
 
-    {#if message}<p class:ok={message.ok} class:bad={!message.ok}>{message.text}</p>{/if}
+      {#if message}<p class="msg" class:ok={message.ok} class:bad={!message.ok}>{message.text}</p>{/if}
+    </div>
 
     <footer>
-      {#if !isLocal}<button disabled={busy} onclick={test}>{lbl({ ko: "연결 테스트", en: "Test connection" })}</button>{/if}
+      {#if !isLocal}<button class="btn ghost" disabled={busy} onclick={test}><Icon name="zap" size={14} />{t("src.test")}</button>{/if}
       <span class="grow"></span>
-      <button onclick={onclose}>{lbl({ ko: "취소", en: "Cancel" })}</button>
-      <button class="primary" disabled={busy} onclick={save}>{source ? lbl({ ko: "저장", en: "Save" }) : lbl({ ko: "추가", en: "Add" })}</button>
+      <button class="btn ghost" onclick={onclose}>{t("common.cancel")}</button>
+      <button class="btn primary" disabled={busy} onclick={save}>{source ? t("common.save") : t("common.add")}</button>
     </footer>
   </div>
 </div>
 
 <style>
-  .backdrop {
-    position: fixed;
-    inset: 0;
-    background: #0009;
+  .form {
     display: grid;
-    place-items: center;
-    z-index: 20;
-    padding: 16px;
-  }
-  .panel {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    width: min(460px, 100%);
-    max-height: 100%;
-    overflow-y: auto;
-    padding: 16px;
-    display: grid;
-    gap: 10px;
-    box-sizing: border-box;
-  }
-  h2 {
-    margin: 0;
-    font-size: 16px;
+    gap: 12px;
   }
   label {
     display: grid;
-    gap: 3px;
+    gap: 5px;
   }
   label > span:first-child {
     font-size: 12px;
@@ -206,45 +175,41 @@
   label.check {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 10px;
   }
-  input:not([type="checkbox"]),
-  select {
-    font: inherit;
-    color: inherit;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 6px 8px;
-    min-width: 0;
+  label.check > span {
+    font-size: inherit;
+    color: var(--fg);
   }
   .row {
     display: flex;
     gap: 6px;
   }
-  .row input {
+  .row .input {
     flex: 1;
   }
   .hint {
+    display: flex;
+    gap: 6px;
+    align-items: center;
     font-size: 12px;
-    color: var(--muted);
+    color: var(--faint);
     margin: 0;
+    line-height: 1.5;
+  }
+  .msg {
+    margin: 0;
+    padding: 8px 12px;
+    border-radius: var(--radius-md);
+    font-size: 12px;
+    overflow-wrap: anywhere;
   }
   .ok {
-    color: var(--accent);
-    margin: 0;
+    color: var(--ok);
+    background: color-mix(in srgb, var(--ok) 12%, transparent);
   }
   .bad {
     color: var(--danger);
-    margin: 0;
-    overflow-wrap: anywhere;
-  }
-  footer {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-  }
-  .grow {
-    flex: 1;
+    background: color-mix(in srgb, var(--danger) 12%, transparent);
   }
 </style>
