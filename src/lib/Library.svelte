@@ -8,6 +8,7 @@
   import InfoPanel from "./InfoPanel.svelte";
   import QueryEditor from "./QueryEditor.svelte";
   import BasicSearch from "./BasicSearch.svelte";
+  import SourceDialog from "./SourceDialog.svelte";
   import { i18n } from "./i18n.svelte";
   import type { SavedQuery } from "./api";
   import { SvelteSet } from "svelte/reactivity";
@@ -29,6 +30,7 @@
   let showSettings = $state(false);
   let showInfo = $state(true);
   let mode = $state<"quick" | "basic" | "editor">("quick");
+  let sourceDialog = $state<{ source: SourceRow | null } | null>(null);
   let saved = $state<SavedQuery[]>([]);
   let editingSaved = $state<SavedQuery | null>(null);
 
@@ -161,11 +163,13 @@
             {#if scans[s.id] && !scans[s.id].done}<span class="spin">⟳</span>{/if}
           </button>
           <button class="icon" title={t("lib.rescan")} onclick={() => api.scanSource(s.id)}>⟳</button>
+          <button class="icon" title={t("lib.edit")} onclick={() => (sourceDialog = { source: s })}>✎</button>
           <button class="icon" title={t("lib.remove")} onclick={() => removeSource(s)}>✕</button>
         </div>
       {/each}
     </nav>
     <button onclick={addFolder}>+ {t("lib.addFolder")}</button>
+    <button onclick={() => (sourceDialog = { source: null })}>+ {t("lib.addNetwork")}</button>
 
     <h2>{t("lib.saved")}</h2>
     <nav>
@@ -288,6 +292,19 @@
     </div>
   </main>
 </div>
+
+{#if sourceDialog}
+  <SourceDialog
+    source={sourceDialog.source}
+    onclose={() => (sourceDialog = null)}
+    ondone={async (s) => {
+      sourceDialog = null;
+      await refreshSources();
+      selected = s.id;
+      runSearch(false);
+    }}
+  />
+{/if}
 
 {#if showSettings && settings}
   <SettingsPanel {settings} onclose={() => (showSettings = false)} />

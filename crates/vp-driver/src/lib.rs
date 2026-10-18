@@ -9,6 +9,8 @@
 //! protocols block on their own runtime internally.
 
 pub mod local;
+#[cfg(feature = "smb")]
+pub mod smb;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -162,6 +164,8 @@ impl DriverRegistry {
     pub fn with_builtin() -> Self {
         let mut r = Self::default();
         r.register(Arc::new(local::LocalFactory));
+        #[cfg(feature = "smb")]
+        r.register(Arc::new(smb::SmbFactory));
         r
     }
 

@@ -251,7 +251,9 @@ impl Workspace {
             root.extend(vp_driver::checked_components(&source.root)?);
             registry.get("local")?.connect(&root.display().to_string(), &source.config)?
         } else {
-            registry.get(&source.driver)?.connect(&source.root, &source.config)?
+            let factory = registry.get(&source.driver)?;
+            let config = crate::secrets::reveal(&source.driver, &source.config, &factory.config_schema());
+            factory.connect(&source.root, &config)?
         };
         self.drivers.lock().unwrap().insert(source.id, driver.clone());
         Ok(driver)

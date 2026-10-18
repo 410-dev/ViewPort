@@ -452,6 +452,14 @@ impl Db {
         Ok(self.sources()?.into_iter().find(|s| s.id == id))
     }
 
+    pub fn update_source(&self, id: i64, name: &str, root: &str, config: &serde_json::Value, enabled: bool) -> Result<()> {
+        self.conn.execute(
+            "UPDATE source SET name = ?2, root = ?3, config = ?4, enabled = ?5 WHERE id = ?1",
+            params![id, name, root, config.to_string(), enabled],
+        )?;
+        Ok(())
+    }
+
     /// Removes a source and everything recorded about its media.
     pub fn remove_source(&self, id: i64) -> Result<()> {
         self.conn.execute("DELETE FROM source WHERE id = ?1", [id])?;

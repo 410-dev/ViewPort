@@ -2,6 +2,7 @@ mod commands;
 mod error;
 mod media;
 mod recent;
+mod secrets;
 mod thumbs;
 mod video;
 mod workspace;
@@ -78,6 +79,11 @@ pub fn run() {
             commands::loop_segments,
             commands::save_loop_segment,
             commands::delete_loop_segment,
+            commands::driver_kinds,
+            commands::test_source,
+            commands::add_source,
+            commands::update_source,
+            commands::source_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

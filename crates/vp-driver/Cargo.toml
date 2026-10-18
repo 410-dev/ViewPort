@@ -8,7 +8,13 @@ license.workspace = true
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+smb2 = { version = "0.31", optional = true }
 thiserror.workspace = true
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "sync", "time"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+
+[features]
+default = ["smb"]
+smb = ["dep:smb2", "dep:tokio"]

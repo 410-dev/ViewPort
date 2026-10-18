@@ -578,3 +578,109 @@ pub fn save_loop_segment(state: State<'_, AppState>, segment: vp_db::LoopSegment
 pub fn delete_loop_segment(state: State<'_, AppState>, id: i64) -> CmdResult<()> {
     Ok(workspace(&state)?.write_db.lock().unwrap().delete_loop_segment(id)?)
 }
+
+// ---------------------------------------------------------------- generic sources (drivers)
+
+#[derive(Serialize)]
+pub struct DriverKind {
+    pub kind: String,
+    pub fields: Vec<vp_driver::ConfigField>,
+}
+
+/// Network/remote drivers and the settings each needs (the UI builds its form from this).
+#[tauri::command]
+pub fn driver_kinds(state: State<'_, AppState>) -> Vec<DriverKind> {
+    let mut kinds: Vec<DriverKind> = state
+        .drivers
+        .kinds()
+        .filter(|k| *k != "local")
+        .filter_map(|k| state.drivers.get(k).ok().map(|f| DriverKind { kind: k.into(), fields: f.config_schema() }))
+        .collect();
+    kinds.sort_by(|a, b| a.kind.cmp(&b.kind));
+    kinds
+}
+
+fn check_connect(drivers: &vp_driver::DriverRegistry, driver: &str, root: &str, config: &serde_json::Value) -> CmdResult<usize> {
+    let d = drivers.get(driver)?.connect(root, config)?;
+    Ok(d.list("")?.len())
+}
+
+/// Connects with the given settings and lists the root, without saving anything.
+#[tauri::command]
+pub async fn test_source(app: AppHandle, driver: String, root: String, config: serde_json::Value) -> CmdResult<usize> {
+    let drivers = app.state::<AppState>().drivers.clone();
+    blocking(move || check_connect(&drivers, &driver, &root, &config)).await
+}
+
+/// Adds a source for any driver after checking that it connects, then scans it.
+#[tauri::command]
+pub async fn add_source(
+    app: AppHandle,
+    driver: String,
+    name: String,
+    root: String,
+    mut config: serde_json::Value,
+) -> CmdResult<SourceRow> {
+    let state = app.state::<AppState>();
+    let ws = workspace(&state)?;
+    let drivers = state.drivers.clone();
+    let source = blocking(move || {
+        check_connect(&drivers, &driver, &root, &config)?;
+        let schema = drivers.get(&driver)?.config_schema();
+        crate::secrets::stash(&driver, &mut config, &schema);
+        let name = if name.trim().is_empty() { driver.clone() } else { name.trim().to_string() };
+        let id = ws.write_db.lock().unwrap().add_source(&NewSource { name, driver, config, root })?;
+        ws.read_db.lock().unwrap().source(id)?.ok_or_else(|| CmdError::new("not_found", "source"))
+    })
+    .await?;
+    start_scan(&app, workspace(&state)?, source.clone());
+    Ok(source)
+}
+
+/// The stored settings of a source with secrets redacted.
+#[tauri::command]
+pub fn source_config(state: State<'_, AppState>, id: i64) -> CmdResult<serde_json::Value> {
+    let ws = workspace(&state)?;
+    let source = ws.read_db.lock().unwrap().source(id)?.ok_or_else(|| CmdError::new("not_found", "source"))?;
+    let schema = state.drivers.get(&source.driver).map(|f| f.config_schema()).unwrap_or_default();
+    Ok(crate::secrets::redact(&source.config, &schema))
+}
+
+/// Edits a source: rename, enable/disable, point at a moved folder or new server settings.
+#[tauri::command]
+pub async fn update_source(
+    app: AppHandle,
+    id: i64,
+    name: String,
+    root: String,
+    config: Option<serde_json::Value>,
+    enabled: bool,
+) -> CmdResult<SourceRow> {
+    let state = app.state::<AppState>();
+    let ws = workspace(&state)?;
+    let drivers = state.drivers.clone();
+    blocking(move || {
+        let old = ws.read_db.lock().unwrap().source(id)?.ok_or_else(|| CmdError::new("not_found", "source"))?;
+        let mut config = match (&config, old.driver.as_str()) {
+            (Some(c), d) if d != "local" && d != crate::workspace::BUNDLE_DRIVER => {
+                let schema = drivers.get(d)?.config_schema();
+                let merged = crate::secrets::merge_edit(&old.config, c, &schema);
+                let mut revealed = crate::secrets::reveal(d, &merged, &schema);
+                if enabled {
+                    check_connect(&drivers, d, &root, &revealed)?;
+                }
+                crate::secrets::stash(d, &mut revealed, &schema);
+                revealed
+            }
+            _ => old.config.clone(),
+        };
+        if config.is_null() {
+            config = serde_json::json!({});
+        }
+        let name = if name.trim().is_empty() { old.name.clone() } else { name.trim().to_string() };
+        ws.write_db.lock().unwrap().update_source(id, &name, &root, &config, enabled)?;
+        ws.forget_driver(id);
+        Ok(ws.read_db.lock().unwrap().source(id)?.ok_or_else(|| CmdError::new("not_found", "source"))?)
+    })
+    .await
+}

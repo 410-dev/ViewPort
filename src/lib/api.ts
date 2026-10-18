@@ -46,6 +46,19 @@ export interface LoopSegment {
   autoplay: boolean;
 }
 
+export interface ConfigField {
+  key: string;
+  label: string;
+  kind: { type: "text" | "secret" | "integer" | "bool" | "file_path" | "choice"; min?: number; max?: number; options?: string[] };
+  required: boolean;
+  default: any;
+}
+
+export interface DriverKind {
+  kind: string;
+  fields: ConfigField[];
+}
+
 export interface ConvertEvent {
   id: number;
   progress: number;
@@ -253,6 +266,13 @@ export const api = {
   loopSegments: (id: number) => invoke<LoopSegment[]>("loop_segments", { id }),
   saveLoopSegment: (segment: LoopSegment) => invoke<number>("save_loop_segment", { segment }),
   deleteLoopSegment: (id: number) => invoke<void>("delete_loop_segment", { id }),
+  driverKinds: () => invoke<DriverKind[]>("driver_kinds"),
+  testSource: (driver: string, root: string, config: Record<string, any>) => invoke<number>("test_source", { driver, root, config }),
+  addSource: (driver: string, name: string, root: string, config: Record<string, any>) =>
+    invoke<SourceRow>("add_source", { driver, name, root, config }),
+  updateSource: (id: number, name: string, root: string, config: Record<string, any> | null, enabled: boolean) =>
+    invoke<SourceRow>("update_source", { id, name, root, config, enabled }),
+  sourceConfig: (id: number) => invoke<Record<string, any>>("source_config", { id }),
   getAppSettings: () => invoke<AppSettings>("get_app_settings"),
   saveAppSettings: (settings: AppSettings) => invoke<void>("save_app_settings", { settings }),
 };
