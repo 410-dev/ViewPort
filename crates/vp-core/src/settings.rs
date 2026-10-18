@@ -13,12 +13,12 @@ const GIB: u64 = 1024 * MIB;
 pub struct Settings {
     pub general: GeneralSettings,
     pub cache: CacheSettings,
+    pub stats: StatsSettings,
     pub playback: PlaybackSettings,
     pub slideshow: SlideshowSettings,
     pub thumbnails: ThumbnailSettings,
     pub scan: ScanSettings,
     pub grid: GridSettings,
-    pub hardware: HardwareSettings,
     pub keys: KeyBindings,
 }
 
@@ -42,33 +42,55 @@ impl Default for GeneralSettings {
 pub struct CacheSettings {
     /// Total in-memory media cache size.
     pub memory_bytes: u64,
-    /// Reserve and commit the whole cache at startup (desktop only).
+    /// Allocate and commit the whole cache when a bundle opens, so the memory is
+    /// reserved up front. Off by default on mobile, where the OS may kill the app.
     pub preallocate: bool,
-    /// Additionally lock the cache pages so the OS cannot swap them out.
-    pub lock_pages: bool,
-    /// Number of most-viewed items to preload at startup.
+    /// Cache allocation unit. Smaller wastes less on small files; larger means fewer chunks.
+    pub chunk_bytes: u64,
+    /// Number of most-viewed items to preload when a bundle opens.
     pub autoload_top_n: u32,
     /// Fraction of `memory_bytes` the startup preload may use.
     pub autoload_ratio: f32,
     /// Items to prefetch ahead / behind the current carousel position.
     pub prefetch_ahead: u32,
     pub prefetch_behind: u32,
+    /// Concurrent prefetch / preload reads.
+    pub prefetch_workers: u32,
     /// Files larger than this are streamed instead of cached whole.
     pub max_item_bytes: u64,
+    /// Largest response served for one range request when streaming uncached files.
+    pub stream_chunk_bytes: u64,
 }
 
 impl Default for CacheSettings {
     fn default() -> Self {
         Self {
             memory_bytes: 2 * GIB,
-            preallocate: true,
-            lock_pages: false,
+            preallocate: !cfg!(any(target_os = "android", target_os = "ios")),
+            chunk_bytes: 256 * 1024,
             autoload_top_n: 30,
             autoload_ratio: 0.5,
             prefetch_ahead: 3,
             prefetch_behind: 1,
+            prefetch_workers: 2,
             max_item_bytes: GIB,
+            stream_chunk_bytes: 4 * MIB,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StatsSettings {
+    /// Popularity halves after this many days without views.
+    pub half_life_days: f64,
+    /// Views shorter than this are not counted.
+    pub min_view_ms: u64,
+}
+
+impl Default for StatsSettings {
+    fn default() -> Self {
+        Self { half_life_days: 14.0, min_view_ms: 700 }
     }
 }
 
@@ -94,6 +116,8 @@ pub struct PlaybackSettings {
     /// Initial volume, 0.0..=1.0.
     pub volume: f32,
     pub muted: bool,
+    /// FFmpeg executable; empty means look next to the app, then on PATH.
+    pub ffmpeg_path: String,
 }
 
 impl Default for PlaybackSettings {
@@ -104,6 +128,7 @@ impl Default for PlaybackSettings {
             suggest_conversion: true,
             volume: 1.0,
             muted: false,
+            ffmpeg_path: String::new(),
         }
     }
 }
@@ -239,20 +264,28 @@ impl Default for GridSettings {
     }
 }
 
+/// Settings that belong to this device rather than to a bundle. Stored in the app's
+/// config directory.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct AppSettings {
+    pub hardware: HardwareSettings,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HardwareSettings {
-    /// Hardware video decoding (WebView and fallback pipeline).
+    /// GPU compositing and rasterization in the WebView.
+    pub gpu: bool,
+    /// Hardware video decoding (WebView and conversion pipeline).
     pub video_decode: bool,
-    /// Hardware encoding for fallback transcodes.
+    /// Hardware encoding for conversions, when FFmpeg supports it on this device.
     pub video_encode: bool,
-    /// GPU image decoding / scaling where available.
-    pub image_decode: bool,
 }
 
 impl Default for HardwareSettings {
     fn default() -> Self {
-        Self { video_decode: true, video_encode: true, image_decode: true }
+        Self { gpu: true, video_decode: true, video_encode: true }
     }
 }
 

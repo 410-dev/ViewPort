@@ -155,27 +155,44 @@ impl ToSql for Bind<'_> {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct DbOptions {
+    /// Open a database whose schema is newer than this build, without migrating it.
+    pub allow_newer_schema: bool,
+}
+
 pub struct Db {
     conn: Connection,
 }
 
 impl Db {
     pub fn open(path: &Path) -> Result<Self> {
+        Self::open_with(path, &DbOptions::default())
+    }
+
+    pub fn open_with(path: &Path, opts: &DbOptions) -> Result<Self> {
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
-        Self::init(conn)
+        Self::init(conn, opts)
     }
 
     pub fn open_in_memory() -> Result<Self> {
-        Self::init(Connection::open_in_memory()?)
+        Self::init(Connection::open_in_memory()?, &DbOptions::default())
     }
 
-    fn init(mut conn: Connection) -> Result<Self> {
+    fn init(mut conn: Connection, opts: &DbOptions) -> Result<Self> {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.create_collation(collation::NATURAL, collation::natural_cmp)?;
-        schema::migrate(&mut conn)?;
+        schema::migrate(&mut conn, opts.allow_newer_schema)?;
         Ok(Self { conn })
+    }
+
+    /// Writes a consistent copy of the database to `dest` (works while in use).
+    pub fn backup_to(&self, dest: &Path) -> Result<()> {
+        let _ = std::fs::remove_file(dest);
+        self.conn.execute("VACUUM INTO ?1", [dest.to_string_lossy()])?;
+        Ok(())
     }
 
     pub fn conn(&self) -> &Connection {
@@ -486,6 +503,45 @@ impl Db {
         )?;
         let ids = stmt.query_map([limit as i64], |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
         Ok(ids)
+    }
+
+    /// Records one view of `media_id` lasting `view_ms`.
+    ///
+    /// Popularity is a frecency score that halves every `half_life_ms` without views. It is
+    /// stored as `log2(score) + time / half_life`, which keeps the ordering correct over time
+    /// without rewriting every row: higher stored value = more popular right now.
+    pub fn record_view(&self, media_id: i64, now_ms: i64, view_ms: i64, half_life_ms: f64) -> Result<()> {
+        let hl = half_life_ms.max(1.0);
+        let old: Option<f64> = self
+            .conn
+            .query_row("SELECT score FROM media_stats WHERE media_id = ?1 AND view_count > 0", [media_id], |r| r.get(0))
+            .optional()?;
+        let now_term = now_ms as f64 / hl;
+        let current = old.map(|k| (k - now_term).exp2()).unwrap_or(0.0);
+        let key = (current + 1.0).log2() + now_term;
+        self.conn.execute(
+            "INSERT INTO media_stats (media_id, view_count, total_view_ms, last_viewed_ms, score)
+             VALUES (?1, 1, ?2, ?3, ?4)
+             ON CONFLICT (media_id) DO UPDATE SET
+                view_count = view_count + 1,
+                total_view_ms = total_view_ms + excluded.total_view_ms,
+                last_viewed_ms = excluded.last_viewed_ms,
+                score = excluded.score",
+            params![media_id, view_ms, now_ms, key],
+        )?;
+        Ok(())
+    }
+
+    /// Most popular present items as `(id, size)`, best first.
+    pub fn most_popular(&self, limit: usize) -> Result<Vec<(i64, u64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT m.id, m.size FROM media_stats s JOIN media m ON m.id = s.media_id
+             JOIN source src ON src.id = m.source_id
+             WHERE s.view_count > 0 AND NOT m.missing AND src.enabled
+             ORDER BY s.score DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit as i64], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as u64)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// Context for compiling queries against this database.

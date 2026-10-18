@@ -3,6 +3,8 @@
   import { onDestroy } from "svelte";
   import { api, asCmdError, onScan, onThumbs, type BundleSummary, type ScanEvent, type Settings, type SourceRow } from "./api";
   import Grid from "./Grid.svelte";
+  import Viewer from "./Viewer.svelte";
+  import SettingsPanel from "./Settings.svelte";
   import { t } from "./i18n.svelte";
 
   let { bundle, onclose }: { bundle: BundleSummary; onclose: () => void } = $props();
@@ -17,6 +19,8 @@
   let thumbsDone = $state<number | null>(null);
   let settings = $state<Settings | null>(null);
   let resetKey = $state(0);
+  let viewing = $state<number | null>(null);
+  let showSettings = $state(false);
 
   async function refreshSources() {
     sources = await api.listSources();
@@ -138,6 +142,10 @@
     <button onclick={addFolder}>+ {t("lib.addFolder")}</button>
 
     <div class="grow"></div>
+    {#if bundle.mode === "manual_save_only"}
+      <button onclick={() => api.saveBundle().catch((e) => alert(asCmdError(e).message))}>{t("lib.save")}</button>
+    {/if}
+    <button class="ghost" onclick={() => (showSettings = true)}>{t("lib.settings")}</button>
     <button class="ghost" onclick={close}>{t("lib.close")}</button>
   </aside>
 
@@ -186,11 +194,20 @@
           tile={settings.grid.tile_px}
           showNames={settings.grid.show_names}
           overscan={settings.grid.overscan_rows}
+          onopen={(i) => (viewing = i)}
         />
       {/if}
     </div>
   </main>
 </div>
+
+{#if showSettings && settings}
+  <SettingsPanel {settings} onclose={() => (showSettings = false)} />
+{/if}
+
+{#if viewing !== null && settings && ids.length > 0}
+  <Viewer {ids} bind:index={viewing} {settings} onclose={() => (viewing = null)} />
+{/if}
 
 <style>
   .layout {

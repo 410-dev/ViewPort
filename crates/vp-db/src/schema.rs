@@ -153,10 +153,12 @@ pub enum MigrationError {
     Sql(#[from] rusqlite::Error),
 }
 
-pub fn migrate(conn: &mut Connection) -> Result<(), MigrationError> {
+/// Brings the schema up to date. A newer schema is an error unless `allow_newer`, in which
+/// case it is left untouched (used for bundles from newer builds opened with consent).
+pub fn migrate(conn: &mut Connection, allow_newer: bool) -> Result<(), MigrationError> {
     let current: u32 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
     if current > SCHEMA_VERSION {
-        return Err(MigrationError::TooNew { found: current });
+        return if allow_newer { Ok(()) } else { Err(MigrationError::TooNew { found: current }) };
     }
     for (i, sql) in MIGRATIONS.iter().enumerate().skip(current as usize) {
         let tx = conn.transaction()?;

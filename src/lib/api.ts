@@ -65,10 +65,58 @@ export interface GridSettings {
   show_names: boolean;
 }
 
+export interface CacheSettings {
+  memory_bytes: number;
+  preallocate: boolean;
+  chunk_bytes: number;
+  autoload_top_n: number;
+  autoload_ratio: number;
+  prefetch_ahead: number;
+  prefetch_behind: number;
+  prefetch_workers: number;
+  max_item_bytes: number;
+  stream_chunk_bytes: number;
+}
+
+export interface KeyBindings {
+  next: string[];
+  prev: string[];
+  seek_forward: string[];
+  seek_backward: string[];
+  toggle_fullscreen: string[];
+  toggle_play: string[];
+  toggle_slideshow: string[];
+  close_viewer: string[];
+}
+
 export interface Settings {
   general: { locale: string; autosave_debounce_ms: number };
   grid: GridSettings;
+  cache: CacheSettings;
+  playback: {
+    seek_step_secs: number;
+    fallback_mode: string;
+    suggest_conversion: boolean;
+    volume: number;
+    muted: boolean;
+    ffmpeg_path: string;
+  };
+  keys: KeyBindings;
   [section: string]: any;
+}
+
+export interface AppSettings {
+  hardware: { gpu: boolean; video_decode: boolean; video_encode: boolean };
+}
+
+export interface CacheStats {
+  capacity_bytes: number;
+  allocated_bytes: number;
+  used_bytes: number;
+  reserved_bytes: number;
+  items: number;
+  hits: number;
+  misses: number;
 }
 
 export const api = {
@@ -87,6 +135,12 @@ export const api = {
   search: (query: string, sourceId: number | null) =>
     invoke<SearchResult>("search", { query, sourceId, tzOffsetMinutes: -new Date().getTimezoneOffset() }),
   mediaBrief: (ids: number[]) => invoke<MediaBrief[]>("media_brief", { ids }),
+  saveBundle: () => invoke<void>("save_bundle"),
+  prefetch: (ids: number[]) => invoke<void>("prefetch", { ids }),
+  recordView: (id: number, viewMs: number) => invoke<void>("record_view", { id, viewMs }),
+  cacheStats: () => invoke<CacheStats>("cache_stats"),
+  getAppSettings: () => invoke<AppSettings>("get_app_settings"),
+  saveAppSettings: (settings: AppSettings) => invoke<void>("save_app_settings", { settings }),
 };
 
 export const onScan = (f: (e: ScanEvent) => void): Promise<UnlistenFn> =>
@@ -96,6 +150,7 @@ export const onThumbs = (f: (e: ThumbsEvent) => void): Promise<UnlistenFn> =>
   listen<ThumbsEvent>("thumbs-progress", (e) => f(e.payload));
 
 export const thumbUrl = (id: number) => convertFileSrc(String(id), "vpthumb");
+export const mediaUrl = (id: number) => convertFileSrc(String(id), "vpmedia");
 
 export function asCmdError(e: unknown): CmdError {
   if (e && typeof e === "object" && "code" in e) return e as CmdError;

@@ -14,6 +14,7 @@ vp-db = { path = "crates/vp-db" }
 vp-driver = { path = "crates/vp-driver" }
 vp-bundle = { path = "crates/vp-bundle" }
 vp-scan = { path = "crates/vp-scan" }
+vp-cache = { path = "crates/vp-cache" }
 vp-thumb = { path = "crates/vp-thumb" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

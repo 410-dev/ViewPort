@@ -1,14 +1,37 @@
-//! Recently opened bundles, stored in the app config directory (not in any bundle).
+//! Per-device state stored in the app config directory (not in any bundle):
+//! recently opened bundles and [`AppSettings`].
 
 use std::path::PathBuf;
 
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, Runtime};
+use vp_core::settings::AppSettings;
 
 const FILE: &str = "recent_bundles.json";
 const MAX: usize = 10;
 
+const APP_SETTINGS: &str = "app_settings.json";
+
+fn config_file<R: Runtime>(app: &AppHandle<R>, name: &str) -> Option<PathBuf> {
+    app.path().app_config_dir().ok().map(|d| d.join(name))
+}
+
 fn path(app: &AppHandle) -> Option<PathBuf> {
-    app.path().app_config_dir().ok().map(|d| d.join(FILE))
+    config_file(app, FILE)
+}
+
+pub fn app_settings<R: Runtime>(app: &AppHandle<R>) -> AppSettings {
+    config_file(app, APP_SETTINGS)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_app_settings(app: &AppHandle, s: &AppSettings) -> std::io::Result<()> {
+    let p = config_file(app, APP_SETTINGS).ok_or_else(|| std::io::Error::other("no config dir"))?;
+    if let Some(dir) = p.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(p, serde_json::to_vec_pretty(s).map_err(std::io::Error::other)?)
 }
 
 pub fn list(app: &AppHandle) -> Vec<String> {

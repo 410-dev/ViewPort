@@ -27,7 +27,9 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> CmdResult<T> + Send + '
 
 fn install(app: &AppHandle, state: &AppState, ws: Workspace) -> CmdResult<BundleSummary> {
     let summary = ws.summary();
-    let old = state.workspace.write().unwrap().replace(Arc::new(ws));
+    let ws = Arc::new(ws);
+    ws.start_background(state.drivers.clone());
+    let old = state.workspace.write().unwrap().replace(ws);
     if let Some(old) = old {
         old.closed.store(true, Ordering::Relaxed);
     }
@@ -63,6 +65,13 @@ pub fn close_bundle(state: State<'_, AppState>) {
     }
 }
 
+/// Saves a bundle opened in manual-save mode. Does nothing in autosave mode.
+#[tauri::command]
+pub async fn save_bundle(app: AppHandle) -> CmdResult<()> {
+    let ws = workspace(&app.state::<AppState>())?;
+    blocking(move || ws.save()).await
+}
+
 #[tauri::command]
 pub fn current_bundle(state: State<'_, AppState>) -> Option<BundleSummary> {
     state.workspace.read().unwrap().as_ref().map(|w| w.summary())
@@ -83,6 +92,16 @@ pub fn get_settings(state: State<'_, AppState>) -> CmdResult<Settings> {
 #[tauri::command]
 pub fn save_settings(state: State<'_, AppState>, settings: Settings) -> CmdResult<()> {
     workspace(&state)?.save_settings(settings)
+}
+
+#[tauri::command]
+pub fn get_app_settings(app: AppHandle) -> vp_core::settings::AppSettings {
+    recent::app_settings(&app)
+}
+
+#[tauri::command]
+pub fn save_app_settings(app: AppHandle, settings: vp_core::settings::AppSettings) -> CmdResult<()> {
+    Ok(recent::save_app_settings(&app, &settings)?)
 }
 
 // ---------------------------------------------------------------- sources
@@ -176,7 +195,7 @@ fn start_scan(app: &AppHandle, ws: Arc<Workspace>, source: SourceRow) {
             Err(e) => emit(&empty, true, Some(e.clone())),
         }
         ws.scans.lock().unwrap().remove(&source.id);
-        if result.is_ok() && settings.thumbnails_after_scan {
+        if result.is_ok() && settings.thumbnails_after_scan && ws.autosave() {
             crate::thumbs::spawn_backfill(app.clone(), ws.clone());
         }
     });
@@ -254,4 +273,52 @@ pub fn check_query(state: State<'_, AppState>, src: &str, locale: &str) -> CmdRe
             QueryCheck::Error { error: e, span }
         }
     })
+}
+
+// ---------------------------------------------------------------- cache and stats
+
+/// Loads items into the memory cache in the background, in the given order, skipping
+/// ones already cached. Used for carousel look-ahead and for videos being streamed.
+pub fn spawn_prefetch<R: tauri::Runtime>(app: &AppHandle<R>, ws: &Arc<Workspace>, ids: Vec<i64>) {
+    let drivers = app.state::<AppState>().drivers.clone();
+    for id in ids {
+        if ws.cache.contains(id) {
+            continue;
+        }
+        let (ws, drivers) = (ws.clone(), drivers.clone());
+        tauri::async_runtime::spawn(async move {
+            let Ok(_permit) = ws.prefetch_permits.clone().acquire_owned().await else { return };
+            if ws.closed.load(Ordering::Relaxed) || ws.cache.contains(id) {
+                return;
+            }
+            let _ = tauri::async_runtime::spawn_blocking(move || ws.load_into_cache(&drivers, id)).await;
+        });
+    }
+}
+
+#[tauri::command]
+pub fn prefetch(app: AppHandle, state: State<'_, AppState>, ids: Vec<i64>) -> CmdResult<()> {
+    spawn_prefetch(&app, &workspace(&state)?, ids);
+    Ok(())
+}
+
+/// Records that an item was looked at for `view_ms`. Short glances are ignored.
+#[tauri::command]
+pub async fn record_view(app: AppHandle, id: i64, view_ms: i64) -> CmdResult<()> {
+    let ws = workspace(&app.state::<AppState>())?;
+    blocking(move || {
+        let stats = ws.settings.read().unwrap().stats.clone();
+        if view_ms < stats.min_view_ms as i64 {
+            return Ok(());
+        }
+        let half_life_ms = stats.half_life_days * 86_400_000.0;
+        ws.write_db.lock().unwrap().record_view(id, now_ms(), view_ms, half_life_ms)?;
+        Ok(())
+    })
+    .await
+}
+
+#[tauri::command]
+pub fn cache_stats(state: State<'_, AppState>) -> CmdResult<vp_cache::CacheStats> {
+    Ok(workspace(&state)?.cache.stats())
 }

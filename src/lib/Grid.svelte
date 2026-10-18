@@ -8,7 +8,15 @@
     showNames,
     overscan,
     resetKey,
-  }: { ids: number[]; tile: number; showNames: boolean; overscan: number; resetKey: unknown } = $props();
+    onopen,
+  }: {
+    ids: number[];
+    tile: number;
+    showNames: boolean;
+    overscan: number;
+    resetKey: unknown;
+    onopen: (index: number) => void;
+  } = $props();
 
   const GAP = 6;
   const LABEL = 20;
@@ -69,11 +77,13 @@
       {@const row = Math.floor(index / cols)}
       {@const col = index % cols}
       {@const noThumb = b?.thumb === "unsupported" || b?.thumb === "failed" || broken.has(id)}
-      <div
+      <button
         class="tile"
         style:width="{tileW}px"
         style:transform="translate({col * (tileW + GAP)}px, {row * rowH}px)"
         title={b?.name}
+        onclick={() => onopen(index)}
+        onkeydown={(e) => e.key === "Enter" && onopen(index)}
       >
         <div class="frame" style:height="{tileW}px">
           {#if noThumb}
@@ -88,7 +98,7 @@
         {#if showNames}
           <div class="name">{b?.name ?? ""}</div>
         {/if}
-      </div>
+      </button>
     {/each}
   </div>
 </div>
@@ -110,6 +120,15 @@
     top: 0;
     left: 0;
     will-change: transform;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    text-align: left;
+    border-radius: 6px;
+  }
+  .tile:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
   .frame {
     position: relative;

@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -10,8 +10,9 @@ use serde::Serialize;
 use vp_bundle::{Bundle, OpenMode};
 use vp_core::MediaKind;
 use vp_core::settings::Settings;
-use vp_db::{Db, SourceRow, ThumbRow, ThumbStatus};
-use vp_driver::{DriverRegistry, MediaDriver};
+use vp_cache::{CachedMedia, MediaCache};
+use vp_db::{Db, DbOptions, MediaLocation, SourceRow, ThumbRow, ThumbStatus};
+use vp_driver::{DriverRegistry, MediaDriver, MediaReader};
 use vp_thumb::PackStore;
 
 use crate::error::{CmdError, CmdResult};
@@ -41,8 +42,12 @@ pub struct Workspace {
     pub thumb_permits: Arc<tokio::sync::Semaphore>,
     drivers: Mutex<HashMap<i64, Arc<dyn MediaDriver>>>,
     pub scans: Mutex<HashMap<i64, Arc<AtomicBool>>>,
+    pub cache: Arc<MediaCache>,
+    pub prefetch_permits: Arc<tokio::sync::Semaphore>,
     /// Set when the bundle is closed so background jobs stop.
-    pub closed: AtomicBool,
+    pub closed: Arc<AtomicBool>,
+    /// In manual-save mode the database is a temporary working copy; see [`Workspace::save`].
+    working_db: Option<PathBuf>,
 }
 
 impl Workspace {
@@ -65,28 +70,127 @@ impl Workspace {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Settings::default(),
             Err(e) => return Err(e.into()),
         };
-        let db_path = bundle.path(vp_bundle::DB_FILE);
-        if let Some(dir) = db_path.parent() {
+        let bundle_db = bundle.path(vp_bundle::DB_FILE);
+        if let Some(dir) = bundle_db.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let write_db = Db::open(&db_path)?;
-        let read_db = Db::open(&db_path)?;
+        let manual = bundle.mode == OpenMode::ManualSaveOnly;
+        // A bundle from a newer build is never written implicitly: work on a copy.
+        let working_db = if manual {
+            let dir = std::env::temp_dir().join(format!("viewport-{}-{}", std::process::id(), now_ms()));
+            std::fs::create_dir_all(&dir)?;
+            let copy = dir.join("library.sqlite");
+            if bundle_db.exists() {
+                Db::open_with(&bundle_db, &DbOptions { allow_newer_schema: true })?.backup_to(&copy)?;
+            }
+            Some(copy)
+        } else {
+            None
+        };
+        let db_path = working_db.clone().unwrap_or(bundle_db);
+        let opts = DbOptions { allow_newer_schema: manual };
+        let write_db = Db::open_with(&db_path, &opts)?;
+        let read_db = Db::open_with(&db_path, &opts)?;
         let thumbs = PackStore::open(&bundle.path(vp_bundle::THUMBS_DIR), settings.thumbnails.pack_bytes)?;
         let workers = match settings.thumbnails.workers {
             0 => std::thread::available_parallelism().map(|n| (n.get() / 2).max(1)).unwrap_or(2),
             n => n as usize,
         };
+        let c = &settings.cache;
+        let cache = MediaCache::new(c.memory_bytes, c.chunk_bytes, c.max_item_bytes);
+        let prefetch_permits = Arc::new(tokio::sync::Semaphore::new(c.prefetch_workers.max(1) as usize));
         Ok(Self {
             bundle,
-            settings: RwLock::new(settings),
             write_db: Mutex::new(write_db),
             read_db: Mutex::new(read_db),
             thumbs,
             thumb_permits: Arc::new(tokio::sync::Semaphore::new(workers)),
             drivers: Mutex::default(),
             scans: Mutex::default(),
-            closed: AtomicBool::new(false),
+            cache,
+            prefetch_permits,
+            closed: Arc::new(AtomicBool::new(false)),
+            working_db,
+            settings: RwLock::new(settings),
         })
+    }
+
+    /// Whether changes are written to the bundle as they happen.
+    pub fn autosave(&self) -> bool {
+        self.bundle.mode == OpenMode::Autosave
+    }
+
+    /// Explicit save for manual-save mode: copies the working database and settings into
+    /// the bundle. A no-op in autosave mode, where everything is already saved.
+    pub fn save(&self) -> CmdResult<()> {
+        if self.working_db.is_none() {
+            return Ok(());
+        }
+        let dest = self.bundle.path(vp_bundle::DB_FILE);
+        let tmp = dest.with_extension("sqlite.saving");
+        self.write_db.lock().unwrap().backup_to(&tmp)?;
+        for ext in ["sqlite-wal", "sqlite-shm"] {
+            let _ = std::fs::remove_file(dest.with_extension(ext));
+        }
+        std::fs::rename(&tmp, &dest)?;
+        let settings = self.settings.read().unwrap().clone();
+        let json = serde_json::to_vec_pretty(&settings)?;
+        vp_driver::local::write_atomic(&self.bundle.path(vp_bundle::SETTINGS_FILE), &json)?;
+        Ok(())
+    }
+
+    /// Starts background work that runs while the bundle is open: preloading the most
+    /// popular items, then committing the rest of the cache memory.
+    pub fn start_background(self: &Arc<Self>, drivers: Arc<DriverRegistry>) {
+        let ws = self.clone();
+        let _ = std::thread::Builder::new().name("cache-warmup".into()).spawn(move || {
+            let c = ws.settings.read().unwrap().cache.clone();
+            ws.autoload(&drivers, c.autoload_top_n as usize, c.autoload_ratio as f64);
+            if c.preallocate {
+                ws.cache.preallocate(&ws.closed);
+            }
+        });
+    }
+
+    fn autoload(&self, drivers: &DriverRegistry, top_n: usize, ratio: f64) {
+        let budget = (self.cache.capacity_bytes() as f64 * ratio.clamp(0.0, 1.0)) as u64;
+        let Ok(popular) = self.read_db.lock().unwrap().most_popular(top_n) else { return };
+        let mut used = 0u64;
+        for (id, size) in popular {
+            if self.closed.load(Ordering::Relaxed) || used + size > budget {
+                break;
+            }
+            if self.load_into_cache(drivers, id).ok().flatten().is_some() {
+                used += size;
+            }
+        }
+    }
+
+    /// Loads an item into the memory cache (or returns it if already there).
+    /// `None` if it is too large to cache or the cache is full of items in use.
+    pub fn load_into_cache(&self, drivers: &DriverRegistry, id: i64) -> CmdResult<Option<CachedMedia>> {
+        if let Some(m) = self.cache.get(id) {
+            return Ok(Some(m));
+        }
+        let Some(loc) = self.read_db.lock().unwrap().media_location(id)? else { return Ok(None) };
+        if !self.cache.fits(loc.size) {
+            return Ok(None);
+        }
+        let reader = self.open_media(drivers, &loc)?;
+        let len = reader.len();
+        Ok(self.cache.insert_with(id, len, |offset, buf| {
+            let n = reader.read_full_at(offset, buf)?;
+            if n < buf.len() {
+                return Err(std::io::ErrorKind::UnexpectedEof.into());
+            }
+            Ok(())
+        })?)
+    }
+
+    pub fn open_media(&self, drivers: &DriverRegistry, loc: &MediaLocation) -> CmdResult<Box<dyn MediaReader>> {
+        let source =
+            self.read_db.lock().unwrap().source(loc.source_id)?.ok_or_else(|| CmdError::new("not_found", "source"))?;
+        Ok(self.driver(drivers, &source)?.open(&loc.rel_path)?)
     }
 
     pub fn summary(&self) -> BundleSummary {
@@ -99,7 +203,7 @@ impl Workspace {
     }
 
     pub fn save_settings(&self, settings: Settings) -> CmdResult<()> {
-        if self.bundle.mode == OpenMode::Autosave {
+        if self.autosave() {
             let path = self.bundle.path(vp_bundle::SETTINGS_FILE);
             vp_driver::local::write_atomic(&path, &serde_json::to_vec_pretty(&settings)?)?;
         }
@@ -154,8 +258,11 @@ impl Workspace {
         let Some(loc) = self.read_db.lock().unwrap().media_location(media_id)? else { return Ok(None) };
         let settings = self.settings.read().unwrap().thumbnails.clone();
 
+        // In manual-save mode thumbnails are generated but not stored.
         let record = |row: ThumbRow| -> CmdResult<()> {
-            self.write_db.lock().unwrap().set_thumbnail(media_id, &row)?;
+            if self.autosave() {
+                self.write_db.lock().unwrap().set_thumbnail(media_id, &row)?;
+            }
             Ok(())
         };
         // Video frames need the media pipeline, which is not in place yet.
@@ -163,14 +270,13 @@ impl Workspace {
             record(ThumbRow::without_data(ThumbStatus::Unsupported))?;
             return Ok(None);
         }
-        let source = self.read_db.lock().unwrap().source(loc.source_id)?.ok_or_else(|| CmdError::new("not_found", "source"))?;
-        let driver = self.driver(registry, &source)?;
-        let reader = driver.open(&loc.rel_path)?;
+        let reader = self.open_media(registry, &loc)?;
         let mut bytes = vec![0u8; reader.len() as usize];
         let n = reader.read_full_at(0, &mut bytes)?;
         bytes.truncate(n);
 
         match vp_thumb::generate(&bytes, &settings) {
+            Ok(t) if !self.autosave() => Ok(Some((t.data, t.mime.into()))),
             Ok(t) => {
                 let (pack, offset) = self.thumbs.append(&t.data)?;
                 record(ThumbRow {

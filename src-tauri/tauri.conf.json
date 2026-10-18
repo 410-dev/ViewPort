@@ -10,15 +10,7 @@
     "frontendDist": "../build"
   },
   "app": {
-    "windows": [
-      {
-        "title": "ViewPort",
-        "width": 1280,
-        "height": 800,
-        "minWidth": 480,
-        "minHeight": 360
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }

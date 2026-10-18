@@ -178,3 +178,19 @@ fn batch_rolls_back() {
     assert!(r.is_err());
     assert_eq!(lib.db.sources().unwrap().len(), 2);
 }
+
+#[test]
+fn frecency_prefers_recent_and_frequent() {
+    let lib = library();
+    let hl = DAY as f64;
+    // Item 1: viewed 3 times long ago. Item 2: once, just now. Item 3: twice recently.
+    for _ in 0..3 {
+        lib.db.record_view(1, OCT18 - 10 * DAY, 1000, hl).unwrap();
+    }
+    lib.db.record_view(3, OCT18 - DAY, 1000, hl).unwrap();
+    lib.db.record_view(3, OCT18, 1000, hl).unwrap();
+    lib.db.record_view(2, OCT18, 1000, hl).unwrap();
+    let top: Vec<i64> = lib.db.most_popular(10).unwrap().into_iter().map(|(id, _)| id).collect();
+    assert_eq!(top, [3, 2, 1]);
+    assert_eq!(lib.ids("조회수(3)"), [1]);
+}

@@ -4325,6 +4325,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "vp-bundle",
+ "vp-cache",
  "vp-core",
  "vp-db",
  "vp-driver",
@@ -4342,6 +4343,13 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "vp-core",
+]
+
+[[package]]
+name = "vp-cache"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

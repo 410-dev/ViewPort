@@ -34,6 +34,7 @@ tokio = { version = "1.53.3", features = ["sync"] }
 thiserror.workspace = true
 vp-scan.workspace = true
 vp-thumb.workspace = true
+vp-cache.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
