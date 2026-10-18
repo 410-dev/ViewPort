@@ -235,8 +235,10 @@ export const api = {
   removeSource: (id: number) => invoke<void>("remove_source", { id }),
   scanSource: (id: number) => invoke<void>("scan_source", { id }),
   cancelScan: (id: number) => invoke<void>("cancel_scan", { id }),
-  search: (query: string, sourceId: number | null) =>
-    invoke<SearchResult>("search", { query, sourceId, tzOffsetMinutes: -new Date().getTimezoneOffset() }),
+  search: (query: string, sourceId: number | null, folder: string | null = null, recursive = false) =>
+    invoke<SearchResult>("search", { query, sourceId, folder, recursive, tzOffsetMinutes: -new Date().getTimezoneOffset() }),
+  childFolders: (sourceId: number, parent: string) =>
+    invoke<{ name: string; count: number }[]>("child_folders", { sourceId, parent }),
   mediaBrief: (ids: number[]) => invoke<MediaBrief[]>("media_brief", { ids }),
   saveBundle: () => invoke<void>("save_bundle"),
   prefetch: (ids: number[]) => invoke<void>("prefetch", { ids }),

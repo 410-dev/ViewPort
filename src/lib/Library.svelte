@@ -30,6 +30,10 @@
   let thumbsDone = $state<number | null>(null);
   let settings = $state<Settings | null>(null);
   let resetKey = $state(0);
+  // Folder browsing within the selected source ("" = its root).
+  let folder = $state("");
+  let recursive = $state(true);
+  let subfolders = $state<{ name: string; count: number }[]>([]);
   let viewing = $state<number | null>(null);
   let showSettings = $state(false);
   let showInfo = $state(true);
@@ -56,7 +60,7 @@
 
   async function runSearch(reset: boolean) {
     try {
-      const r = await api.search(query, selected);
+      const r = await api.search(query, selected, selected === null ? null : folder, recursive);
       ids = r.ids;
       elapsed = r.elapsed_ms;
       queryError = null;
@@ -72,9 +76,27 @@
 
   // Re-run the search while typing, after a short pause.
   let debounce: ReturnType<typeof setTimeout> | undefined;
+  // Changing source starts at its root.
+  let lastSource: number | null = null;
+  $effect(() => {
+    if (selected !== lastSource) {
+      lastSource = selected;
+      folder = "";
+    }
+  });
+
+  $effect(() => {
+    const src = selected;
+    const f = folder;
+    subfolders = [];
+    if (src !== null) api.childFolders(src, f).then((list) => (subfolders = list)).catch(() => {});
+  });
+
   $effect(() => {
     query;
     selected;
+    folder;
+    recursive;
     clearTimeout(debounce);
     debounce = setTimeout(() => runSearch(true), 250);
   });
@@ -269,6 +291,28 @@
           >{query.slice(queryError.end)}</code
         >
         <span>{t("err.query")}: {queryError.message}</span>
+      </div>
+    {/if}
+    {#if selected !== null}
+      <div class="folders">
+        <nav class="crumbs" aria-label="folder">
+          <button class:cur={folder === ""} onclick={() => (folder = "")}>{sources.find((s) => s.id === selected)?.name ?? ""}</button>
+          {#each folder ? folder.split("/") : [] as part, i (i)}
+            <span>/</span>
+            <button
+              class:cur={i === folder.split("/").length - 1}
+              onclick={() => (folder = folder.split("/").slice(0, i + 1).join("/"))}>{part}</button
+            >
+          {/each}
+        </nav>
+        <label class="rec"><input type="checkbox" bind:checked={recursive} />{t("lib.recursive")}</label>
+        {#if subfolders.length}
+          <div class="subs">
+            {#each subfolders as f (f.name)}
+              <button onclick={() => (folder = folder ? `${folder}/${f.name}` : f.name)}>📁 {f.name} <small>{f.count}</small></button>
+            {/each}
+          </div>
+        {/if}
       </div>
     {/if}
     <div class="meta">
@@ -466,6 +510,56 @@
   mark {
     background: var(--danger);
     color: #fff;
+  }
+  .folders {
+    padding: 8px 16px 0;
+    display: grid;
+    gap: 6px;
+    font-size: 13px;
+  }
+  .crumbs {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px;
+  }
+  .crumbs button {
+    border: 0;
+    background: transparent;
+    padding: 2px 4px;
+    color: var(--accent);
+  }
+  .crumbs button.cur {
+    color: var(--fg);
+    font-weight: 600;
+  }
+  .crumbs span {
+    color: var(--muted);
+  }
+  .rec {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .folders {
+    grid-template-columns: 1fr auto;
+  }
+  .subs {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    max-height: 96px;
+    overflow-y: auto;
+  }
+  .subs button {
+    padding: 3px 8px;
+    font-size: 12px;
+  }
+  .subs small {
+    color: var(--muted);
   }
   .meta {
     display: flex;

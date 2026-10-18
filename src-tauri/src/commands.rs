@@ -316,6 +316,8 @@ pub async fn search(
     app: AppHandle,
     query: String,
     source_id: Option<i64>,
+    folder: Option<String>,
+    recursive: Option<bool>,
     tz_offset_minutes: i32,
 ) -> CmdResult<SearchResult> {
     let ws = workspace(&app.state::<AppState>())?;
@@ -335,7 +337,8 @@ pub async fn search(
                 q.sorts = d.sorts;
             }
         }
-        let ids = db.search_in(&q, &reg, &Db::compile_context(now_ms(), tz_offset_minutes), source_id)?;
+        let scope = vp_db::Scope { source_id, folder, recursive: recursive.unwrap_or(false) };
+        let ids = db.search_in(&q, &reg, &Db::compile_context(now_ms(), tz_offset_minutes), &scope)?;
         Ok(SearchResult { ids, elapsed_ms: started.elapsed().as_secs_f64() * 1000.0 })
     })
     .await
@@ -775,6 +778,22 @@ pub async fn update_source(
         ws.write_db.lock().unwrap().update_source(id, &name, &root, &config, enabled)?;
         ws.forget_driver(id);
         ws.read_db.lock().unwrap().source(id)?.ok_or_else(|| CmdError::new("not_found", "source"))
+    })
+    .await
+}
+
+#[derive(Serialize)]
+pub struct FolderEntry {
+    pub name: String,
+    pub count: u64,
+}
+
+#[tauri::command]
+pub async fn child_folders(app: AppHandle, source_id: i64, parent: String) -> CmdResult<Vec<FolderEntry>> {
+    let ws = workspace(&app.state::<AppState>())?;
+    blocking(move || {
+        let rows = ws.read_db.lock().unwrap().child_folders(source_id, &parent)?;
+        Ok(rows.into_iter().map(|(name, count)| FolderEntry { name, count }).collect())
     })
     .await
 }

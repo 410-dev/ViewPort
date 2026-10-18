@@ -88,6 +88,7 @@ pub fn run() {
             commands::unlock_bundle,
             commands::set_lock,
             commands::remove_lock,
+            commands::child_folders,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

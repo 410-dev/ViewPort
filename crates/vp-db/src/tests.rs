@@ -89,7 +89,8 @@ fn base_fields_and_sources() {
     let lib = library();
     assert_eq!(lib.ids("소스(NAS)"), [3, 5]);
     let all = vp_query::Query::default();
-    assert_eq!(lib.db.search_in(&all, &lib.reg, &Db::compile_context(OCT18, 0), Some(2)).unwrap(), [3, 5]);
+    let scope = Scope { source_id: Some(2), ..Default::default() };
+    assert_eq!(lib.db.search_in(&all, &lib.reg, &Db::compile_context(OCT18, 0), &scope).unwrap(), [3, 5]);
     assert_eq!(lib.ids("유형(영상) 그리고 내림차순 정렬(생성 날짜)"), [3, 5, 4]);
     assert_eq!(lib.ids("확장자(jpg) 그리고 정렬(이름)"), [2, 1]);
     assert_eq!(lib.ids("이름(패턴:b*.jpg)"), [1, 2]);
@@ -318,4 +319,35 @@ fn memory_round_trip() {
     assert!(copy.total_changes() > before);
     let empty = Db::open_memory_from(None, &DbOptions::default()).unwrap();
     assert_eq!(empty.sources().unwrap().len(), 0);
+}
+
+#[test]
+fn folder_browsing() {
+    let lib = library();
+    for (i, path) in ["trip/day1/a.jpg", "trip/day1/b.jpg", "trip/day2/c.jpg", "tripx/d.jpg"].iter().enumerate() {
+        lib.db
+            .upsert_media(&NewMedia {
+                source_id: 1,
+                rel_path: path.to_string(),
+                kind: MediaKind::Image,
+                size: 1,
+                created_ms: None,
+                modified_ms: None,
+                added_ms: i as i64,
+                duration_ms: None,
+                width: None,
+                height: None,
+                seen_gen: 1,
+            })
+            .unwrap();
+    }
+    // Source 1 already has trip/b10.jpg, trip/b2.jpg, trip/a1.mp4.
+    assert_eq!(lib.db.child_folders(1, "").unwrap(), [("trip".to_string(), 6), ("tripx".to_string(), 1)]);
+    assert_eq!(lib.db.child_folders(1, "trip").unwrap(), [("day1".to_string(), 2), ("day2".to_string(), 1)]);
+    let all = vp_query::Query::default();
+    let ctx = Db::compile_context(OCT18, 0);
+    let direct = Scope { source_id: Some(1), folder: Some("trip".into()), recursive: false };
+    assert_eq!(lib.db.search_in(&all, &lib.reg, &ctx, &direct).unwrap().len(), 3);
+    let deep = Scope { recursive: true, ..direct };
+    assert_eq!(lib.db.search_in(&all, &lib.reg, &ctx, &deep).unwrap().len(), 6, "tripx is not inside trip");
 }
