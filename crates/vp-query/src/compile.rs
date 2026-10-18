@@ -214,12 +214,29 @@ impl<'a> Compiler<'a> {
             Op::ContainsAny => format!("{expr} IN ({})", self.list(values)),
             Op::StartsWith => self.likes(expr, values, |t| format!("{t}%")),
             Op::EndsWith => self.likes(expr, values, |t| format!("%{t}")),
+            // `png`, `.png` and `PNG` all mean "name ends with .png" (LIKE is case-insensitive for ASCII).
+            Op::HasExt => {
+                let exts: Vec<Value> = values
+                    .iter()
+                    .map(|v| match v {
+                        Value::Text(t) => Value::Text(t.trim().trim_start_matches('.').to_string()),
+                        other => other.clone(),
+                    })
+                    .collect();
+                self.likes(expr, &exts, |t| format!("%.{t}"))
+            }
             Op::Glob => {
                 let Value::Text(t) = &values[0] else { unreachable!("analyzer only produces text for text fields") };
                 let pat = self.bind(SqlValue::Text(glob_to_like(t)));
                 format!("{expr} LIKE {pat} ESCAPE '\\'")
             }
-            Op::Ne | Op::ContainsAll | Op::ContainsNone | Op::NotExists => {
+            Op::Ne
+            | Op::ContainsAll
+            | Op::ContainsNone
+            | Op::NotExists
+            | Op::NotStartsWith
+            | Op::NotEndsWith
+            | Op::NotHasExt => {
                 unreachable!("handled by positive()")
             }
         }
@@ -351,6 +368,15 @@ mod tests {
         assert!(folder < name && name < created, "{}", c.order_sql);
         assert!(c.order_sql.ends_with("m.id ASC"));
         assert!(c.order_sql.contains("m.parent_path COLLATE NOCASE DESC"));
+    }
+
+    #[test]
+    fn extension_and_negated_text_ops() {
+        let c = compile_src("이름(.PNG:jpg:의 확장자를 가지고 있음)");
+        assert_eq!(c.params, [SqlValue::Text("%.PNG".into()), SqlValue::Text("%.jpg".into())]);
+        let c = compile_src("이름(tmp:로 시작하지 않음)");
+        assert!(c.where_sql.starts_with("NOT (COALESCE"), "{}", c.where_sql);
+        assert_eq!(c.params, [SqlValue::Text("tmp%".into())]);
     }
 
     #[test]

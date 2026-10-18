@@ -96,10 +96,17 @@ impl MediaCache {
     /// Allocates and commits every chunk. Blocking and slow for large caches; run it on a
     /// background thread. Stops early when `stop` is set.
     pub fn preallocate(&self, stop: &AtomicBool) {
-        for slot in self.slots.iter() {
+        self.preallocate_with(stop, &mut |_, _| {});
+    }
+
+    /// [`MediaCache::preallocate`] reporting `(chunks done, chunks total)`.
+    pub fn preallocate_with(&self, stop: &AtomicBool, progress: &mut dyn FnMut(u64, u64)) {
+        let total = self.slots.len() as u64;
+        for (i, slot) in self.slots.iter().enumerate() {
             if stop.load(Ordering::Relaxed) {
                 return;
             }
+            progress(i as u64, total);
             let mut s = slot.write().unwrap();
             if s.is_none() {
                 *s = Some(self.allocate_chunk());

@@ -147,14 +147,14 @@ fn lower_pred(call: &Call, reg: &FieldRegistry) -> Result<Pred> {
     let arity_ok = match op {
         Op::Exists | Op::NotExists => n == 0,
         Op::Between => n == 2,
-        Op::ContainsAny | Op::ContainsAll | Op::ContainsNone => n >= 1,
+        Op::ContainsAny | Op::ContainsAll | Op::ContainsNone | Op::HasExt | Op::NotHasExt => n >= 1,
         _ => n == 1,
     };
     if !arity_ok {
         let expected = match op {
             Op::Exists | Op::NotExists => "0",
             Op::Between => "2",
-            Op::ContainsAny | Op::ContainsAll | Op::ContainsNone => "1+",
+            Op::ContainsAny | Op::ContainsAll | Op::ContainsNone | Op::HasExt | Op::NotHasExt => "1+",
             _ => "1",
         };
         return Err(QueryError::new(

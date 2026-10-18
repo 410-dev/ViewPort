@@ -223,7 +223,13 @@ impl Workspace {
             let c = ws.settings.read().unwrap().cache.clone();
             ws.autoload(&drivers, c.autoload_top_n as usize, c.autoload_ratio as f64);
             if c.preallocate {
-                ws.cache.preallocate(&ws.closed);
+                let total_bytes = ws.cache.capacity_bytes();
+                let task = crate::tasks::begin("reserve", "", crate::tasks::Unit::Bytes, Some(total_bytes));
+                ws.cache.preallocate_with(&ws.closed, &mut |done, total| {
+                    if total > 0 {
+                        task.set(total_bytes / total * done, None);
+                    }
+                });
             }
         });
     }
@@ -231,8 +237,13 @@ impl Workspace {
     fn autoload(&self, drivers: &DriverRegistry, top_n: usize, ratio: f64) {
         let budget = (self.cache.capacity_bytes() as f64 * ratio.clamp(0.0, 1.0)) as u64;
         let Ok(popular) = self.read_db.lock().unwrap().most_popular(top_n) else { return };
+        if popular.is_empty() {
+            return;
+        }
+        let task = crate::tasks::begin("preload", "", crate::tasks::Unit::Items, Some(popular.len() as u64));
         let mut used = 0u64;
         for (id, size) in popular {
+            task.add(1);
             if self.closed.load(Ordering::Relaxed) || used + size > budget {
                 break;
             }
@@ -254,13 +265,19 @@ impl Workspace {
         }
         let reader = self.open_media(drivers, &loc)?;
         let len = reader.len();
-        Ok(self.cache.insert_with(id, len, |offset, buf| {
+        let mut tracker = crate::tasks::ReadTracker::new(file_name(&loc.rel_path), len);
+        let result = self.cache.insert_with(id, len, |offset, buf| {
             let n = reader.read_full_at(offset, buf)?;
             if n < buf.len() {
                 return Err(std::io::ErrorKind::UnexpectedEof.into());
             }
+            tracker.advance(n as u64);
             Ok(())
-        })?)
+        });
+        if let Err(e) = &result {
+            tracker.fail(e.to_string());
+        }
+        Ok(result?)
     }
 
     pub fn open_media(&self, drivers: &DriverRegistry, loc: &MediaLocation) -> CmdResult<Box<dyn MediaReader>> {
@@ -449,6 +466,7 @@ impl Workspace {
             Ok(())
         };
         if loc.kind == MediaKind::Video {
+            let _generating = GENERATING.guard();
             return match self.video_frame(registry, media_id, &loc)? {
                 Some(jpeg) if self.autosave() => {
                     let stored = self.seal_thumb(&jpeg)?;
@@ -476,10 +494,9 @@ impl Workspace {
             record(ThumbRow::without_data(ThumbStatus::Unsupported))?;
             return Ok(None);
         }
+        let _generating = GENERATING.guard();
         let reader = self.open_media(registry, &loc)?;
-        let mut bytes = vec![0u8; reader.len() as usize];
-        let n = reader.read_full_at(0, &mut bytes)?;
-        bytes.truncate(n);
+        let bytes = read_tracked(reader.as_ref(), &loc.rel_path)?;
 
         match vp_thumb::generate(&bytes, &settings) {
             Ok(t) if !self.autosave() => Ok(Some((t.data, t.mime.into()))),
@@ -508,6 +525,55 @@ impl Workspace {
             }
         }
     }
+}
+
+/// Thumbnails being generated on demand (for what is on screen), shown as one task.
+static GENERATING: GenerateBurst = GenerateBurst(crate::tasks::Burst::new("thumbs_visible"));
+
+struct GenerateBurst(crate::tasks::Burst);
+
+impl GenerateBurst {
+    fn guard(&'static self) -> impl Drop {
+        struct Guard(&'static crate::tasks::Burst);
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                self.0.leave();
+            }
+        }
+        self.0.enter();
+        Guard(&self.0)
+    }
+}
+
+pub fn file_name(rel_path: &str) -> String {
+    rel_path.rsplit(['/', '\\']).next().unwrap_or(rel_path).to_string()
+}
+
+/// Reads a whole file in pieces of `progress.read_piece_bytes`, reporting slow reads.
+pub fn read_tracked(reader: &dyn MediaReader, rel_path: &str) -> CmdResult<Vec<u8>> {
+    let len = reader.len() as usize;
+    let piece = (crate::recent::cached_app_settings().progress.read_piece_bytes as usize).max(64 * 1024);
+    let mut bytes = vec![0u8; len];
+    let mut tracker = crate::tasks::ReadTracker::new(file_name(rel_path), len as u64);
+    let mut off = 0usize;
+    while off < len {
+        let end = (off + piece).min(len);
+        let want = end - off;
+        let n = match reader.read_full_at(off as u64, &mut bytes[off..end]) {
+            Ok(n) => n,
+            Err(e) => {
+                tracker.fail(e.to_string());
+                return Err(e.into());
+            }
+        };
+        tracker.advance(n as u64);
+        off += n;
+        if n < want {
+            break; // the file got shorter since it was scanned
+        }
+    }
+    bytes.truncate(off);
+    Ok(bytes)
 }
 
 /// Deletes bundle files that a lock change left behind: the plaintext ones after

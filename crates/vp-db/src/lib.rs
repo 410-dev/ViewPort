@@ -140,6 +140,12 @@ pub struct MediaBrief {
     pub has_variant: bool,
     /// The user chose not to be warned about playback for this file.
     pub ignore_warning: bool,
+    pub size: u64,
+    pub created_ms: Option<i64>,
+    pub modified_ms: Option<i64>,
+    /// Folder relative to the source root ("" = root).
+    pub folder: String,
+    pub ext: String,
 }
 
 /// Flag set by "add this file to the ignore list" on the playback banner.
@@ -574,7 +580,8 @@ impl Db {
             let sql = format!(
                 "SELECT m.id, m.name, m.kind, m.width, m.height, m.duration_ms, t.status,
                         p.compatible, v.media_id IS NOT NULL,
-                        EXISTS (SELECT 1 FROM media_flag f WHERE f.media_id = m.id AND f.flag = '{FLAG_IGNORE_PLAYBACK_WARNING}')
+                        EXISTS (SELECT 1 FROM media_flag f WHERE f.media_id = m.id AND f.flag = '{FLAG_IGNORE_PLAYBACK_WARNING}'),
+                        m.size, m.created_ms, m.modified_ms, m.parent_path, m.ext
                  FROM media m LEFT JOIN thumbnail t ON t.media_id = m.id
                  LEFT JOIN media_probe p ON p.media_id = m.id AND p.ok
                  LEFT JOIN media_variant v ON v.media_id = m.id
@@ -593,6 +600,11 @@ impl Db {
                     compatible: r.get(7)?,
                     has_variant: r.get(8)?,
                     ignore_warning: r.get(9)?,
+                    size: r.get::<_, i64>(10)? as u64,
+                    created_ms: r.get(11)?,
+                    modified_ms: r.get(12)?,
+                    folder: r.get::<_, Option<String>>(13)?.unwrap_or_default(),
+                    ext: r.get::<_, Option<String>>(14)?.unwrap_or_default(),
                 })
             })?;
             for row in rows {
@@ -657,6 +669,17 @@ impl Db {
         )?;
         let ids = stmt.query_map([limit as i64], |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
         Ok(ids)
+    }
+
+    /// Number of items [`Db::missing_thumbnails`] would eventually return.
+    pub fn count_missing_thumbnails(&self) -> Result<u64> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM media m JOIN source src ON src.id = m.source_id
+             LEFT JOIN thumbnail t ON t.media_id = m.id
+             WHERE t.media_id IS NULL AND NOT m.missing AND src.enabled",
+            [],
+            |r| r.get::<_, i64>(0),
+        )? as u64)
     }
 
     /// Records one view of `media_id` lasting `view_ms`.
@@ -936,6 +959,17 @@ impl Db {
         )?;
         let ids = stmt.query_map([limit as i64], |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
         Ok(ids)
+    }
+
+    /// Number of videos [`Db::unprobed_videos`] would eventually return.
+    pub fn count_unprobed_videos(&self) -> Result<u64> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM media m JOIN source src ON src.id = m.source_id
+             LEFT JOIN media_probe p ON p.media_id = m.id
+             WHERE m.kind = 'video' AND p.media_id IS NULL AND NOT m.missing AND src.enabled",
+            [],
+            |r| r.get::<_, i64>(0),
+        )? as u64)
     }
 
     /// Stores a probe result; on success also fills the item's duration and dimensions.

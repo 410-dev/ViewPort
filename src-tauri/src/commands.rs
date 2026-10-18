@@ -272,8 +272,17 @@ fn start_scan(app: &AppHandle, ws: Arc<Workspace>, source: SourceRow) {
     tauri::async_runtime::spawn_blocking(move || {
         let registry = app.state::<AppState>().drivers.clone();
         let settings = ws.settings.read().unwrap().scan.clone();
-        let emit = |progress: &vp_scan::ScanProgress, done: bool, error: Option<String>| {
-            let _ = app.emit("scan-progress", ScanEvent { progress: progress.clone(), done, error });
+        let task = crate::tasks::begin_with_cancel("scan", &source.name, crate::tasks::Unit::Items, None, Some(cancel.clone()));
+        let interval = std::time::Duration::from_millis(crate::recent::cached_app_settings().progress.emit_interval_ms);
+        let mut last = std::time::Instant::now() - interval;
+        let mut emit = |progress: &vp_scan::ScanProgress, done: bool, error: Option<String>| {
+            task.set(progress.files, None);
+            task.detail(if progress.current.is_empty() { "/".to_string() } else { progress.current.clone() });
+            // Scans report every folder; the UI only needs a few updates per second.
+            if done || last.elapsed() >= interval {
+                last = std::time::Instant::now();
+                let _ = app.emit("scan-progress", ScanEvent { progress: progress.clone(), done, error });
+            }
         };
         let result = ws.driver(&registry, &source).map_err(|e| e.message).and_then(|driver| {
             let scanner = vp_scan::Scanner {
@@ -290,6 +299,11 @@ fn start_scan(app: &AppHandle, ws: Arc<Workspace>, source: SourceRow) {
         match &result {
             Ok(p) => emit(p, true, None),
             Err(e) => emit(&empty, true, Some(e.clone())),
+        }
+        match &result {
+            Ok(_) => task.finish(),
+            Err(_) if cancel.load(Ordering::Relaxed) => task.cancelled(),
+            Err(e) => task.fail(e.clone()),
         }
         ws.scans.lock().unwrap().remove(&source.id);
         if result.is_ok() && ws.autosave() {
@@ -796,4 +810,16 @@ pub async fn child_folders(app: AppHandle, source_id: i64, parent: String) -> Cm
         Ok(rows.into_iter().map(|(name, count)| FolderEntry { name, count }).collect())
     })
     .await
+}
+
+// ---------------------------------------------------------------- background tasks
+
+#[tauri::command]
+pub fn list_tasks() -> Vec<crate::tasks::TaskInfo> {
+    crate::tasks::list()
+}
+
+#[tauri::command]
+pub fn cancel_task(id: u64) -> bool {
+    crate::tasks::cancel(id)
 }

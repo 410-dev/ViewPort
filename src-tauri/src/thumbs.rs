@@ -64,7 +64,13 @@ pub fn spawn_backfill(app: AppHandle, ws: Arc<Workspace>) {
     let drivers = state.drivers.clone();
     tauri::async_runtime::spawn(async move {
         let mut done = 0u64;
+        let total = ws.read_db.lock().unwrap().count_missing_thumbnails().ok();
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let task = crate::tasks::begin_with_cancel("thumbs", "", crate::tasks::Unit::Items, total, Some(cancel.clone()));
         'outer: loop {
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
             let batch = {
                 let db = ws.read_db.lock().unwrap();
                 db.missing_thumbnails(64).unwrap_or_default()
@@ -92,9 +98,11 @@ pub fn spawn_backfill(app: AppHandle, ws: Arc<Workspace>) {
             for t in tasks {
                 let _ = t.await;
                 done += 1;
+                task.set(done, None);
             }
             let _ = app.emit("thumbs-progress", BackfillEvent { done, finished: false });
         }
+        drop(task);
         let _ = ws.thumbs.sync();
         let _ = app.emit("thumbs-progress", BackfillEvent { done, finished: true });
         app.state::<AppState>().backfill_running.store(false, Ordering::Release);

@@ -49,7 +49,9 @@ impl FieldType {
             Eq | Ne | ContainsAny | ContainsNone | Exists | NotExists => true,
             Gt | Ge | Lt | Le | Between => self.is_numeric(),
             ContainsAll => self.is_textual(),
-            StartsWith | EndsWith | Glob => self == FieldType::Text,
+            StartsWith | NotStartsWith | EndsWith | NotEndsWith | HasExt | NotHasExt | Glob => {
+                self == FieldType::Text
+            }
         }
     }
 

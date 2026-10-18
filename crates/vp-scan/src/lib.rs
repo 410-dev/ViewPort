@@ -34,6 +34,8 @@ pub struct ScanProgress {
     pub unchanged: u64,
     /// Present only once the scan has finished.
     pub missing: Option<u64>,
+    /// Folder being listed (relative to the source root).
+    pub current: String,
     /// Directories or files that could not be read.
     pub errors: Vec<String>,
 }
@@ -89,6 +91,9 @@ impl Scanner<'_> {
             if self.cancel.load(Ordering::Relaxed) {
                 return Err(ScanError::Cancelled);
             }
+            // Listing can be slow on network shares; report where the scan is first.
+            p.current.clone_from(&dir);
+            progress(&p);
             let mut entries = match self.driver.list(&dir) {
                 Ok(e) => e,
                 Err(e) => {

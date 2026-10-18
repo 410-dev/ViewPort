@@ -4,6 +4,7 @@ mod error;
 mod media;
 mod recent;
 mod secrets;
+mod tasks;
 mod thumbs;
 mod video;
 mod workspace;
@@ -33,6 +34,7 @@ pub fn run() {
         .register_asynchronous_uri_scheme_protocol(thumbs::SCHEME, thumbs::handle)
         .register_asynchronous_uri_scheme_protocol(media::SCHEME, media::handle)
         .setup(|app| {
+            tasks::init(app.handle());
             create_main_window(app.handle())?;
             Ok(())
         })
@@ -89,6 +91,8 @@ pub fn run() {
             commands::set_lock,
             commands::remove_lock,
             commands::child_folders,
+            commands::list_tasks,
+            commands::cancel_task,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -110,6 +114,13 @@ fn browser_args(hw: &vp_core::settings::HardwareSettings) -> String {
     let mut args = vec!["--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection".to_string()];
     if !hw.gpu {
         args.push("--disable-gpu".into());
+    } else {
+        if hw.gpu_rasterization {
+            args.push("--enable-gpu-rasterization".into());
+        }
+        if hw.zero_copy {
+            args.push("--enable-zero-copy".into());
+        }
     }
     if !hw.video_decode {
         args.push("--disable-accelerated-video-decode".into());

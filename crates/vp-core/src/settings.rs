@@ -282,11 +282,108 @@ pub struct AppSettings {
     pub hardware: HardwareSettings,
     /// Open the most recent bundle when the app starts (so its cache warms up right away).
     pub reopen_last_bundle: bool,
+    pub ui: UiSettings,
+    pub progress: ProgressSettings,
 }
 
 impl Default for AppSettings {
     fn default() -> Self {
-        Self { hardware: HardwareSettings::default(), reopen_last_bundle: true }
+        Self {
+            hardware: HardwareSettings::default(),
+            reopen_last_bundle: true,
+            ui: UiSettings::default(),
+            progress: ProgressSettings::default(),
+        }
+    }
+}
+
+/// Look and layout of the app on this device.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UiSettings {
+    /// UI language: "auto" (system), "ko", "en".
+    pub locale: String,
+    /// Language of query keywords: "auto" follows the UI language.
+    pub query_locale: String,
+    /// "dark", "light" or "system".
+    pub theme: String,
+    /// Accent color as `#rrggbb`.
+    pub accent: String,
+    /// CSS font family list for the UI; empty uses the system sans-serif (Segoe UI /
+    /// Malgun Gothic on Windows, SF / Apple SD Gothic Neo on macOS).
+    pub font_ui: String,
+    /// Font family for the query editor; empty uses the UI font.
+    pub font_editor: String,
+    /// Base font size in CSS pixels.
+    pub font_size: u32,
+    /// Main view: "grid", "list" or "tree".
+    pub view_mode: String,
+    /// Right panel content: "preview", "both" or "info".
+    pub panel_mode: String,
+    pub panel_visible: bool,
+    pub panel_width: u32,
+    pub sidebar_width: u32,
+    /// Fraction of the right panel height used by the preview in "both" mode.
+    pub preview_split: f32,
+    /// Row height of the list and tree views.
+    pub row_px: u32,
+    /// Columns shown in the list and tree views, in order.
+    pub columns: Vec<String>,
+    /// Play videos in the preview pane automatically (muted).
+    pub preview_autoplay: bool,
+    /// Delay after the selection changes before the preview loads the original file.
+    /// Thumbnails show immediately; this keeps fast keyboard browsing from reading
+    /// every file on a slow drive.
+    pub preview_delay_ms: u32,
+    /// Files larger than this are not loaded into the preview automatically (0 = no limit).
+    pub preview_max_bytes: u64,
+    /// Turn off UI animations.
+    pub reduce_motion: bool,
+}
+
+impl Default for UiSettings {
+    fn default() -> Self {
+        Self {
+            locale: "auto".into(),
+            query_locale: "auto".into(),
+            theme: "dark".into(),
+            accent: "#6b7cff".into(),
+            font_ui: String::new(),
+            font_editor: String::new(),
+            font_size: 13,
+            view_mode: "grid".into(),
+            panel_mode: "both".into(),
+            panel_visible: true,
+            panel_width: 340,
+            sidebar_width: 232,
+            preview_split: 0.45,
+            row_px: 30,
+            columns: ["name", "kind", "size", "dimensions", "duration", "modified"].map(String::from).to_vec(),
+            preview_autoplay: true,
+            preview_delay_ms: 150,
+            preview_max_bytes: 0,
+            reduce_motion: false,
+        }
+    }
+}
+
+/// How background work and slow reads are reported.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProgressSettings {
+    /// Minimum time between progress events for one task.
+    pub emit_interval_ms: u64,
+    /// Reading a file is shown as a task once it has taken this long.
+    pub slow_read_ms: u64,
+    /// Reads are done in pieces of this size so progress can be reported.
+    pub read_piece_bytes: u64,
+    /// Finished tasks stay in the task list this long.
+    pub keep_finished_secs: u64,
+}
+
+impl Default for ProgressSettings {
+    fn default() -> Self {
+        Self { emit_interval_ms: 150, slow_read_ms: 250, read_piece_bytes: 4 * MIB, keep_finished_secs: 5 }
     }
 }
 
@@ -295,15 +392,54 @@ impl Default for AppSettings {
 pub struct HardwareSettings {
     /// GPU compositing and rasterization in the WebView.
     pub gpu: bool,
+    /// GPU rasterization of page content (Chromium WebView on Windows).
+    pub gpu_rasterization: bool,
+    /// Upload decoded images straight to GPU memory (Chromium WebView on Windows).
+    pub zero_copy: bool,
     /// Hardware video decoding (WebView and conversion pipeline).
     pub video_decode: bool,
+    /// FFmpeg `-hwaccel` method for thumbnails and conversion input: "auto", "none", or a
+    /// specific one ("d3d11va", "dxva2", "cuda", "qsv", "videotoolbox", "vaapi").
+    pub ffmpeg_hwaccel: String,
     /// Hardware encoding for conversions, when FFmpeg supports it on this device.
     pub video_encode: bool,
+    /// Hardware encoders tried in order before falling back to libx264.
+    pub encoders: Vec<String>,
 }
 
 impl Default for HardwareSettings {
     fn default() -> Self {
-        Self { gpu: true, video_decode: true, video_encode: true }
+        let encoders: &[&str] = if cfg!(target_os = "macos") || cfg!(target_os = "ios") {
+            &["h264_videotoolbox"]
+        } else if cfg!(target_os = "linux") {
+            &["h264_nvenc", "h264_qsv", "h264_vaapi"]
+        } else if cfg!(target_os = "android") {
+            &["h264_mediacodec"]
+        } else {
+            &["h264_nvenc", "h264_qsv", "h264_amf", "h264_mf"]
+        };
+        Self {
+            gpu: true,
+            gpu_rasterization: true,
+            zero_copy: true,
+            video_decode: true,
+            ffmpeg_hwaccel: "auto".into(),
+            video_encode: true,
+            encoders: encoders.iter().map(|e| e.to_string()).collect(),
+        }
+    }
+}
+
+impl HardwareSettings {
+    /// The `-hwaccel` value to pass to FFmpeg, if any.
+    pub fn hwaccel(&self) -> Option<&str> {
+        if !self.video_decode {
+            return None;
+        }
+        match self.ffmpeg_hwaccel.trim() {
+            "" | "none" => None,
+            m => Some(m),
+        }
     }
 }
 

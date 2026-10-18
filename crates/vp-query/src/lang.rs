@@ -112,14 +112,19 @@ pub enum Op {
     ContainsAll,
     ContainsNone,
     StartsWith,
+    NotStartsWith,
     EndsWith,
+    NotEndsWith,
+    /// File extension test on a text field (`이름(png:의 확장자를 가지고 있음)`).
+    HasExt,
+    NotHasExt,
     Glob,
     Exists,
     NotExists,
 }
 
 impl Op {
-    pub const ALL: [Op; 15] = [
+    pub const ALL: [Op; 19] = [
         Op::Eq,
         Op::Ne,
         Op::Gt,
@@ -131,7 +136,11 @@ impl Op {
         Op::ContainsAll,
         Op::ContainsNone,
         Op::StartsWith,
+        Op::NotStartsWith,
         Op::EndsWith,
+        Op::NotEndsWith,
+        Op::HasExt,
+        Op::NotHasExt,
         Op::Glob,
         Op::Exists,
         Op::NotExists,
@@ -143,6 +152,9 @@ impl Op {
             Op::Ne => Some(Op::Eq),
             Op::ContainsNone => Some(Op::ContainsAny),
             Op::NotExists => Some(Op::Exists),
+            Op::NotStartsWith => Some(Op::StartsWith),
+            Op::NotEndsWith => Some(Op::EndsWith),
+            Op::NotHasExt => Some(Op::HasExt),
             _ => None,
         }
     }
@@ -150,7 +162,22 @@ impl Op {
     /// Whether the operator is written after its values (`점수(5:이상)`) rather than before
     /// (`장르(다음을 포함:느와르)`). Only affects rendering; parsing accepts either position.
     pub fn is_postfix(self) -> bool {
-        matches!(self, Op::Eq | Op::Ne | Op::Gt | Op::Ge | Op::Lt | Op::Le | Op::Between)
+        matches!(
+            self,
+            Op::Eq
+                | Op::Ne
+                | Op::Gt
+                | Op::Ge
+                | Op::Lt
+                | Op::Le
+                | Op::Between
+                | Op::StartsWith
+                | Op::NotStartsWith
+                | Op::EndsWith
+                | Op::NotEndsWith
+                | Op::HasExt
+                | Op::NotHasExt
+        )
     }
 
     pub fn aliases(self) -> Aliases {
@@ -162,15 +189,29 @@ impl Op {
             Op::Lt => Aliases { ko: &["미만"], en: &["lt", "<"] },
             Op::Le => Aliases { ko: &["이하", "이전"], en: &["lte", "<=", "before"] },
             Op::Between => Aliases { ko: &["사이", "범위"], en: &["between", "range"] },
-            Op::ContainsAny => {
-                Aliases { ko: &["다음을 포함", "포함", "하나라도 포함"], en: &["contains", "any", "in"] }
-            }
+            Op::ContainsAny => Aliases {
+                ko: &["다음을 포함", "포함", "하나라도 포함", "가 포함됨", "이 포함됨"],
+                en: &["contains", "any", "in"],
+            },
             Op::ContainsAll => Aliases { ko: &["모두 포함"], en: &["contains all", "all"] },
-            Op::ContainsNone => {
-                Aliases { ko: &["다음을 제외", "제외", "포함하지 않음"], en: &["excludes", "none", "not in"] }
+            Op::ContainsNone => Aliases {
+                ko: &["다음을 제외", "제외", "포함하지 않음", "를 포함하지 않음", "을 포함하지 않음"],
+                en: &["excludes", "none", "not in"],
+            },
+            Op::StartsWith => Aliases { ko: &["로 시작함", "으로 시작함", "시작", "로 시작"], en: &["starts with", "prefix"] },
+            Op::NotStartsWith => Aliases {
+                ko: &["로 시작하지 않음", "으로 시작하지 않음"],
+                en: &["not starts with", "no prefix"],
+            },
+            Op::EndsWith => Aliases { ko: &["로 끝남", "으로 끝남", "끝"], en: &["ends with", "suffix"] },
+            Op::NotEndsWith => {
+                Aliases { ko: &["로 끝나지 않음", "으로 끝나지 않음"], en: &["not ends with", "no suffix"] }
             }
-            Op::StartsWith => Aliases { ko: &["시작", "로 시작"], en: &["starts with", "prefix"] },
-            Op::EndsWith => Aliases { ko: &["끝", "로 끝남"], en: &["ends with", "suffix"] },
+            Op::HasExt => Aliases { ko: &["의 확장자를 가지고 있음", "확장자 일치"], en: &["has extension", "ext is"] },
+            Op::NotHasExt => Aliases {
+                ko: &["의 확장자를 가지고 있지 않음", "확장자 불일치"],
+                en: &["lacks extension", "ext is not"],
+            },
             Op::Glob => Aliases { ko: &["패턴"], en: &["glob", "pattern"] },
             Op::Exists => Aliases { ko: &["있음", "값 있음"], en: &["exists", "has"] },
             Op::NotExists => Aliases { ko: &["없음", "값 없음"], en: &["missing", "empty"] },

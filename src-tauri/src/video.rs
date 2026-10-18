@@ -100,13 +100,24 @@ impl Workspace {
         };
         let s = self.settings.read().unwrap().thumbnails.clone();
         let at = duration.map(|d| d as f64 / 1000.0 * s.video_frame_position as f64).unwrap_or(0.0);
-        let hw = crate::recent::cached_app_settings().hardware.video_decode;
-        match ff.frame(self.media_input(drivers, loc)?, at, s.max_edge_px, hw) {
-            Ok(jpeg) => Ok(Some(jpeg)),
-            // Very short clips: the chosen position may be past the end.
-            Err(_) if at > 0.0 => Ok(ff.frame(self.media_input(drivers, loc)?, 0.0, s.max_edge_px, hw).ok()),
-            Err(_) => Ok(None),
+        let hw = crate::recent::cached_app_settings().hardware;
+        let hwaccel = hw.hwaccel();
+        // Attempts in order: hardware decode at the chosen position, software decode there
+        // (a specific -hwaccel may be unavailable), then the first frame (very short clips:
+        // the chosen position may be past the end).
+        let mut attempts = vec![(at, hwaccel)];
+        if hwaccel.is_some() {
+            attempts.push((at, None));
         }
+        if at > 0.0 {
+            attempts.push((0.0, None));
+        }
+        for (pos, accel) in attempts {
+            if let Ok(jpeg) = ff.frame(self.media_input(drivers, loc)?, pos, s.max_edge_px, accel) {
+                return Ok(Some(jpeg));
+            }
+        }
+        Ok(None)
     }
 
     pub fn variant_path(&self, id: i64) -> CmdResult<Option<PathBuf>> {
@@ -139,7 +150,24 @@ pub fn spawn_convert<R: Runtime>(app: &AppHandle<R>, ws: Arc<Workspace>, ids: Ve
                 }
                 jobs.insert(id, cancel.clone());
             }
+            let name = ws
+                .read_db
+                .lock()
+                .unwrap()
+                .media_location(id)
+                .ok()
+                .flatten()
+                .map(|l| crate::workspace::file_name(&l.rel_path))
+                .unwrap_or_default();
+            let task = crate::tasks::begin_with_cancel(
+                "convert",
+                name,
+                crate::tasks::Unit::Permille,
+                Some(1000),
+                Some(cancel.clone()),
+            );
             let emit = |progress: f64, done: bool, error: Option<String>| {
+                task.set((progress.clamp(0.0, 1.0) * 1000.0) as u64, None);
                 let _ = app.emit("convert-progress", ConvertEvent { id, progress, done, error });
             };
             emit(0.0, false, None);
@@ -147,7 +175,12 @@ pub fn spawn_convert<R: Runtime>(app: &AppHandle<R>, ws: Arc<Workspace>, ids: Ve
             ws.converts.lock().unwrap().remove(&id);
             match result {
                 Ok(()) => emit(1.0, true, None),
-                Err(e) => emit(0.0, true, Some(e.message)),
+                Err(e) => {
+                    if e.code != "cancelled" {
+                        task.fail(e.message.clone());
+                    }
+                    emit(0.0, true, Some(e.message))
+                }
             }
         }
     });
@@ -172,9 +205,10 @@ fn convert_one(
     let rel = format!("{CONVERTED_DIR}/{id}.mp4");
     let out = ws.bundle.root.join(&rel);
     std::fs::create_dir_all(out.parent().unwrap())?;
-    let hw = crate::recent::cached_app_settings().hardware.video_encode;
+    let hw = crate::recent::cached_app_settings().hardware;
+    let encoders = if hw.video_encode { hw.encoders.clone() } else { Vec::new() };
     let mut make_input = || ws.media_input(drivers, &loc).map_err(|e| vp_media::MediaError::Failed(e.message));
-    ff.convert(&mut make_input, &out, &probe, hw, progress, cancel).map_err(|e| match e {
+    ff.convert(&mut make_input, &out, &probe, &encoders, progress, cancel).map_err(|e| match e {
         vp_media::MediaError::Cancelled => CmdError::new("cancelled", "cancelled"),
         other => CmdError::new("convert_failed", other),
     })?;
@@ -192,6 +226,8 @@ pub fn spawn_probe_backfill<R: Runtime>(app: &AppHandle<R>, ws: Arc<Workspace>) 
     let app = app.clone();
     std::thread::spawn(move || {
         let drivers = app.state::<AppState>().drivers.clone();
+        let total = ws.read_db.lock().unwrap().count_unprobed_videos().ok();
+        let task = (total != Some(0)).then(|| crate::tasks::begin("probe", "", crate::tasks::Unit::Items, total));
         loop {
             if ws.closed.load(Ordering::Relaxed) {
                 break;
@@ -203,6 +239,9 @@ pub fn spawn_probe_backfill<R: Runtime>(app: &AppHandle<R>, ws: Arc<Workspace>) 
             for id in batch {
                 if ws.closed.load(Ordering::Relaxed) {
                     break;
+                }
+                if let Some(t) = &task {
+                    t.add(1);
                 }
                 if ws.probe_video(&drivers, id).is_err() {
                     // Record the failure so the loop always advances.

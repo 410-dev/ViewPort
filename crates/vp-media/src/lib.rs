@@ -94,9 +94,6 @@ impl ConvertPlan {
     }
 }
 
-/// Hardware H.264 encoders tried in order before falling back to libx264.
-const HW_ENCODERS: &[&str] = &["h264_nvenc", "h264_qsv", "h264_amf", "h264_mf"];
-
 #[derive(Debug, Clone)]
 pub struct Ffmpeg {
     pub ffmpeg: PathBuf,
@@ -192,10 +189,11 @@ impl Ffmpeg {
     }
 
     /// Grabs one frame at `at_secs`, scaled to fit `max_edge`, as JPEG.
-    pub fn frame(&self, input: Input, at_secs: f64, max_edge: u32, hwaccel: bool) -> Result<Vec<u8>> {
+    /// `hwaccel` is an FFmpeg `-hwaccel` method ("auto", "d3d11va", ...).
+    pub fn frame(&self, input: Input, at_secs: f64, max_edge: u32, hwaccel: Option<&str>) -> Result<Vec<u8>> {
         let mut args: Vec<String> = vec!["-v".into(), "error".into()];
-        if hwaccel {
-            args.extend(["-hwaccel".into(), "auto".into()]);
+        if let Some(m) = hwaccel {
+            args.extend(["-hwaccel".into(), m.into()]);
         }
         if matches!(input, Input::File(_)) {
             // Fast keyframe seek; only possible on seekable input.
@@ -227,24 +225,22 @@ impl Ffmpeg {
     }
 
     /// Converts to a high-compatibility MP4 (H.264/AAC, fast start) at `output`.
-    /// `progress` receives 0.0..=1.0. With `hw_encode`, hardware encoders are tried
-    /// first and libx264 is used if none works. `make_input` is called once per attempt.
+    /// `progress` receives 0.0..=1.0. `hw_encoders` are tried in order first and libx264
+    /// is used if none works. `make_input` is called once per attempt.
     pub fn convert(
         &self,
         make_input: &mut dyn FnMut() -> Result<Input>,
         output: &Path,
         probe: &Probe,
-        hw_encode: bool,
+        hw_encoders: &[String],
         progress: &mut dyn FnMut(f64),
         cancel: &AtomicBool,
     ) -> Result<()> {
         let plan = probe.plan();
         let encoders: Vec<&str> = if plan.copy_video {
             vec!["copy"]
-        } else if hw_encode {
-            HW_ENCODERS.iter().copied().chain(["libx264"]).collect()
         } else {
-            vec!["libx264"]
+            hw_encoders.iter().map(String::as_str).filter(|e| *e != "libx264").chain(["libx264"]).collect()
         };
         let tmp = output.with_extension("part.mp4");
         let mut last_err = None;
@@ -442,13 +438,13 @@ mod tests {
         let probe = ff.probe(Input::File(src.clone())).unwrap();
         assert_eq!((probe.width, probe.height), (Some(320), Some(240)));
         assert!(!probe.webview_compatible("mkv"));
-        let jpg = ff.frame(Input::File(src.clone()), 0.5, 100, false).unwrap();
+        let jpg = ff.frame(Input::File(src.clone()), 0.5, 100, None).unwrap();
         assert_eq!(&jpg[..2], &[0xFF, 0xD8]);
-        let piped = ff.frame(Input::Stream(Box::new(std::fs::File::open(&src).unwrap())), 0.5, 100, false).unwrap();
+        let piped = ff.frame(Input::Stream(Box::new(std::fs::File::open(&src).unwrap())), 0.5, 100, None).unwrap();
         assert_eq!(&piped[..2], &[0xFF, 0xD8]);
         let out = tmp.join("out.mp4");
         let mut last = 0.0;
-        ff.convert(&mut || Ok(Input::File(src.clone())), &out, &probe, false, &mut |p| last = p, &AtomicBool::new(false))
+        ff.convert(&mut || Ok(Input::File(src.clone())), &out, &probe, &[], &mut |p| last = p, &AtomicBool::new(false))
             .unwrap();
         assert_eq!(last, 1.0);
         let converted = ff.probe(Input::File(out)).unwrap();
