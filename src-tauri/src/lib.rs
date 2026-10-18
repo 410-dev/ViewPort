@@ -65,6 +65,9 @@ pub fn run() {
             commands::remove_value,
             commands::suggest_values,
             commands::query_vocabulary,
+            commands::list_saved_queries,
+            commands::save_query,
+            commands::delete_saved_query,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

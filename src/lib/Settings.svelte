@@ -105,10 +105,11 @@
       ],
     },
     {
-      title: { ko: "하드웨어 가속 (이 기기)", en: "Hardware acceleration (this device)" },
+      title: { ko: "이 기기", en: "This device" },
       note: { ko: "앱을 다시 시작하면 적용됩니다.", en: "Applies after restarting the app." },
       app: true,
       fields: [
+        { kind: "bool", path: "reopen_last_bundle", label: { ko: "시작 시 마지막 번들 열기", en: "Reopen last bundle on start" } },
         { kind: "bool", path: "hardware.gpu", label: { ko: "GPU 렌더링", en: "GPU rendering" } },
         { kind: "bool", path: "hardware.video_decode", label: { ko: "영상 하드웨어 디코딩", en: "Hardware video decoding" } },
         { kind: "bool", path: "hardware.video_encode", label: { ko: "변환 시 하드웨어 인코딩", en: "Hardware encoding for conversion" } },

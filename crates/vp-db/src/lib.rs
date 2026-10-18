@@ -770,6 +770,44 @@ impl Db {
         Ok(())
     }
 
+    /// Saved queries as `(id, label, query)`, in display order.
+    pub fn saved_queries(&self) -> Result<Vec<(i64, String, Query)>> {
+        let mut stmt = self.conn.prepare("SELECT id, label, query FROM saved_query ORDER BY sort_index, id")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, String>(2)?)))?;
+        rows.map(|row| {
+            let (id, label, json) = row?;
+            Ok((id, label, serde_json::from_str(&json)?))
+        })
+        .collect()
+    }
+
+    /// Creates (`id = None`) or updates a saved query; returns its id.
+    pub fn save_query(&self, id: Option<i64>, label: &str, query: &Query, now_ms: i64) -> Result<i64> {
+        let json = serde_json::to_string(query)?;
+        match id {
+            Some(id) => {
+                self.conn.execute(
+                    "UPDATE saved_query SET label = ?2, query = ?3, updated_ms = ?4 WHERE id = ?1",
+                    params![id, label, json, now_ms],
+                )?;
+                Ok(id)
+            }
+            None => {
+                self.conn.execute(
+                    "INSERT INTO saved_query (label, query, sort_index, created_ms, updated_ms)
+                     VALUES (?1, ?2, (SELECT COALESCE(MAX(sort_index), -1) + 1 FROM saved_query), ?3, ?3)",
+                    params![label, json, now_ms],
+                )?;
+                Ok(self.conn.last_insert_rowid())
+            }
+        }
+    }
+
+    pub fn delete_saved_query(&self, id: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM saved_query WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
     /// Context for compiling queries against this database.
     pub fn compile_context(now_ms: i64, tz_offset_minutes: i32) -> CompileContext {
         CompileContext {

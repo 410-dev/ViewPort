@@ -446,3 +446,49 @@ pub fn query_vocabulary(state: State<'_, AppState>, locale: String) -> CmdResult
         kinds: vp_core::MediaKind::ALL.into_iter().map(|k| lang::kind_aliases(k).display(&locale).to_string()).collect(),
     })
 }
+
+// ---------------------------------------------------------------- saved queries
+
+#[derive(Serialize)]
+pub struct SavedQuery {
+    pub id: i64,
+    pub label: String,
+    /// The query rendered in the requested locale. Fields that no longer exist are shown by key.
+    pub text: String,
+}
+
+#[tauri::command]
+pub fn list_saved_queries(state: State<'_, AppState>, locale: String) -> CmdResult<Vec<SavedQuery>> {
+    let ws = workspace(&state)?;
+    let db = ws.read_db.lock().unwrap();
+    let reg = db.field_registry()?;
+    Ok(db
+        .saved_queries()?
+        .into_iter()
+        .map(|(id, label, q)| SavedQuery { id, label, text: vp_query::render(&q, &reg, &locale) })
+        .collect())
+}
+
+/// Saves query text under a label. The text is stored in locale-neutral form, so it
+/// shows up in whatever language the UI uses later.
+#[tauri::command]
+pub fn save_query(state: State<'_, AppState>, id: Option<i64>, label: String, text: String) -> CmdResult<i64> {
+    let ws = workspace(&state)?;
+    let db = ws.write_db.lock().unwrap();
+    let reg = db.field_registry()?;
+    let q = if text.trim().is_empty() {
+        vp_query::Query::default()
+    } else {
+        vp_query::parse_query(&text, &reg).map_err(|e| utf16_error(e, &text))?
+    };
+    let label = label.trim();
+    if label.is_empty() {
+        return Err(CmdError::new("invalid", "label is empty"));
+    }
+    Ok(db.save_query(id, label, &q, now_ms())?)
+}
+
+#[tauri::command]
+pub fn delete_saved_query(state: State<'_, AppState>, id: i64) -> CmdResult<()> {
+    Ok(workspace(&state)?.write_db.lock().unwrap().delete_saved_query(id)?)
+}

@@ -6,6 +6,10 @@
   import Viewer from "./Viewer.svelte";
   import SettingsPanel from "./Settings.svelte";
   import InfoPanel from "./InfoPanel.svelte";
+  import QueryEditor from "./QueryEditor.svelte";
+  import BasicSearch from "./BasicSearch.svelte";
+  import { i18n } from "./i18n.svelte";
+  import type { SavedQuery } from "./api";
   import { SvelteSet } from "svelte/reactivity";
   import { t } from "./i18n.svelte";
 
@@ -24,6 +28,19 @@
   let viewing = $state<number | null>(null);
   let showSettings = $state(false);
   let showInfo = $state(true);
+  let mode = $state<"quick" | "basic" | "editor">("quick");
+  let saved = $state<SavedQuery[]>([]);
+  let editingSaved = $state<SavedQuery | null>(null);
+
+  async function refreshSaved() {
+    saved = await api.listSavedQueries(i18n.locale).catch(() => []);
+  }
+
+  async function deleteSaved(q: SavedQuery) {
+    if (!(await ask(t("lib.deleteSaved", { name: q.label }), { kind: "warning" }))) return;
+    await api.deleteSavedQuery(q.id);
+    refreshSaved();
+  }
   const selection = new SvelteSet<number>();
   const selectedIds = $derived([...selection]);
 
@@ -73,7 +90,11 @@
 
   $effect(() => {
     refreshSources();
-    api.getSettings().then((s) => (settings = s));
+    refreshSaved();
+    api.getSettings().then((s) => {
+      settings = s;
+      i18n.locale = s.general.locale;
+    });
   });
 
   async function addFolder() {
@@ -146,6 +167,27 @@
     </nav>
     <button onclick={addFolder}>+ {t("lib.addFolder")}</button>
 
+    <h2>{t("lib.saved")}</h2>
+    <nav>
+      {#each saved as q (q.id)}
+        <div class="src-row">
+          <button class="src" class:active={query === q.text} title={q.text} onclick={() => (query = q.text)}>{q.label}</button>
+          <button
+            class="icon"
+            title={t("lib.edit")}
+            onclick={() => {
+              editingSaved = q;
+              query = q.text;
+              mode = "editor";
+            }}>✎</button
+          >
+          <button class="icon" title={t("lib.remove")} onclick={() => deleteSaved(q)}>✕</button>
+        </div>
+      {:else}
+        <p class="hint">{t("lib.noSaved")}</p>
+      {/each}
+    </nav>
+
     <div class="grow"></div>
     {#if bundle.mode === "manual_save_only"}
       <button onclick={() => api.saveBundle().catch((e) => alert(asCmdError(e).message))}>{t("lib.save")}</button>
@@ -156,6 +198,23 @@
 
   <main class:with-info={showInfo}>
     <div class="toolbar">
+      <div class="modes" role="tablist">
+        <button role="tab" class:on={mode === "quick"} aria-selected={mode === "quick"} onclick={() => (mode = "quick")}
+          >{t("lib.modeQuick")}</button
+        >
+        <button role="tab" class:on={mode === "basic"} aria-selected={mode === "basic"} onclick={() => (mode = "basic")}
+          >{t("lib.modeBasic")}</button
+        >
+        <button
+          role="tab"
+          class:on={mode === "editor"}
+          aria-selected={mode === "editor"}
+          onclick={() => {
+            editingSaved = null;
+            mode = "editor";
+          }}>{t("lib.modeEditor")}</button
+        >
+      </div>
       <input
         class="query"
         class:invalid={queryError}
@@ -176,7 +235,26 @@
         </label>
       {/if}
     </div>
-    {#if queryError}
+    {#if mode === "editor"}
+      {#key editingSaved?.id}
+        <QueryEditor
+          bind:value={query}
+          editing={editingSaved}
+          onrun={(text) => {
+            query = text;
+            runSearch(true);
+          }}
+          onclose={() => (mode = "quick")}
+          onsaved={() => {
+            refreshSaved();
+            editingSaved = null;
+          }}
+        />
+      {/key}
+    {:else if mode === "basic"}
+      <BasicSearch onquery={(text) => (query = text)} />
+    {/if}
+    {#if queryError && mode !== "editor"}
       <div class="query-error">
         <code
           >{query.slice(0, queryError.start)}<mark>{query.slice(queryError.start, queryError.end) || " "}</mark
@@ -315,6 +393,31 @@
     gap: 12px;
     align-items: center;
     padding: 12px 16px 0;
+  }
+  .modes {
+    display: flex;
+  }
+  .modes button {
+    border-radius: 0;
+    padding: 6px 10px;
+  }
+  .modes button:first-child {
+    border-radius: 6px 0 0 6px;
+  }
+  .modes button:last-child {
+    border-radius: 0 6px 6px 0;
+  }
+  .modes button + button {
+    border-left: 0;
+  }
+  .modes button.on {
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  .hint {
+    font-size: 12px;
+    color: var(--muted);
+    margin: 0 4px;
   }
   .query {
     flex: 1;

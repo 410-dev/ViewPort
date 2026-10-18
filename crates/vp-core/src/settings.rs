@@ -266,10 +266,18 @@ impl Default for GridSettings {
 
 /// Settings that belong to this device rather than to a bundle. Stored in the app's
 /// config directory.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppSettings {
     pub hardware: HardwareSettings,
+    /// Open the most recent bundle when the app starts (so its cache warms up right away).
+    pub reopen_last_bundle: bool,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self { hardware: HardwareSettings::default(), reopen_last_bundle: true }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -8,10 +8,18 @@
 
   // A reload of the webview keeps the bundle open in the backend.
   $effect(() => {
-    api.currentBundle().then((b) => {
-      bundle = b;
+    (async () => {
+      bundle = await api.currentBundle();
+      if (!bundle && !sessionStorage.getItem("vp-started")) {
+        // Only on a real app start, not when the user closed the bundle and the page reloaded.
+        sessionStorage.setItem("vp-started", "1");
+        const [app, recent] = await Promise.all([api.getAppSettings(), api.recentBundles()]);
+        if (app.reopen_last_bundle && recent[0]) {
+          bundle = await api.openBundle(recent[0]).catch(() => null);
+        }
+      }
       ready = true;
-    });
+    })();
   });
 </script>
 

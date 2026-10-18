@@ -108,6 +108,7 @@ export interface Settings {
 
 export interface AppSettings {
   hardware: { gpu: boolean; video_decode: boolean; video_encode: boolean };
+  reopen_last_bundle: boolean;
 }
 
 export type FieldType =
@@ -161,6 +162,16 @@ export interface Vocabulary {
   kinds: string[];
 }
 
+export interface SavedQuery {
+  id: number;
+  label: string;
+  text: string;
+}
+
+export type QueryCheck =
+  | { status: "ok"; normalized: string }
+  | { status: "error"; error: { kind: { code: string }; span: { start: number; end: number } }; span: { start: number; end: number } };
+
 export interface CacheStats {
   capacity_bytes: number;
   allocated_bytes: number;
@@ -203,6 +214,10 @@ export const api = {
   removeValue: (ids: number[], key: string, value: ExtValue) => invoke<void>("remove_value", { ids, key, value }),
   suggestValues: (key: string, prefix: string) => invoke<string[]>("suggest_values", { key, prefix }),
   queryVocabulary: (locale: string) => invoke<Vocabulary>("query_vocabulary", { locale }),
+  listSavedQueries: (locale: string) => invoke<SavedQuery[]>("list_saved_queries", { locale }),
+  saveQuery: (id: number | null, label: string, text: string) => invoke<number>("save_query", { id, label, text }),
+  deleteSavedQuery: (id: number) => invoke<void>("delete_saved_query", { id }),
+  checkQuery: (src: string, locale: string) => invoke<QueryCheck>("check_query", { src, locale }),
   getAppSettings: () => invoke<AppSettings>("get_app_settings"),
   saveAppSettings: (settings: AppSettings) => invoke<void>("save_app_settings", { settings }),
 };

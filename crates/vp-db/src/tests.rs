@@ -236,3 +236,19 @@ fn field_management() {
     let keys: Vec<String> = lib.db.ext_fields().unwrap().into_iter().map(|f| f.key).collect();
     assert!(!keys.contains(&key) && keys.contains(&"x.tags".to_string()));
 }
+
+#[test]
+fn saved_queries_round_trip() {
+    let lib = library();
+    let q = vp_query::parse_query("태그(바다) 그리고 내림차순 정렬(점수)", &lib.reg).unwrap();
+    let id = lib.db.save_query(None, "바다", &q, 1).unwrap();
+    let other = lib.db.save_query(None, "전체", &vp_query::Query::default(), 2).unwrap();
+    lib.db.save_query(Some(id), "바다 (점수순)", &q, 3).unwrap();
+    let saved = lib.db.saved_queries().unwrap();
+    assert_eq!(saved.len(), 2);
+    assert_eq!((saved[0].0, saved[0].1.as_str()), (id, "바다 (점수순)"));
+    assert_eq!(saved[0].2, q);
+    assert_eq!(vp_query::render(&saved[0].2, &lib.reg, "en"), "tags(contains:바다) AND sort desc(rating)");
+    lib.db.delete_saved_query(other).unwrap();
+    assert_eq!(lib.db.saved_queries().unwrap().len(), 1);
+}
