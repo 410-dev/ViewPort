@@ -172,6 +172,20 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE loop_segment ADD COLUMN autoplay INTEGER NOT NULL DEFAULT 0;
     "#,
+    // v5: extension field values of folders (a folder of a source, by path)
+    r#"
+    CREATE TABLE folder_value (
+        id        INTEGER PRIMARY KEY,
+        source_id INTEGER NOT NULL REFERENCES source(id) ON DELETE CASCADE,
+        path      TEXT NOT NULL,                -- relative to the source root
+        field_id  INTEGER NOT NULL REFERENCES ext_field(id) ON DELETE CASCADE,
+        int_val   INTEGER,
+        real_val  REAL,
+        text_val  TEXT,
+        origin    TEXT NOT NULL DEFAULT 'user'
+    );
+    CREATE INDEX folder_value_path ON folder_value(source_id, path, field_id);
+    "#,
 ];
 
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;

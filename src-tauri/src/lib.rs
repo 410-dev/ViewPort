@@ -118,6 +118,8 @@ pub fn run() {
             commands::rename_media,
             commands::move_media_to,
             commands::folder_samples,
+            commands::folder_values,
+            commands::edit_folder_values,
             commands::rename_folder,
             commands::move_folder,
             commands::delete_folder,

@@ -678,6 +678,12 @@ const ko = {
   "set.folderPreview.help": "그리드 보기의 폴더 타일 안에 N×N개의 대표 썸네일을 보여 줍니다(2 = 2×2, 3 = 3×3). 0이면 아이콘만 표시합니다.",
   "set.convertImageExt": "변환해서 보여 줄 이미지 형식",
   "set.convertImageExt.help": "WebView가 직접 표시하지 못하는 형식(HEIC·HEIF 등)은 JPEG 사본으로 바꿔 보여 줍니다. PC에서는 FFmpeg가, 안드로이드에서는 시스템 디코더가 필요합니다.",
+  "info.items": "항목",
+  "info.folderHint": "폴더 속성입니다. 필드의 '하위에도'를 켜면 바꾼 값이 폴더 안의 모든 항목과 하위 폴더에 하나씩 적용됩니다(여러 값 필드는 병합, 단일 값은 대체). 이후 개별로 바꾼 값은 그대로 덮어씁니다.",
+  "info.deep": "하위에도",
+  "info.deepMerge": "켜면 이 필드를 바꿀 때 폴더 안의 모든 항목·하위 폴더에도 병합해 적용합니다",
+  "info.deepReplace": "켜면 이 필드를 바꿀 때 폴더 안의 모든 항목·하위 폴더의 값도 대체합니다",
+  "info.appliedInside": "폴더 안의 {n}개 항목에도 적용했습니다",
 } as const;
 
 export type Key = keyof typeof ko;

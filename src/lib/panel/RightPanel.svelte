@@ -4,10 +4,12 @@
   import InfoPanel from "./InfoPanel.svelte";
   import Preview from "./Preview.svelte";
   import Icon from "../ui/Icon.svelte";
+  import type { FolderRef } from "../views/selection.svelte";
 
   let {
     focus,
     selected,
+    folder = null,
     onopen,
     onopenwindow,
     onchanged,
@@ -15,6 +17,8 @@
   }: {
     focus: number | null;
     selected: number[];
+    /** A selected folder: its fields are shown instead of items. */
+    folder?: FolderRef | null;
     onopen: (id: number) => void;
     onopenwindow?: (id: number) => void;
     onchanged: () => void;
@@ -69,7 +73,9 @@
     {/if}
   </header>
   <div class="body" bind:this={body}>
-    {#if ui().panel_mode === "preview"}
+    {#if folder}
+      <InfoPanel ids={[]} {folder} {onchanged} />
+    {:else if ui().panel_mode === "preview"}
       <Preview id={current} {selected} {onopen} {onopenwindow} />
     {:else if ui().panel_mode === "info"}
       <InfoPanel ids={selected} {onchanged} />

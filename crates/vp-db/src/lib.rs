@@ -227,6 +227,21 @@ pub enum ExtValue {
     Text(String),
 }
 
+/// Rows of a folder and every folder below it (`?1` source, `?2` folder path).
+const FOLDER_AND_BELOW: &str = "(path = ?2 OR substr(path, 1, length(?2) + 1) = ?2 || '/')";
+
+/// A change to an extension field of a folder (`Db::edit_folder_values`).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "op", content = "value", rename_all = "snake_case")]
+pub enum FolderEdit {
+    /// Replaces the values (a single value, or none to clear).
+    Set(Vec<ExtValue>),
+    /// Adds one value of a multi-valued (enum) field.
+    Add(ExtValue),
+    /// Removes one value of a multi-valued (enum) field.
+    Remove(ExtValue),
+}
+
 struct Bind<'a>(&'a SqlValue);
 
 impl ToSql for Bind<'_> {
@@ -1247,7 +1262,196 @@ impl Db {
             params![source_id, from, to],
         )?;
         tx.commit()?;
+        self.move_folder_values(source_id, from, to)?;
         Ok(n)
+    }
+
+    /// Extension field values of a folder, by field key.
+    pub fn folder_values(&self, source_id: i64, path: &str) -> Result<std::collections::BTreeMap<String, Vec<ExtValue>>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT f.key, v.int_val, v.real_val, v.text_val FROM folder_value v
+             JOIN ext_field f ON f.id = v.field_id WHERE v.source_id = ?1 AND v.path = ?2 ORDER BY v.id",
+        )?;
+        let rows = stmt.query_map(params![source_id, path.trim_matches('/')], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<f64>>(2)?, r.get::<_, Option<String>>(3)?))
+        })?;
+        let mut out = std::collections::BTreeMap::<String, Vec<ExtValue>>::new();
+        for row in rows {
+            let (key, i, f, t) = row?;
+            let v = match (i, f, t) {
+                (Some(i), _, _) => ExtValue::Int(i),
+                (_, Some(f), _) => ExtValue::Real(f),
+                (_, _, Some(t)) => ExtValue::Text(t),
+                _ => continue,
+            };
+            out.entry(key).or_default().push(v);
+        }
+        Ok(out)
+    }
+
+    /// Changes a field of a folder. With `recursive` the change is also applied, one by
+    /// one, to every item and subfolder inside: values of multi-valued (enum) fields are
+    /// merged in, single values replace what was there. Later edits inside simply
+    /// overwrite. Returns how many items inside were changed.
+    pub fn edit_folder_values(&self, source_id: i64, path: &str, key: &str, edit: &FolderEdit, recursive: bool) -> Result<usize> {
+        let path = path.trim_matches('/');
+        let (field_id, ty) = self.ext_field(key)?;
+        let multi = matches!(ty, FieldType::Enum);
+        let edit = match edit {
+            FolderEdit::Set(v) => FolderEdit::Set(coerce_values(ty, v, key)?),
+            FolderEdit::Add(_) | FolderEdit::Remove(_) if !multi => return Err(DbError::InvalidValue(key.into())),
+            FolderEdit::Add(v) => FolderEdit::Add(coerce_values(ty, std::slice::from_ref(v), key)?.remove(0)),
+            FolderEdit::Remove(v) => FolderEdit::Remove(v.clone()),
+        };
+        self.batch(|db| {
+            // `replace`: the folder takes exactly the values set; otherwise they are merged in.
+            let folder = |p: &str, replace: bool| -> Result<()> {
+                match &edit {
+                    FolderEdit::Set(values) => {
+                        if replace {
+                            db.conn.execute(
+                                "DELETE FROM folder_value WHERE source_id = ?1 AND path = ?2 AND field_id = ?3",
+                                params![source_id, p, field_id],
+                            )?;
+                        }
+                        for v in values {
+                            if replace || !db.folder_has(source_id, p, field_id, v)? {
+                                db.insert_folder_value(source_id, p, field_id, v)?;
+                            }
+                        }
+                    }
+                    FolderEdit::Add(v) => {
+                        if !db.folder_has(source_id, p, field_id, v)? {
+                            db.insert_folder_value(source_id, p, field_id, v)?;
+                        }
+                    }
+                    FolderEdit::Remove(v) => {
+                        if let ExtValue::Text(t) = v {
+                            db.conn.execute(
+                                "DELETE FROM folder_value WHERE source_id = ?1 AND path = ?2 AND field_id = ?3
+                                   AND text_val = ?4 COLLATE NOCASE",
+                                params![source_id, p, field_id, t],
+                            )?;
+                        }
+                    }
+                }
+                Ok(())
+            };
+            folder(path, true)?;
+            if let FolderEdit::Add(ExtValue::Text(t)) = &edit {
+                db.conn.execute("INSERT OR IGNORE INTO ext_enum_option (field_id, value) VALUES (?1, ?2)", params![field_id, t])?;
+            }
+            if !recursive {
+                return Ok(0);
+            }
+            for sub in db.subfolders(source_id, path)? {
+                folder(&sub, !multi)?;
+            }
+            let ids = db.folder_media(source_id, path)?;
+            for &id in &ids {
+                match &edit {
+                    FolderEdit::Set(values) if !multi => {
+                        db.conn.execute("DELETE FROM ext_value WHERE media_id = ?1 AND field_id = ?2", params![id, field_id])?;
+                        for v in values {
+                            db.insert_value(id, field_id, v, "user")?;
+                        }
+                    }
+                    FolderEdit::Set(values) => {
+                        for v in values {
+                            db.add_value_if_missing(id, field_id, v)?;
+                        }
+                    }
+                    FolderEdit::Add(v) => db.add_value_if_missing(id, field_id, v)?,
+                    FolderEdit::Remove(v) => {
+                        if let ExtValue::Text(t) = v {
+                            db.conn.execute(
+                                "DELETE FROM ext_value WHERE media_id = ?1 AND field_id = ?2 AND text_val = ?3 COLLATE NOCASE",
+                                params![id, field_id, t],
+                            )?;
+                        }
+                    }
+                }
+            }
+            Ok(ids.len())
+        })
+    }
+
+    /// Every folder inside `path` (any depth) that holds items or has values of its own.
+    fn subfolders(&self, source_id: i64, path: &str) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT parent_path FROM media WHERE source_id = ?1 AND substr(parent_path, 1, length(?2) + 1) = ?2 || '/'
+             UNION SELECT path FROM folder_value WHERE source_id = ?1 AND substr(path, 1, length(?2) + 1) = ?2 || '/'",
+        )?;
+        let mut out = std::collections::BTreeSet::new();
+        for p in stmt.query_map(params![source_id, path], |r| r.get::<_, String>(0))? {
+            // Folders between `path` and an item's own folder count too.
+            let p = p?;
+            let mut cur = p.as_str();
+            while cur.len() > path.len() {
+                out.insert(cur.to_string());
+                cur = cur.rsplit_once('/').map(|(a, _)| a).unwrap_or("");
+            }
+        }
+        Ok(out.into_iter().collect())
+    }
+
+    fn folder_has(&self, source_id: i64, path: &str, field_id: i64, v: &ExtValue) -> Result<bool> {
+        let ExtValue::Text(t) = v else { return Ok(false) };
+        Ok(self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM folder_value WHERE source_id = ?1 AND path = ?2 AND field_id = ?3
+                            AND text_val = ?4 COLLATE NOCASE)",
+            params![source_id, path, field_id, t],
+            |r| r.get(0),
+        )?)
+    }
+
+    fn add_value_if_missing(&self, id: i64, field_id: i64, v: &ExtValue) -> Result<()> {
+        let ExtValue::Text(t) = v else { return self.insert_value(id, field_id, v, "user") };
+        let exists: bool = self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM ext_value WHERE media_id = ?1 AND field_id = ?2 AND text_val = ?3 COLLATE NOCASE)",
+            params![id, field_id, t],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            self.insert_value(id, field_id, v, "user")?;
+        }
+        Ok(())
+    }
+
+    fn insert_folder_value(&self, source_id: i64, path: &str, field_id: i64, v: &ExtValue) -> Result<()> {
+        let (i, r, t) = match v {
+            ExtValue::Int(i) => (Some(*i), None, None),
+            ExtValue::Real(r) => (None, Some(*r), None),
+            ExtValue::Text(t) => (None, None, Some(t.as_str())),
+        };
+        self.conn
+            .prepare_cached(
+                "INSERT INTO folder_value (source_id, path, field_id, int_val, real_val, text_val, origin)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'user')",
+            )?
+            .execute(params![source_id, path, field_id, i, r, t])?;
+        Ok(())
+    }
+
+    /// Folder values follow a folder moved from `from` to `to` (its subfolders' too);
+    /// stale values already at `to` are dropped.
+    pub fn move_folder_values(&self, source_id: i64, from: &str, to: &str) -> Result<()> {
+        let (from, to) = (from.trim_matches('/'), to.trim_matches('/'));
+        self.conn.execute(&format!("DELETE FROM folder_value WHERE source_id = ?1 AND {FOLDER_AND_BELOW}"), params![source_id, to])?;
+        self.conn.execute(
+            &format!("UPDATE folder_value SET path = ?3 || substr(path, length(?2) + 1) WHERE source_id = ?1 AND {FOLDER_AND_BELOW}"),
+            params![source_id, from, to],
+        )?;
+        Ok(())
+    }
+
+    /// Forgets the values of a folder and of every folder inside it.
+    pub fn delete_folder_values(&self, source_id: i64, path: &str) -> Result<()> {
+        self.conn.execute(
+            &format!("DELETE FROM folder_value WHERE source_id = ?1 AND {FOLDER_AND_BELOW}"),
+            params![source_id, path.trim_matches('/')],
+        )?;
+        Ok(())
     }
 
     /// Forgets an item and everything recorded about it (tags, stats, probe, variant).

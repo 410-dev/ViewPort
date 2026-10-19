@@ -437,3 +437,73 @@ fn metadata_follows_files_into_another_source() {
     assert!(lib.db.media_location(1).unwrap().is_none());
     assert_eq!(lib.ids("점수(5)"), [4]);
 }
+
+#[test]
+fn folder_values_apply_recursively() {
+    let mut lib = library();
+    let tags = |db: &Db, id: i64| db.media_detail(id).unwrap().unwrap().values.get("x.tags").cloned().unwrap_or_default();
+    let rating = |db: &Db, id: i64| db.media_detail(id).unwrap().unwrap().values["x.rating"].clone();
+    let t = |s: &str| ExtValue::Text(s.into());
+    // A nested folder inside source 1's "trip" (items 1, 2, 4).
+    let deep = lib
+        .db
+        .upsert_media(&NewMedia {
+            source_id: 1,
+            rel_path: "trip/day/c.jpg".into(),
+            kind: MediaKind::Image,
+            size: 1,
+            created_ms: None,
+            modified_ms: None,
+            added_ms: OCT18,
+            duration_ms: None,
+            width: None,
+            height: None,
+            seen_gen: 1,
+        })
+        .unwrap();
+
+    // Only the folder itself.
+    assert_eq!(lib.db.edit_folder_values(1, "trip", "x.tags", &FolderEdit::Add(t("여행")), false).unwrap(), 0);
+    assert_eq!(lib.db.folder_values(1, "trip").unwrap()["x.tags"], [t("여행")]);
+    assert_eq!(tags(&lib.db, 1), [t("바다"), t("가족")]);
+
+    // Recursive, multi-valued: merged into every item and subfolder inside.
+    assert_eq!(lib.db.edit_folder_values(1, "trip", "x.tags", &FolderEdit::Add(t("여행")), true).unwrap(), 4);
+    assert_eq!(tags(&lib.db, 1), [t("바다"), t("가족"), t("여행")]);
+    assert_eq!(tags(&lib.db, deep), [t("여행")]);
+    assert_eq!(lib.db.folder_values(1, "trip/day").unwrap()["x.tags"], [t("여행")]);
+    assert!(tags(&lib.db, 3).is_empty(), "other sources are untouched");
+    assert_eq!(lib.ids("태그(여행)"), [1, 2, 4, deep]);
+
+    // Recursive, single-valued: replaced everywhere.
+    lib.db.edit_folder_values(1, "trip", "x.rating", &FolderEdit::Set(vec![ExtValue::Int(2)]), true).unwrap();
+    assert_eq!(rating(&lib.db, 1), [ExtValue::Int(2)]);
+    assert_eq!(rating(&lib.db, 4), [ExtValue::Int(2)]);
+    assert_eq!(lib.db.folder_values(1, "trip/day").unwrap()["x.rating"], [ExtValue::Int(2)]);
+    // Applied one by one: a later edit of an item overwrites it.
+    lib.db.set_values_many(&[1], "x.rating", &[ExtValue::Int(4)], "user").unwrap();
+    assert_eq!(rating(&lib.db, 1), [ExtValue::Int(4)]);
+    assert_eq!(rating(&lib.db, 2), [ExtValue::Int(2)]);
+    // ...and applying again recursively overwrites it back.
+    lib.db.edit_folder_values(1, "trip", "x.rating", &FolderEdit::Set(vec![ExtValue::Int(3)]), true).unwrap();
+    assert_eq!(rating(&lib.db, 1), [ExtValue::Int(3)]);
+
+    // Set on a multi-valued field merges inside, replaces on the folder itself.
+    lib.db.edit_folder_values(1, "trip", "x.tags", &FolderEdit::Set(vec![t("겨울")]), true).unwrap();
+    assert_eq!(lib.db.folder_values(1, "trip").unwrap()["x.tags"], [t("겨울")]);
+    assert_eq!(tags(&lib.db, 2), [t("바다"), t("여행"), t("겨울")]);
+    // Recursive removal.
+    lib.db.edit_folder_values(1, "trip", "x.tags", &FolderEdit::Remove(t("여행")), true).unwrap();
+    assert_eq!(tags(&lib.db, deep), [t("겨울")]);
+
+    // Add/remove are for multi-valued fields only; values are checked.
+    assert!(lib.db.edit_folder_values(1, "trip", "x.rating", &FolderEdit::Add(ExtValue::Int(1)), false).is_err());
+    assert!(lib.db.edit_folder_values(1, "trip", "x.rating", &FolderEdit::Set(vec![ExtValue::Int(9)]), false).is_err());
+
+    // Values follow the folder when it moves, and go when it is deleted.
+    lib.db.move_folder(1, "trip", "old/trip").unwrap();
+    assert!(lib.db.folder_values(1, "trip").unwrap().is_empty());
+    assert_eq!(lib.db.folder_values(1, "old/trip/day").unwrap()["x.tags"], [t("겨울")]);
+    lib.db.delete_folder_values(1, "old/trip").unwrap();
+    assert!(lib.db.folder_values(1, "old/trip/day").unwrap().is_empty());
+}

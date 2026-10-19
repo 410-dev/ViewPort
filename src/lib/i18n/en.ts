@@ -679,6 +679,12 @@ const en: Record<Key, string> = {
   "set.folderPreview.help": "Folder tiles in the grid view show an N×N grid of thumbnails from inside (2 = 2×2, 3 = 3×3). 0 shows the icon only.",
   "set.convertImageExt": "Image formats shown converted",
   "set.convertImageExt.help": "Formats the WebView cannot show (HEIC, HEIF, ...) are shown as a JPEG copy. Needs FFmpeg on PCs, the system decoder on Android.",
+  "info.items": "Items",
+  "info.folderHint": "Folder fields. Turn on 'Inside too' on a field and changes also apply to every item and subfolder inside, one by one (multi-value fields merge, single values are replaced). Later edits inside simply overwrite them.",
+  "info.deep": "Inside too",
+  "info.deepMerge": "When on, changes to this field are merged into every item and subfolder inside",
+  "info.deepReplace": "When on, changes to this field replace the value of every item and subfolder inside",
+  "info.appliedInside": "Also applied to {n} items inside",
 };
 
 export default en;

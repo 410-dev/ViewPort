@@ -8,14 +8,31 @@
   import Icon from "../ui/Icon.svelte";
   import { onDestroy } from "svelte";
   import { broadcast, onSync } from "../sync";
+  import type { FolderRef } from "../views/selection.svelte";
 
-  /** Metadata and editable extension fields (tags, rating, memo, custom) of the selection. */
-  /** `compact` hides the file name (the preview above already shows it). */
-  let { ids, onchanged, compact = false }: { ids: number[]; onchanged?: () => void; compact?: boolean } = $props();
+  /**
+   * Metadata and editable extension fields (tags, rating, memo, custom) of the selection,
+   * or of a folder. A folder field can be applied to everything inside as well (per field
+   * toggle): one by one, merging multi-valued fields and replacing single values.
+   * `compact` hides the file name (the preview above already shows it).
+   */
+  let {
+    ids,
+    folder = null,
+    onchanged,
+    compact = false,
+  }: { ids: number[]; folder?: FolderRef | null; onchanged?: () => void; compact?: boolean } = $props();
 
   let fields = $state<FieldInfo[]>([]);
   let detail = $state<MediaDetail | null>(null);
+  let folderVals = $state<Record<string, ExtValue[]> | null>(null);
   let error = $state("");
+  let notice = $state("");
+  /** Fields whose folder edits also apply to everything inside. */
+  let deep = $state<Record<string, boolean>>({});
+  /** One target shows its values: a folder or a single item. */
+  const one = $derived(folder !== null || ids.length === 1);
+  const many = $derived(folder === null && ids.length > 1);
 
   const fieldName = (f: FieldInfo) => f.names.find(([l]) => l === i18n.locale)?.[1] ?? f.names[0]?.[1] ?? f.key;
 
@@ -38,31 +55,58 @@
     return () => clearTimeout(timer);
   });
 
+  $effect(() => {
+    const f = folder;
+    folderVals = null;
+    notice = "";
+    if (f) api.folderValues(f.sourceId, f.path).then((v) => folder === f && (folderVals = v)).catch(() => {});
+  });
+
   // Another window edited values or fields.
   const unlisten = [
     onSync("media", () => {
-      if (ids.length === 1) api.mediaDetail(ids[0]).then((d) => (detail = d));
+      if (folder) {
+        const f = folder;
+        api.folderValues(f.sourceId, f.path).then((v) => folder === f && (folderVals = v)).catch(() => {});
+      } else if (ids.length === 1) api.mediaDetail(ids[0]).then((d) => (detail = d));
     }),
     onSync("fields", () => loadFields()),
   ];
   onDestroy(() => unlisten.forEach((p) => p.then((f) => f())));
 
   async function reload() {
-    if (ids.length === 1) detail = await api.mediaDetail(ids[0]);
+    if (folder) folderVals = await api.folderValues(folder.sourceId, folder.path);
+    else if (ids.length === 1) detail = await api.mediaDetail(ids[0]);
     onchanged?.();
   }
 
   async function run(f: () => Promise<unknown>) {
     error = "";
+    notice = "";
     try {
-      await f();
+      const n = await f();
       await reload();
+      if (folder && typeof n === "number" && n > 0) notice = t("info.appliedInside", { n: n.toLocaleString() });
     } catch (e) {
       error = asCmdError(e).message;
     }
   }
 
-  const values = (key: string): ExtValue[] => detail?.values[key] ?? [];
+  // Edits go to the selected items, or to the folder (and, per field, everything inside).
+  function setVals(key: string, vals: ExtValue[]) {
+    if (folder) return api.editFolderValues(folder.sourceId, folder.path, key, { op: "set", value: vals }, !!deep[key]);
+    return api.setValues(ids, key, vals);
+  }
+  function addVal(key: string, v: ExtValue) {
+    if (folder) return api.editFolderValues(folder.sourceId, folder.path, key, { op: "add", value: v }, !!deep[key]);
+    return api.addValue(ids, key, v);
+  }
+  function removeVal(key: string, v: ExtValue) {
+    if (folder) return api.editFolderValues(folder.sourceId, folder.path, key, { op: "remove", value: v }, !!deep[key]);
+    return api.removeValue(ids, key, v);
+  }
+
+  const values = (key: string): ExtValue[] => (folder ? folderVals?.[key] : detail?.values[key]) ?? [];
   const single = (key: string) => values(key)[0];
 
   let tagInput = $state<Record<string, string>>({});
@@ -70,15 +114,15 @@
     const v = (tagInput[key] ?? "").trim();
     if (!v) return;
     tagInput[key] = "";
-    run(() => api.addValue(ids, key, v));
+    run(() => addVal(key, v));
   }
 
   function setScalar(f: FieldInfo, raw: string) {
     const ty = f.ty.type;
-    if (raw.trim() === "") return run(() => api.setValues(ids, f.key, []));
+    if (raw.trim() === "") return run(() => setVals(f.key, []));
     const v = ty === "text" ? raw : ty === "real" ? parseFloat(raw) : parseInt(raw, 10);
     if (typeof v === "number" && !isFinite(v)) return;
-    run(() => api.setValues(ids, f.key, [v]));
+    run(() => setVals(f.key, [v]));
   }
 
   let adding = $state(false);
@@ -118,10 +162,21 @@
 </script>
 
 <div class="info">
-  {#if ids.length === 0}
+  {#if ids.length === 0 && !folder}
     <p class="muted center">{t("panel.nothing")}</p>
   {:else}
-    {#if ids.length === 1 && detail}
+    {#if folder}
+      <section class="facts">
+        <h3 class="title" title={folder.path}><Icon name="folder" size={14} /> {folder.path.split("/").at(-1)}</h3>
+        <dl>
+          <dt>{t("info.path")}</dt>
+          <dd class="path">{folder.path}</dd>
+          <dt>{t("info.items")}</dt>
+          <dd class="tabular">{folder.count.toLocaleString()}</dd>
+        </dl>
+        <p class="muted small hint">{t("info.folderHint")}</p>
+      </section>
+    {:else if ids.length === 1 && detail}
       <section class="facts">
         {#if !compact}<h3 class="title" title={detail.rel_path}>{detail.name}</h3>{/if}
         <dl>
@@ -143,7 +198,7 @@
           <dd class="tabular">{detail.view_count}{detail.last_viewed_ms ? ` · ${fmtDate(detail.last_viewed_ms)}` : ""}</dd>
         </dl>
       </section>
-    {:else if ids.length > 1}
+    {:else if many}
       <section class="facts">
         <h3 class="title">{t("panel.selected", { n: ids.length.toLocaleString() })}</h3>
         <p class="muted small">{t("info.multiHint")}</p>
@@ -155,16 +210,26 @@
         <div class="field">
           <div class="label">
             <span>{fieldName(f)}</span>
+            <span class="grow"></span>
+            {#if folder}
+              <button
+                class="deep"
+                class:on={deep[f.key]}
+                aria-pressed={!!deep[f.key]}
+                title={t(f.ty.type === "enum" ? "info.deepMerge" : "info.deepReplace")}
+                onclick={() => (deep[f.key] = !deep[f.key])}><Icon name="layers" size={11} />{t("info.deep")}</button
+              >
+            {/if}
             {#if !f.builtin}
               <button class="icon-btn sm x" title={t("info.deleteFieldTitle")} onclick={() => deleteField(f)}><Icon name="x" size={12} /></button>
             {/if}
           </div>
           {#if f.ty.type === "enum"}
-            {#if ids.length === 1 && values(f.key).length}
+            {#if one && values(f.key).length}
               <div class="chips">
                 {#each values(f.key) as v (v)}
                   <span class="chip"
-                    >{v}<button onclick={() => run(() => api.removeValue(ids, f.key, v))} aria-label="remove"
+                    >{v}<button onclick={() => run(() => removeVal(f.key, v))} aria-label="remove"
                       ><Icon name="x" size={11} /></button
                     ></span
                   >
@@ -172,13 +237,13 @@
               </div>
             {/if}
             <Combobox
-              placeholder={ids.length > 1 ? t("info.addToAll") : t("info.add")}
+              placeholder={many ? t("info.addToAll") : t("info.add")}
               bind:value={() => tagInput[f.key] ?? "", (v) => (tagInput[f.key] = v)}
               suggest={(prefix) => api.suggestValues(f.key, prefix)}
               onpick={() => addTag(f.key)}
               onenter={() => addTag(f.key)}
             />
-            {#if ids.length > 1 && (tagInput[f.key] ?? "").trim()}
+            {#if many && (tagInput[f.key] ?? "").trim()}
               <button class="btn sm ghost" onclick={() => run(() => api.removeValue(ids, f.key, tagInput[f.key].trim()))}
                 >{t("info.removeFromAll")}</button
               >
@@ -195,7 +260,7 @@
                     role="radio"
                     aria-checked={cur === n}
                     title={String(n)}
-                    onclick={() => run(() => api.setValues(ids, f.key, cur === n ? [] : [n]))}><Icon name="star" size={17} /></button
+                    onclick={() => run(() => setVals(f.key, cur === n ? [] : [n]))}><Icon name="star" size={17} /></button
                   >
                 {/each}
               </div>
@@ -245,6 +310,7 @@
       {/if}
     </section>
   {/if}
+  {#if notice}<p class="notice">{notice}</p>{/if}
   {#if error}<p class="error">{error}</p>{/if}
 </div>
 
@@ -302,6 +368,41 @@
     color: var(--muted);
     font-size: 12px;
     font-weight: 500;
+  }
+  .title :global(svg) {
+    vertical-align: -2px;
+    color: var(--accent);
+  }
+  .hint {
+    margin-top: 8px;
+    line-height: 1.5;
+  }
+  .grow {
+    flex: 1;
+  }
+  /* Per field: folder edits also apply to everything inside. */
+  .deep {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 18px;
+    padding: 0 7px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-pill);
+    background: transparent;
+    color: var(--faint);
+    font-size: 11px;
+    white-space: nowrap;
+  }
+  .deep.on {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  .notice {
+    color: var(--accent);
+    margin: 0;
+    font-size: 12px;
   }
   .x {
     opacity: 0;

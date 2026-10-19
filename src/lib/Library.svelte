@@ -470,6 +470,7 @@
 
   const folderMenuItems = $derived<MenuItem[]>([
     { label: t("folder.open"), icon: "folder", action: folderAction(openFolder) },
+    { label: t("sel.info"), icon: "info", action: () => setPanel(true) },
     ...(isMobile
       ? []
       : [
@@ -679,12 +680,15 @@
       <RightPanel
         focus={selection.focus}
         selected={selectedIds}
+        folder={selection.folder}
         onopen={(id) => openViewer(id, ids.includes(id) ? ids : [id])}
         onopenwindow={isMobile ? undefined : (id) => openViewerWindow(id, ids.includes(id) ? ids : [id])}
         onclose={compact ? () => setPanel(false) : undefined}
         onchanged={() => {
-          invalidate(selectedIds);
-          broadcast("media", selectedIds);
+          // Folder edits may have reached every item inside.
+          const changed = selection.folder ? undefined : selectedIds;
+          invalidate(changed);
+          broadcast("media", changed);
           runSearch(false);
         }}
       />

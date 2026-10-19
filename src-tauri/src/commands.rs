@@ -556,6 +556,32 @@ pub async fn remove_value(app: AppHandle, ids: Vec<i64>, key: String, value: vp_
     blocking(move || Ok(ws.write_db.lock().unwrap().remove_value_many(&ids, &key, &value)?)).await
 }
 
+/// Extension field values of a folder.
+#[tauri::command]
+pub async fn folder_values(
+    app: AppHandle,
+    source_id: i64,
+    path: String,
+) -> CmdResult<std::collections::BTreeMap<String, Vec<vp_db::ExtValue>>> {
+    let ws = workspace(&app.state::<AppState>())?;
+    blocking(move || Ok(ws.read_db.lock().unwrap().folder_values(source_id, &path)?)).await
+}
+
+/// Changes a field of a folder; `recursive` also applies it to everything inside
+/// (merging multi-valued fields, replacing single values). Returns the items changed.
+#[tauri::command]
+pub async fn edit_folder_values(
+    app: AppHandle,
+    source_id: i64,
+    path: String,
+    key: String,
+    edit: vp_db::FolderEdit,
+    recursive: bool,
+) -> CmdResult<usize> {
+    let ws = workspace(&app.state::<AppState>())?;
+    blocking(move || Ok(ws.write_db.lock().unwrap().edit_folder_values(source_id, &path, &key, &edit, recursive)?)).await
+}
+
 #[tauri::command]
 pub fn suggest_values(state: State<'_, AppState>, key: String, prefix: String) -> CmdResult<Vec<String>> {
     Ok(workspace(&state)?.read_db.lock().unwrap().suggest_values(&key, &prefix, 20)?)
@@ -1106,6 +1132,7 @@ fn relocate_folder(ws: &Workspace, registry: &vp_driver::DriverRegistry, source_
         }
         task.add(1);
     }
+    ws.write_db.lock().unwrap().move_folder_values(source_id, from, to)?;
     if report.failed.is_empty() { task.finish() } else { task.fail(format!("{} files failed", report.failed.len())) }
     Ok(report)
 }
@@ -1172,6 +1199,7 @@ fn remove_folder(ws: &Workspace, registry: &vp_driver::DriverRegistry, source_id
         }
         task.add(1);
     }
+    ws.write_db.lock().unwrap().delete_folder_values(source_id, folder)?;
     let source = ws.read_db.lock().unwrap().source(source_id)?;
     if let Some(source) = source
         && let Some(dir) = ws.driver(registry, &source)?.local_path(folder)
@@ -1309,6 +1337,8 @@ mod folder_tests {
         .unwrap();
         let ids = ws.read_db.lock().unwrap().folder_media(src, "trip/day1").unwrap();
         assert_eq!(ids.len(), 2);
+        let tag = vp_db::FolderEdit::Add(vp_db::ExtValue::Text("trip".into()));
+        ws.write_db.lock().unwrap().edit_folder_values(src, "trip/day1", "x.tags", &tag, true).unwrap();
 
         // HEIC (a tiled grid, like phone photos) gets a thumbnail through FFmpeg.
         if ws.ffmpeg().is_some() {
@@ -1334,6 +1364,9 @@ mod folder_tests {
         assert_eq!(moved, before);
         let deep = ws.read_db.lock().unwrap().media_location(before[1]).unwrap().unwrap();
         assert!(deep.rel_path.starts_with("trip/first/"));
+        // Folder values follow, the subfolder's too.
+        assert!(ws.read_db.lock().unwrap().folder_values(src, "trip/day1").unwrap().is_empty());
+        assert_eq!(ws.read_db.lock().unwrap().folder_values(src, "trip/first/deep").unwrap()["x.tags"].len(), 1);
 
         // Never into itself; never over an existing folder.
         assert_eq!(relocate_folder(&ws, &registry, src, "trip", "trip/first/x").unwrap_err().code, "invalid_target");
@@ -1349,6 +1382,7 @@ mod folder_tests {
         let r = remove_folder(&ws, &registry, src, "archive/first").unwrap();
         assert_eq!((r.deleted, r.failed.len()), (2, 0));
         assert!(ws.read_db.lock().unwrap().folder_media(src, "archive").unwrap().is_empty());
+        assert!(ws.read_db.lock().unwrap().folder_values(src, "archive/first").unwrap().is_empty());
         assert!(!media.join("archive/first/deep").exists(), "emptied folders are removed");
         assert!(media.join("archive/first/notes.txt").is_file());
     }

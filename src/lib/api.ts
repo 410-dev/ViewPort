@@ -263,6 +263,9 @@ export interface TaskInfo {
   rate: number;
 }
 
+/** A change to a folder's field: replace its values, or add/remove one value of an enum field. */
+export type FolderEdit = { op: "set"; value: ExtValue[] } | { op: "add"; value: ExtValue } | { op: "remove"; value: ExtValue };
+
 export type FieldType =
   | { type: "text" }
   | { type: "integer" }
@@ -375,6 +378,10 @@ export const api = {
   setValues: (ids: number[], key: string, values: ExtValue[]) => invoke<void>("set_values", { ids, key, values }),
   addValue: (ids: number[], key: string, value: ExtValue) => invoke<void>("add_value", { ids, key, value }),
   removeValue: (ids: number[], key: string, value: ExtValue) => invoke<void>("remove_value", { ids, key, value }),
+  folderValues: (sourceId: number, path: string) => invoke<Record<string, ExtValue[]>>("folder_values", { sourceId, path }),
+  /** `recursive` also applies the change to every item and subfolder inside. */
+  editFolderValues: (sourceId: number, path: string, key: string, edit: FolderEdit, recursive: boolean) =>
+    invoke<number>("edit_folder_values", { sourceId, path, key, edit, recursive }),
   suggestValues: (key: string, prefix: string) => invoke<string[]>("suggest_values", { key, prefix }),
   queryVocabulary: (locale: string) => invoke<Vocabulary>("query_vocabulary", { locale }),
   listSavedQueries: (locale: string) => invoke<SavedQuery[]>("list_saved_queries", { locale }),
