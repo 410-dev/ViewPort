@@ -5,6 +5,8 @@
   import { callAt, defaultOp, Lang, normalize, opAllowed, opArity, POSTFIX_OPS, quoteParam, splitParams } from "../query";
   import Icon from "../ui/Icon.svelte";
   import QueryInput from "./QueryInput.svelte";
+  import Combobox from "../ui/Combobox.svelte";
+  import Select from "../ui/Select.svelte";
 
   /**
    * Query command editor: the text at the top is the source of truth; the four columns
@@ -96,30 +98,49 @@
 
   const UNITS: Record<string, string[]> = { size: ["KB", "MB", "GB"], duration: ["s", "m", "h"] };
 
+  // ---- live writing
+  // Every change in the columns rewrites the condition being built (the draft) in the text
+  // right away, complete or not. `target` is the draft's span; `appendAt` is set when the
+  // draft was appended to the end, so the joiner (AND/OR) before it follows the connective.
+  let appendAt: number | null = null;
+
   function pickField(key: string) {
     if (key === fieldKey) return;
-    // A different condition type starts a new condition rather than rewriting the one in the text.
-    target = null;
-    negate = false;
     fieldKey = key;
     op = null;
     params = [];
     units = [];
+    live();
   }
 
   function pickOp(o: string) {
     op = op === o ? null : o;
     const [, max] = op && op !== SORT_ASC && op !== SORT_DESC ? opArity(op, MULTI_MAX) : [0, 0];
     params = params.slice(0, max);
+    live();
   }
 
-  function reset() {
+  function setParam(i: number, v: string) {
+    params[i] = v;
+    live();
+  }
+
+  function removeParam(i: number) {
+    params.splice(i, 1);
+    live();
+  }
+
+  function setConnective(c: "and" | "or") {
+    connective = c;
+    live();
+  }
+
+  function resetBuilder() {
     fieldKey = null;
     op = null;
     params = [];
     units = [];
     negate = false;
-    target = null;
   }
 
   function paramValue(i: number): string {
@@ -129,47 +150,73 @@
     return raw;
   }
 
-  /** The condition the columns describe, as query text. */
-  function build(): string | null {
-    if (!field || !vocab || !complete) return null;
+  /** The condition the columns describe, as query text; may be incomplete (`이름()`). */
+  function draftText(): string | null {
+    if (!field || !vocab) return null;
     if (isSort) return `${op === SORT_ASC ? vocab.sort_asc : vocab.sort_desc}(${field.name})`;
-    const values = Array.from({ length: slots }, (_, i) => paramValue(i))
-      .filter(Boolean)
-      .map(quoteParam);
+    const values = params.map((_, i) => paramValue(i)).filter(Boolean).map(quoteParam);
     const o = effectiveOp!;
     const name = vocab.ops.find((x) => x.op === o)?.name ?? o;
-    // The default operator may be left out when values are given.
-    const explicit = op !== null || values.length === 0;
-    const parts = explicit ? (POSTFIX_OPS.has(o) ? [...values, name] : [name, ...values]) : values;
+    // The default operator is left out unless chosen explicitly.
+    const parts = op !== null ? (POSTFIX_OPS.has(o) ? [...values, name] : [name, ...values]) : values;
     const call = `${field.name}(${parts.join(":")})`;
     return negate ? `${vocab.not} ${call}` : call;
   }
 
-  /** Writes the built condition into the text. Returns false if it is incomplete. */
-  function commit(): boolean {
-    const cond = build();
-    if (!cond || !vocab) return false;
-    if (target) {
-      input.replace(target.start, target.end, cond);
+  /** Writes the draft into the text. */
+  function live() {
+    if (!vocab) return;
+    const cond = draftText() ?? "";
+    if (target && appendAt === null) {
+      // Editing a condition already in the text, in place.
+      text = text.slice(0, target.start) + cond + text.slice(target.end);
       target = { start: target.start, end: target.start + cond.length };
-    } else {
-      const trimmed = text.replace(/\s+$/, "");
-      const joiner = trimmed ? ` ${connective === "and" ? vocab.and : vocab.or} ` : "";
-      const start = trimmed.length + joiner.length;
-      text = trimmed + joiner + cond;
-      target = { start, end: start + cond.length };
-      queueMicrotask(() => input.focus());
+      return;
     }
-    return true;
+    if (!target && !cond) return;
+    const head = target ? text.slice(0, appendAt!) : text.replace(/\s+$/, "");
+    const tail = target ? text.slice(target.end) : "";
+    const joiner = head.trim() ? ` ${connective === "and" ? vocab.and : vocab.or} ` : "";
+    appendAt = head.length;
+    text = head + joiner + cond + tail;
+    target = { start: head.length + joiner.length, end: head.length + joiner.length + cond.length };
   }
 
+  /** Ends the draft: it stays in the text and the columns clear for a new condition. */
+  function finish() {
+    target = null;
+    appendAt = null;
+    resetBuilder();
+    queueMicrotask(() => input.focus());
+  }
+
+  /** Ends the draft and starts the next one right away, joined with the chosen connective. */
   function nextCondition() {
-    commit();
-    reset();
+    finish();
+    if (text.trim()) live2Joiner();
+  }
+
+  /** Writes just the joiner for the next condition (the draft that follows replaces it). */
+  function live2Joiner() {
+    if (!vocab) return;
+    const head = text.replace(/\s+$/, "");
+    const joiner = ` ${connective === "and" ? vocab.and : vocab.or} `;
+    appendAt = head.length;
+    text = head + joiner;
+    target = { start: text.length, end: text.length };
+  }
+
+  /** A joiner with no condition after it is dropped before applying. */
+  function dropEmptyDraft() {
+    if (target && appendAt !== null && target.start === target.end) {
+      text = text.slice(0, appendAt) + text.slice(target.end);
+      target = null;
+      appendAt = null;
+    }
   }
 
   function apply() {
-    if (complete && !target) commit();
+    dropEmptyDraft();
     onapply(text);
   }
 
@@ -177,6 +224,7 @@
   function onCaret(caret: number) {
     if (!lang || !vocab) return;
     const call = callAt(lang, text, caret);
+    appendAt = null;
     if (!call) {
       target = null;
       return;
@@ -296,23 +344,40 @@
                   {#if ty === "kind"}
                     <div class="seg sm">
                       {#each vocab?.kinds ?? [] as k (k)}
-                        <button class:on={params[i] === k} onclick={() => (params[i] = params[i] === k ? "" : k)}>{k}</button>
+                        <button class:on={params[i] === k} onclick={() => setParam(i, params[i] === k ? "" : k)}>{k}</button>
                       {/each}
                     </div>
                   {:else if ty === "date"}
-                    <input class="input" type="date" bind:value={params[i]} />
+                    <input class="input" type="date" value={params[i] ?? ""} oninput={(e) => setParam(i, e.currentTarget.value)} />
                   {:else if ty && UNITS[ty]}
-                    <input class="input num" type="number" min="0" step="any" bind:value={params[i]} />
-                    <select class="input unit" bind:value={units[i]}>
-                      {#each UNITS[ty] as u (u)}<option value={u} selected={u === UNITS[ty][1]}>{u}</option>{/each}
-                    </select>
+                    <input class="input num" type="number" min="0" step="any" value={params[i] ?? ""} oninput={(e) => setParam(i, e.currentTarget.value)} />
+                    <Select
+                      class="unit"
+                      value={units[i] ?? UNITS[ty][1]}
+                      options={UNITS[ty].map((u) => ({ value: u, label: u }))}
+                      onchange={(v) => {
+                        units[i] = v;
+                        live();
+                      }}
+                    />
                   {:else if ty === "integer" || ty === "real" || ty === "ranged_int"}
-                    <input class="input" type="number" step={ty === "real" ? "any" : "1"} bind:value={params[i]} />
+                    <input
+                      class="input"
+                      type="number"
+                      step={ty === "real" ? "any" : "1"}
+                      value={params[i] ?? ""}
+                      oninput={(e) => setParam(i, e.currentTarget.value)}
+                    />
                   {:else}
-                    <input class="input" bind:value={params[i]} list={field.ext ? `qm-sugg-${field.key}` : undefined} />
+                    {#if field.ext}
+                      {@const key = field.key}
+                      <Combobox value={params[i] ?? ""} suggest={(prefix) => api.suggestValues(key, prefix)} oninput={(v) => setParam(i, v)} />
+                    {:else}
+                      <input class="input" value={params[i] ?? ""} oninput={(e) => setParam(i, e.currentTarget.value)} />
+                    {/if}
                   {/if}
                   {#if params[i]}
-                    <button class="icon-btn sm" aria-label={t("common.remove")} onclick={() => params.splice(i, 1)}><Icon name="x" size={12} /></button>
+                    <button class="icon-btn sm" aria-label={t("common.remove")} onclick={() => removeParam(i)}><Icon name="x" size={12} /></button>
                   {/if}
                 </div>
               {/each}
@@ -346,10 +411,13 @@
         <section class="col">
           <h3>{t("query.colExtra")}</h3>
           <div class="items">
-            <button class="item" class:on={connective === "and"} onclick={() => (connective = "and")}>{vocab?.and ?? "AND"}</button>
-            <button class="item" class:on={connective === "or"} onclick={() => (connective = "or")}>{vocab?.or ?? "OR"}</button>
+            <button class="item" class:on={connective === "and"} onclick={() => setConnective("and")}>{vocab?.and ?? "AND"}</button>
+            <button class="item" class:on={connective === "or"} onclick={() => setConnective("or")}>{vocab?.or ?? "OR"}</button>
             <div class="divider"></div>
-            <button class="item" class:on={negate} disabled={isSort} onclick={() => (negate = !negate)}>{t("query.negate", { not: vocab?.not ?? "NOT" })}</button>
+            <button class="item" class:on={negate} disabled={isSort} onclick={() => {
+                negate = !negate;
+                live();
+              }}>{t("query.negate", { not: vocab?.not ?? "NOT" })}</button>
             <p class="hint">{t("query.precedence", { and: vocab?.and ?? "AND", or: vocab?.or ?? "OR" })}</p>
             {#if target}
               <p class="hint edit"><Icon name="pencil" size={12} />{t("query.editingHint")}</p>
@@ -360,19 +428,14 @@
     </div>
 
     <footer>
-      <button class="btn wide-1" disabled={!complete} onclick={commit}>{t("query.finish")}</button>
-      <button class="btn wide-2" disabled={!complete && !fieldKey} onclick={nextCondition}>{t("query.next")}</button>
+      <button class="btn wide-1" disabled={!target || !complete} onclick={finish}>{t("query.finish")}</button>
+      <button class="btn wide-2" disabled={!!target && !complete} onclick={nextCondition}>{t("query.next")}</button>
       <button class="btn primary wide-3" disabled={!status.ok} onclick={apply}>{t("query.apply")}</button>
       <button class="btn wide-4" onclick={onclose}>{t("common.close")}</button>
     </footer>
   </div>
 </div>
 
-{#if field?.ext}
-  {#await api.suggestValues(field.key, "") then list}
-    <datalist id="qm-sugg-{field.key}">{#each list as s (s)}<option value={s}></option>{/each}</datalist>
-  {/await}
-{/if}
 
 <style>
   .modal {
@@ -546,9 +609,20 @@
   .param .num {
     flex: 1;
   }
-  .param .unit {
+  .param :global(.unit) {
     flex: none;
-    width: 76px;
+    width: 84px;
+    height: 40px;
+    background: var(--surface);
+    border-color: var(--border);
+  }
+  .param :global(input.input) {
+    flex: 1;
+    min-width: 0;
+    height: 40px;
+    padding: 0 16px;
+    background: var(--surface);
+    border-color: var(--border);
   }
   .param .seg {
     flex: 1;

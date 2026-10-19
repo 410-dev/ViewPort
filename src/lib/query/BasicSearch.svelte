@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Select from "../ui/Select.svelte";
   import { api, type FieldInfo, type Vocabulary } from "../api";
   import { i18n, t } from "../i18n.svelte";
   import { quoteParam } from "../query";
@@ -116,10 +117,12 @@
   <label class="wide">
     <span>{t("basic.sort")}</span>
     <span class="pair">
-      <select class="input" bind:value={sortKey}>
-        <option value="">{t("basic.defaultSort")}</option>
-        {#each vocab?.fields ?? [] as f (f.key)}<option value={f.key}>{f.name}</option>{/each}
-      </select>
+      <Select
+        class="grow-select"
+        value={sortKey}
+        options={[{ value: "", label: t("basic.defaultSort") }, ...(vocab?.fields ?? []).map((f) => ({ value: f.key, label: f.name }))]}
+        onchange={(v) => (sortKey = v)}
+      />
       <span class="seg sm">
         <button type="button" class:on={!sortDesc} onclick={() => (sortDesc = false)}>{t("basic.asc")}</button>
         <button type="button" class:on={sortDesc} onclick={() => (sortDesc = true)}>{t("basic.desc")}</button>
@@ -157,6 +160,7 @@
     gap: 6px;
     align-items: center;
   }
+  .pair > :global(.grow-select),
   .pair > .input {
     flex: 1;
     min-width: 0;

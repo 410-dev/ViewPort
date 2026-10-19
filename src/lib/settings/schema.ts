@@ -219,6 +219,7 @@ export const SECTIONS: Section[] = [
         note: "set.privacy.note",
         fields: [
           { kind: "list", ...app({ path: "privacy.panic_keys", label: "set.panicKeys", help: "set.panicKeys.help" }) },
+          { kind: "number", ...app({ path: "privacy.panic_double_ms", label: "set.panicDouble", help: "set.panicDouble.help" }), min: 150, max: 1500, step: 50, unit: "ms" },
           { kind: "toggle", ...app({ path: "privacy.panic_mute", label: "set.panicMute" }) },
           { kind: "toggle", ...app({ path: "privacy.panic_hide", label: "set.panicHide" }) },
           { kind: "text", ...app({ path: "privacy.restore_shortcut", label: "set.restoreShortcut", help: "set.restoreShortcut.help" }), placeholder: "CommandOrControl+Shift+Space" },

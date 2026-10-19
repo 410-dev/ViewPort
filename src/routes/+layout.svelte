@@ -8,17 +8,28 @@
 
   let { children } = $props();
 
-  // The panic key works in every window and takes precedence over everything else
-  // (captured before any component sees the key). The one exception: in immersive mode the
-  // first press only leaves immersive mode, so a double press is the panic key there.
+  // The panic key is a fast double press (default: Escape twice), in every window and in any
+  // mode. It is captured before any component sees the key. A single press keeps its normal
+  // meaning; in immersive mode it leaves immersive mode first.
   onMount(() => {
+    let last = 0;
     const onKey = (e: KeyboardEvent) => {
-      if (e.repeat || !matches(e, prefs.app?.privacy.panic_keys)) return;
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      if (exitImmersive()) return;
-      document.querySelectorAll("video").forEach((v) => (v.muted = true));
-      api.panic().catch(() => {});
+      const p = prefs.app?.privacy;
+      if (e.repeat || !p || !matches(e, p.panic_keys)) return;
+      const now = performance.now();
+      if (now - last <= (p.panic_double_ms || 400)) {
+        last = 0;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        document.querySelectorAll("video").forEach((v) => (v.muted = true));
+        api.panic().catch(() => {});
+        return;
+      }
+      last = now;
+      if (exitImmersive()) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+      }
     };
     window.addEventListener("keydown", onKey, { capture: true });
     return () => window.removeEventListener("keydown", onKey, { capture: true });
