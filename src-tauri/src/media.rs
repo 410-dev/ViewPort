@@ -199,7 +199,7 @@ fn serve(
     // and are cached in the background (see `handle`).
     let cached = match loc.kind {
         vp_core::MediaKind::Image => ws.load_into_cache(drivers, id)?,
-        vp_core::MediaKind::Video => ws.cache.get(id),
+        vp_core::MediaKind::Video | vp_core::MediaKind::NonMedia => ws.cache.get(id),
     };
     let total = cached.as_ref().map(|c| c.len()).unwrap_or(loc.size);
     let (start, end, partial) = match range.as_deref().and_then(|r| parse_range(r, total)) {
@@ -209,7 +209,7 @@ fn serve(
         None => (0, total.saturating_sub(1).min(stream_max - 1), true),
     };
     let want = match loc.kind {
-        vp_core::MediaKind::Video => (end - start + 1).min(stream_max),
+        vp_core::MediaKind::Video | vp_core::MediaKind::NonMedia => (end - start + 1).min(stream_max),
         _ => end - start + 1,
     };
     let data = match &cached {

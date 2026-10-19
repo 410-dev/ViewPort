@@ -543,6 +543,10 @@ impl Workspace {
             }
             Ok(())
         };
+        if !loc.kind.is_media() {
+            record(ThumbRow::without_data(ThumbStatus::Unsupported))?;
+            return Ok(None);
+        }
         // A shard keeps its items' thumbnails, also from other bundles it was attached to.
         let shard = self.shard_for(loc.source_id)?;
         if let Some(s) = &shard
@@ -742,6 +746,7 @@ mod tests {
             driver: drv.as_ref(),
             settings: &settings,
             source_id: id,
+            include_nonmedia: false,
             now_ms: 1,
             cancel: &cancel,
         }
@@ -835,7 +840,7 @@ mod shard_tests {
         let drv = ws.driver(registry, &source).unwrap();
         let settings = ws.settings.read().unwrap().scan.clone();
         let cancel = AtomicBool::new(false);
-        vp_scan::Scanner { db: &ws.write_db, driver: drv.as_ref(), settings: &settings, source_id: id, now_ms: 1, cancel: &cancel }
+        vp_scan::Scanner { db: &ws.write_db, driver: drv.as_ref(), settings: &settings, source_id: id, include_nonmedia: true, now_ms: 1, cancel: &cancel }
             .run(&mut |_| {})
             .unwrap()
     }

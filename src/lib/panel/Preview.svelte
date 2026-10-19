@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { displayUrl, mediaUrl, thumbUrl } from "../api";
+  import { api, asCmdError, displayUrl, mediaUrl, thumbUrl } from "../api";
+  import { pickFolder } from "../pick.svelte";
   import { fmtBytes, fmtDuration } from "../format";
   import { t } from "../i18n.svelte";
   import { prefs, ui } from "../prefs.svelte";
@@ -43,6 +44,12 @@
   const tooBig = $derived(!!b && ui().preview_max_bytes > 0 && b.size > ui().preview_max_bytes && forced !== b.id);
   const show = $derived(!!b && armed === b.id && !tooBig);
   const read = $derived(tasks.list.find((x) => x.kind === "read" && x.media_id === id && x.state === "running") ?? null);
+
+  /** Copies the items into a folder (the only thing non-media files can do). */
+  async function exportItems(ids: number[]) {
+    const dest = await pickFolder(t("panel.exportTo"));
+    if (dest) api.exportMedia(ids, dest).catch((e) => alert(asCmdError(e).message));
+  }
 </script>
 
 <div class="preview">
@@ -54,6 +61,17 @@
         {/each}
       </div>
       <p>{t("panel.selected", { n: selected.length.toLocaleString() })}</p>
+      <button class="btn sm" onclick={() => exportItems(selected)}><Icon name="download" size={14} />{t("panel.export")}</button>
+    </div>
+  {:else if b && b.kind === "nonmedia"}
+    <div class="stage nopreview">
+      <Icon name="file" size={40} stroke={1.3} />
+      <span>{t("panel.noPreview")}</span>
+      <button class="btn sm" onclick={() => exportItems([b.id])}><Icon name="download" size={14} />{t("panel.export")}</button>
+    </div>
+    <div class="meta">
+      <span class="top"><span class="name" title={b.name}>{b.name}</span></span>
+      <span class="sub tabular">{b.ext.toUpperCase()} · {fmtBytes(b.size)}</span>
     </div>
   {:else if b}
     <button class="stage" ondblclick={() => onopen(b.id)} title={t("panel.openHint")}>
@@ -113,6 +131,7 @@
     <div class="meta">
       <span class="top">
         <span class="name" title={b.name}>{b.name}</span>
+        <button class="icon-btn sm" title={t("panel.export")} onclick={() => exportItems([b.id])}><Icon name="download" size={13} /></button>
         <button class="icon-btn sm" title={t("panel.openViewer")} onclick={() => onopen(b.id)}><Icon name="maximize" size={13} /></button>
         {#if onopenwindow}
           <button class="icon-btn sm" title={t("panel.openWindow")} onclick={() => onopenwindow(b.id)}><Icon name="external" size={13} /></button>
@@ -221,6 +240,15 @@
   .sub {
     color: var(--muted);
     font-size: 12px;
+  }
+  .stage.nopreview {
+    align-content: center;
+    gap: 12px;
+    color: var(--muted);
+    font-size: 12px;
+    text-align: center;
+    padding: 16px;
+    cursor: default;
   }
   .multi {
     flex: 1;

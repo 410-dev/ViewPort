@@ -228,6 +228,7 @@ pub fn kind_aliases(kind: MediaKind) -> Aliases {
     match kind {
         MediaKind::Image => Aliases { ko: &["이미지", "사진", "그림"], en: &["image", "photo", "picture"] },
         MediaKind::Video => Aliases { ko: &["비디오", "영상", "동영상"], en: &["video", "movie", "clip"] },
+        MediaKind::NonMedia => Aliases { ko: &["기타 파일", "기타", "미디어 아님"], en: &["nonmedia", "other", "file"] },
     }
 }
 

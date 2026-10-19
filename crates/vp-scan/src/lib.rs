@@ -111,6 +111,8 @@ pub struct Scanner<'a> {
     pub driver: &'a dyn MediaDriver,
     pub settings: &'a ScanSettings,
     pub source_id: i64,
+    /// Record files that are neither images nor videos too (as `NonMedia`).
+    pub include_nonmedia: bool,
     /// Also used as the scan generation id.
     pub now_ms: i64,
     pub cancel: &'a AtomicBool,
@@ -149,7 +151,9 @@ impl Scanner<'_> {
                     subdirs.push(e.path);
                     continue;
                 }
-                let Some(kind) = classifier.kind(e.name()) else { continue };
+                let Some(kind) = classifier.kind(e.name()).or(self.include_nonmedia.then_some(MediaKind::NonMedia)) else {
+                    continue;
+                };
                 p.files += 1;
                 batch.push(self.action(&e, kind, &known, &mut p));
                 if batch.len() >= self.settings.batch_size.max(1) as usize {
@@ -185,7 +189,7 @@ impl Scanner<'_> {
         let (width, height) = match kind {
             MediaKind::Image => self.probe_image(&e.path).unwrap_or((None, None)),
             // Video metadata needs the media pipeline; filled in by a later probe.
-            MediaKind::Video => (None, None),
+            MediaKind::Video | MediaKind::NonMedia => (None, None),
         };
         Action::Upsert(NewMedia {
             source_id: self.source_id,
@@ -282,7 +286,7 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let scan = |now_ms| {
             let mut events = 0;
-            let s = Scanner { db: &db, driver: &driver, settings: &settings, source_id, now_ms, cancel: &cancel };
+            let s = Scanner { db: &db, driver: &driver, settings: &settings, source_id, include_nonmedia: false, now_ms, cancel: &cancel };
             let p = s.run(&mut |_| events += 1).unwrap();
             (p, events)
         };
@@ -308,6 +312,18 @@ mod tests {
         assert_eq!(p.missing, Some(1));
         assert_eq!(p.added, 0);
         assert_eq!(p.unchanged + p.updated, 2);
+
+        // With non-media files included, notes.txt is listed as such and found by kind.
+        let s = Scanner { db: &db, driver: &driver, settings: &settings, source_id, include_nonmedia: true, now_ms: 3, cancel: &cancel };
+        let p = s.run(&mut |_| {}).unwrap();
+        assert_eq!((p.files, p.added), (3, 1));
+        let db = db.lock().unwrap();
+        let reg = db.field_registry().unwrap();
+        let q = vp_query::parse_query("유형(기타 파일)", &reg).unwrap();
+        let ids = db.search(&q, &reg, &Db::compile_context(0, 0)).unwrap();
+        let brief = db.media_brief(&ids).unwrap();
+        assert_eq!(brief.iter().map(|b| (b.name.as_str(), b.kind.as_str())).collect::<Vec<_>>(), [("notes.txt", "nonmedia")]);
+        assert_eq!(db.media_location(ids[0]).unwrap().unwrap().kind, MediaKind::NonMedia);
     }
 
     /// A JPEG head like a Samsung camera's: over 128 KB of EXIF before the frame header.
@@ -372,7 +388,7 @@ mod tests {
         let settings = ScanSettings::default();
         let cancel = AtomicBool::new(false);
         let scan = |now_ms| {
-            let s = Scanner { db: &db, driver: &driver, settings: &settings, source_id, now_ms, cancel: &cancel };
+            let s = Scanner { db: &db, driver: &driver, settings: &settings, source_id, include_nonmedia: false, now_ms, cancel: &cancel };
             s.run(&mut |_| {}).unwrap()
         };
         let size = || {
@@ -400,7 +416,7 @@ mod tests {
         let driver = LocalDriver::new(dir.path());
         let settings = ScanSettings::default();
         let cancel = AtomicBool::new(true);
-        let s = Scanner { db: &db, driver: &driver, settings: &settings, source_id: 1, now_ms: 1, cancel: &cancel };
+        let s = Scanner { db: &db, driver: &driver, settings: &settings, source_id: 1, include_nonmedia: false, now_ms: 1, cancel: &cancel };
         assert!(matches!(s.run(&mut |_| {}), Err(ScanError::Cancelled)));
     }
 }

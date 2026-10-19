@@ -221,6 +221,8 @@ impl Default for ThumbnailSettings {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ScanSettings {
+    /// Record files that are neither images nor videos (always on for shards).
+    pub include_nonmedia: bool,
     /// Lowercase extensions (without dot) treated as images.
     pub image_extensions: Vec<String>,
     /// Lowercase extensions (without dot) treated as videos.
@@ -241,6 +243,7 @@ impl Default for ScanSettings {
         Self {
             image_extensions: v(&["jpg", "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff", "avif", "heic", "heif"]),
             video_extensions: v(&["mp4", "m4v", "mov", "webm", "mkv", "avi", "wmv", "flv", "ts", "m2ts", "mpg", "mpeg"]),
+            include_nonmedia: false,
             skip_hidden: true,
             header_probe_bytes: 64 * 1024,
             batch_size: 500,

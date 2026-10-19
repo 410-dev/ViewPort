@@ -17,6 +17,9 @@ export interface CmdError {
   detail: any;
 }
 
+/** `nonmedia`: any other file, listed and exportable but never previewed. */
+export type MediaKind = "image" | "video" | "nonmedia";
+
 export interface SourceRow {
   id: number;
   name: string;
@@ -28,7 +31,7 @@ export interface SourceRow {
 export interface MediaBrief {
   id: number;
   name: string;
-  kind: "image" | "video";
+  kind: MediaKind;
   width: number | null;
   height: number | null;
   duration_ms: number | null;
@@ -281,7 +284,7 @@ export interface MediaDetail {
   source_name: string;
   rel_path: string;
   name: string;
-  kind: "image" | "video";
+  kind: MediaKind;
   size: number;
   created_ms: number | null;
   modified_ms: number | null;
@@ -393,6 +396,7 @@ export const api = {
   takeWindowPayload: () => invoke<WindowPayload | null>("take_window_payload"),
   panic: () => invoke<void>("panic"),
   cancelTask: (id: number) => invoke<boolean>("cancel_task", { id }),
+  exportMedia: (ids: number[], dest: string) => invoke<void>("export_media", { ids, dest }),
 
   // Shard sources (src-tauri/src/shards.rs)
   shardStatus: () => invoke<ShardStatus[]>("shard_status"),

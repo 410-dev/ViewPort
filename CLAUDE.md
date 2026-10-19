@@ -47,6 +47,7 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
 - `lib.rs`: `AppState`(열린 `Workspace` 하나, `DriverRegistry`), 커맨드 등록, 커스텀 URI 스킴 등록.
 - `windows.rs`(보조 창, 화면 가리기, 트레이, 전역 복원 단축키), `audio.rs`(마스터 음량), `tasks.rs`(진행 상황 레지스트리).
   메인 창은 하드웨어 가속 설정을 WebView 인자에 반영하려고 `tauri.conf.json`이 아닌 코드에서 만든다.
+  창을 만드는 커맨드는 반드시 `async`여야 한다(동기 커맨드는 메인 스레드에서 돌아 Windows WebView2가 교착 → 빈 창).
 - `workspace.rs`: 열린 번들. 쓰기/읽기 DB 연결 분리(WAL), 잠긴 번들은 인메모리 DB 하나를 주기적으로 재암호화해 저장,
   상위 버전 번들은 임시 작업 사본 + 수동 저장.
 - `commands.rs`: 모든 `#[tauri::command]`. 오류는 `error.rs`의 `CmdError { code, message, detail }`로 반환하고
@@ -85,6 +86,7 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
   새 오버레이·대화 상자는 열려 있는 동안 `back.svelte.ts`의 `onBack`으로 닫기를 등록한다. 호버로만 보이는 컨트롤은
   `@media (hover: none)`에서 항상 보이게 한다. 네이티브 기능은 `platform.rs` ↔ `gen/android/.../ViewPortPlugin.kt`.
   APK: `npm run tauri android build -- --apk --debug --target aarch64` (`ANDROID_HOME`, `NDK_HOME`, Android Studio JBR).
+- 미디어 종류는 `image`/`video`/`nonmedia`. `nonmedia`(기타 파일)는 미리보기·뷰어에 넣지 않고 내보내기만 한다.
 - 이미지를 화면에 그릴 때는 원본 `mediaUrl` 대신 `displayUrl(brief, viewer.display_max_px)`를 쓴다(큰 이미지는 축소 사본).
 - 글꼴: 한국어 고정폭 글꼴을 쓰지 않는다. 기본은 시스템 고딕, 사용자가 설정에서 바꾼다(`ui.font_ui`, `ui.font_editor`).
 

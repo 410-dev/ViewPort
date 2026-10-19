@@ -32,7 +32,7 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { isMobile } from "./platform";
   import { broadcast, onSync } from "./sync";
-  import { invalidate } from "./views/briefs.svelte";
+  import { briefs, invalidate } from "./views/briefs.svelte";
   import { columnsFor, type SortSpec } from "./views/columns";
   import { VIEWS } from "./views";
   import { Selection } from "./views/selection.svelte";
@@ -234,14 +234,26 @@
     broadcast("saved");
   }
 
-  function openViewer(id: number, list: number[]) {
-    const index = list.indexOf(id);
-    if (index >= 0) viewing = { list, index };
+  /** The viewer shows media only: non-media files are left out, and opening one shows its panel. */
+  function viewable(id: number, list: number[]): number[] | null {
+    if (briefs.get(id)?.kind === "nonmedia") {
+      setPanel(true);
+      return null;
+    }
+    return list.filter((x) => x === id || briefs.get(x)?.kind !== "nonmedia");
+  }
+
+  function openViewer(id: number, all: number[]) {
+    const list = viewable(id, all);
+    const index = list ? list.indexOf(id) : -1;
+    if (list && index >= 0) viewing = { list, index };
   }
 
   /** Desktop: the item in its own viewer window (falls back to the in-window viewer on mobile). */
-  function openViewerWindow(id: number, list: number[]) {
-    if (isMobile) return openViewer(id, list);
+  function openViewerWindow(id: number, all: number[]) {
+    if (isMobile) return openViewer(id, all);
+    const list = viewable(id, all);
+    if (!list) return;
     const index = list.indexOf(id);
     if (index >= 0) api.openWindow({ kind: "viewer", ids: list, index }).catch((e) => alert(asCmdError(e).message));
   }

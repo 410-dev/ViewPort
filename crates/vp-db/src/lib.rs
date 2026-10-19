@@ -638,7 +638,7 @@ impl Db {
                 Ok(MediaLocation {
                     source_id: r.get(0)?,
                     rel_path: r.get(1)?,
-                    kind: if kind == "video" { MediaKind::Video } else { MediaKind::Image },
+                    kind: MediaKind::parse(&kind).unwrap_or(MediaKind::NonMedia),
                     size: r.get::<_, i64>(3)? as u64,
                 })
             })

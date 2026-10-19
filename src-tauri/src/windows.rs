@@ -35,8 +35,11 @@ pub fn build(app: &AppHandle, label: &str, title: &str, width: f64, height: f64)
 }
 
 /// Opens a `viewer` or `library` window showing `payload`. Returns its label.
+///
+/// Async on purpose: a sync command runs on the main thread, and creating a WebView2
+/// window there deadlocks on Windows (a blank window that cannot be closed).
 #[tauri::command]
-pub fn open_window(app: AppHandle, kind: String, payload: serde_json::Value) -> CmdResult<String> {
+pub async fn open_window(app: AppHandle, kind: String, payload: serde_json::Value) -> CmdResult<String> {
     if cfg!(any(target_os = "android", target_os = "ios")) {
         return Err(CmdError::new("unsupported", "multiple windows are not available on mobile; use split view"));
     }

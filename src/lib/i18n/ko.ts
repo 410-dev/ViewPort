@@ -635,6 +635,13 @@ const ko = {
   "set.shardCompactRatio.help": "청크에서 지워지거나 교체된 데이터가 이 비율 이상이면 가져오기가 끝난 뒤 그 청크를 정리합니다.",
   "set.shardSnapshot": "색인 저장 간격",
   "set.shardSnapshot.help": "이만큼 바뀔 때마다(저장된 파일 수의 1/4 이상일 때) 샤드 색인을 저장합니다. 그 사이의 변경은 다시 열 때 청크에서 복구합니다.",
+  "panel.export": "내보내기",
+  "panel.exportTo": "내보낼 폴더",
+  "panel.noPreview": "미리보기를 지원하지 않는 파일입니다. 내보내기만 할 수 있습니다.",
+  "basic.nonmedia": "기타 파일",
+  "task.export": "내보내기",
+  "set.includeNonmedia": "미디어가 아닌 파일도 등록",
+  "set.includeNonmedia.help": "이미지·영상이 아닌 파일도 '기타 파일'로 목록에 넣습니다. 미리보기는 없고 내보내기만 됩니다. 샤드는 항상 등록합니다.",
 } as const;
 
 export type Key = keyof typeof ko;

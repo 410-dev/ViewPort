@@ -635,6 +635,13 @@ const en: Record<Key, string> = {
   "set.shardCompactRatio": "Optimize threshold",
   "set.shardCompactRatio.help": "Chunks with at least this share of deleted or replaced data are cleaned up after adding files.",
   "set.shardSnapshot": "Index save interval",
+  "panel.export": "Export",
+  "panel.exportTo": "Folder to export to",
+  "panel.noPreview": "This file cannot be previewed; it can only be exported.",
+  "basic.nonmedia": "Other files",
+  "task.export": "Exporting",
+  "set.includeNonmedia": "List non-media files",
+  "set.includeNonmedia.help": "Files that are neither images nor videos are listed as 'other files': no preview, export only. Shards always list them.",
   "set.shardSnapshot.help": "The shard index is saved after this many changes (once they are also a quarter of the stored files). Changes in between are recovered from the chunks on open.",
 };
 

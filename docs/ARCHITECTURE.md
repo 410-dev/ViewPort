@@ -98,6 +98,9 @@ MyLibrary.vpbun/
 번들을 다른 PC에서 열 때 루트 경로를 찾을 수 없는 소스는 "연결 끊김"으로 표시되고, 사용자가 새 경로를 지정할 수 있다.
 고급 검색의 `소스(...)` 조건으로 소스 이름을 기준으로 필터링한다.
 
+이미지·영상이 아닌 파일은 `nonmedia` 종류(`유형(기타 파일)`)로 기록한다. 샤드 소스는 항상, 다른 소스는
+`scan.include_nonmedia`일 때만. 미리보기·썸네일·뷰어에서는 제외되고(`unsupported` 썸네일), 내보내기(`export_media`)만 된다.
+
 ## 드라이버 추상화
 
 `MediaDriver` trait: `list`, `stat`, `open_read`(Range 지원 `read_at`), 선택적 `write`/`rename`/`delete`, `capabilities()`.

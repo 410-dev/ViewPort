@@ -328,6 +328,8 @@ pub(crate) fn scan_now(app: &AppHandle, ws: Arc<Workspace>, source: SourceRow) -
             driver: driver.as_ref(),
             settings: &settings,
             source_id: source.id,
+            // A shard is a container: everything put into it is listed.
+            include_nonmedia: settings.include_nonmedia || source.driver == crate::shards::DRIVER,
             now_ms: now_ms(),
             cancel: &cancel,
         };
@@ -871,4 +873,70 @@ pub fn list_tasks() -> Vec<crate::tasks::TaskInfo> {
 #[tauri::command]
 pub fn cancel_task(id: u64) -> bool {
     crate::tasks::cancel(id)
+}
+
+// ---------------------------------------------------------------- export
+
+/// Copies items (any kind, from any source) into a folder in the background. A name that
+/// is already taken there gets a number.
+#[tauri::command]
+pub fn export_media(app: AppHandle, state: State<'_, AppState>, ids: Vec<i64>, dest: String) -> CmdResult<()> {
+    let ws = workspace(&state)?;
+    let dest = PathBuf::from(dest);
+    if !dest.is_dir() {
+        return Err(CmdError::new("not_found", "the destination is not a folder"));
+    }
+    std::thread::spawn(move || {
+        let registry = app.state::<AppState>().drivers.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let task = crate::tasks::begin_with_cancel("export", "", crate::tasks::Unit::Bytes, None, Some(cancel.clone()));
+        let locs: Vec<_> = ids.iter().filter_map(|id| ws.read_db.lock().unwrap().media_location(*id).ok().flatten()).collect();
+        task.set(0, Some(locs.iter().map(|l| l.size).sum()));
+        let mut failed = 0usize;
+        let mut buf = vec![0u8; 1024 * 1024];
+        for loc in locs {
+            if cancel.load(Ordering::Relaxed) || ws.closed.load(Ordering::Relaxed) {
+                return task.cancelled();
+            }
+            let name = crate::shards::safe_name(&crate::workspace::file_name(&loc.rel_path), "file");
+            task.detail(&name);
+            let (stem, ext) = match name.rsplit_once('.') {
+                Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
+                _ => (name.clone(), String::new()),
+            };
+            let mut target = dest.join(&name);
+            let mut n = 2;
+            while target.exists() {
+                target = dest.join(format!("{stem} ({n}){ext}"));
+                n += 1;
+            }
+            let one = (|| -> CmdResult<()> {
+                let reader = ws.open_media(&registry, &loc)?;
+                let mut out = std::fs::File::create(&target)?;
+                let mut off = 0u64;
+                while off < reader.len() {
+                    if cancel.load(Ordering::Relaxed) {
+                        return Err(CmdError::new("cancelled", "cancelled"));
+                    }
+                    let got = reader.read_full_at(off, &mut buf)?;
+                    if got == 0 {
+                        break;
+                    }
+                    std::io::Write::write_all(&mut out, &buf[..got])?;
+                    off += got as u64;
+                    task.add(got as u64);
+                }
+                Ok(())
+            })();
+            if let Err(e) = one {
+                let _ = std::fs::remove_file(&target);
+                if e.code == "cancelled" {
+                    return task.cancelled();
+                }
+                failed += 1;
+            }
+        }
+        if failed > 0 { task.fail(format!("{failed} files failed")) } else { task.finish() }
+    });
+    Ok(())
 }

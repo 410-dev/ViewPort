@@ -191,7 +191,7 @@ fn shard_result<T>(r: vp_shard::Result<T>) -> CmdResult<T> {
 // ---------------------------------------------------------------- files
 
 /// A file or folder name usable on every platform (FAT32 and Windows are the strictest).
-fn safe_name(name: &str, fallback: &str) -> String {
+pub(crate) fn safe_name(name: &str, fallback: &str) -> String {
     let s: String = name.chars().map(|c| if c.is_control() || r#"<>:"/\|?*"#.contains(c) { '_' } else { c }).collect();
     let s = s.trim().trim_end_matches('.').trim();
     if s.is_empty() { fallback.into() } else { s.into() }

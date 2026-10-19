@@ -724,6 +724,8 @@
               ontimeupdate={onTime}
               onerror={() => (error = true)}
             ></video>
+          {:else if b?.kind === "nonmedia"}
+            <div class="nomedia"><Icon name="file" size={48} stroke={1.2} /><span>{b.name}</span><small>{t("panel.noPreview")}</small></div>
           {:else if b}
             {#if b.kind === "image" && !loaded.has(s.id)}
               <img class="ph" src={thumbUrl(s.id)} alt="" draggable="false" style:transform={s.pos === 0 ? zoom.transform : null} />
@@ -936,6 +938,18 @@
   .error {
     position: absolute;
     color: var(--danger);
+  }
+  .nomedia {
+    display: grid;
+    justify-items: center;
+    gap: 10px;
+    color: var(--muted);
+    text-align: center;
+    padding: 24px;
+  }
+  .nomedia span {
+    color: var(--fg);
+    overflow-wrap: anywhere;
   }
   .banner {
     position: absolute;

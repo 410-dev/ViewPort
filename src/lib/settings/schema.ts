@@ -359,6 +359,7 @@ export const SECTIONS: Section[] = [
           { kind: "list", ...bundle({ path: "scan.image_extensions", label: "set.imageExt" }) },
           { kind: "list", ...bundle({ path: "scan.video_extensions", label: "set.videoExt" }) },
           { kind: "toggle", ...bundle({ path: "scan.skip_hidden", label: "set.skipHidden" }) },
+          { kind: "toggle", ...bundle({ path: "scan.include_nonmedia", label: "set.includeNonmedia", help: "set.includeNonmedia.help" }) },
           { kind: "toggle", ...bundle({ path: "scan.thumbnails_after_scan", label: "set.thumbsAfterScan" }) },
           { kind: "number", ...bundle({ path: "scan.batch_size", label: "set.batchSize", help: "set.batchSize.help" }), min: 10, step: 50 },
           { kind: "number", ...bundle({ path: "scan.header_probe_bytes", label: "set.probeBytes" }), min: 4, step: 4, scale: 1024, unit: "KB" },

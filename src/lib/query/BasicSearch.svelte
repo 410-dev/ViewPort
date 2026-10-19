@@ -15,7 +15,7 @@
   });
 
   let name = $state("");
-  let kind = $state<"" | "image" | "video">("");
+  let kind = $state<"" | "image" | "video" | "nonmedia">("");
   let createdFrom = $state("");
   let createdTo = $state("");
   let minSizeMb = $state<number | null>(null);
@@ -37,7 +37,7 @@
     const parts: string[] = [];
     const call = (key: string, ...params: string[]) => `${fname(key)}(${params.join(":")})`;
     if (name.trim()) parts.push(call("name", opName("contains_any"), quoteParam(name.trim())));
-    if (kind) parts.push(call("kind", vocab.kinds[kind === "image" ? 0 : 1]));
+    if (kind) parts.push(call("kind", vocab.kinds[kind === "image" ? 0 : kind === "video" ? 1 : 2]));
     if (createdFrom && createdTo) parts.push(call("created", createdFrom, createdTo, opName("between")));
     else if (createdFrom) parts.push(call("created", createdFrom, opName("ge")));
     else if (createdTo) parts.push(call("created", createdTo, opName("le")));
@@ -78,6 +78,7 @@
       <button type="button" class:on={kind === ""} onclick={() => (kind = "")}>{t("basic.all")}</button>
       <button type="button" class:on={kind === "image"} onclick={() => (kind = "image")}>{t("basic.images")}</button>
       <button type="button" class:on={kind === "video"} onclick={() => (kind = "video")}>{t("basic.videos")}</button>
+      <button type="button" class:on={kind === "nonmedia"} onclick={() => (kind = "nonmedia")}>{t("basic.nonmedia")}</button>
     </div>
   </div>
   <label class="wide">

@@ -112,6 +112,7 @@ pub fn run() {
             commands::child_folders,
             commands::list_tasks,
             commands::cancel_task,
+            commands::export_media,
             shards::shard_status,
             shards::inspect_shard,
             shards::create_shard,

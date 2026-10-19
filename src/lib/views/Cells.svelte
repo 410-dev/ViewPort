@@ -43,7 +43,7 @@
           {#if !noThumb}
             <img src={thumbUrl(id)} alt="" loading="lazy" decoding="async" draggable="false" onerror={() => (broken = true)} />
           {:else}
-            <Icon name={brief?.kind === "video" ? "film" : "image"} size={13} />
+            <Icon name={brief?.kind === "video" ? "film" : brief?.kind === "nonmedia" ? "file" : "image"} size={13} />
           {/if}
         </span>
       {/if}

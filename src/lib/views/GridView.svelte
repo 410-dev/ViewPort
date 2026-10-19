@@ -127,7 +127,7 @@
         >
           <div class="frame" style:height="{tileW}px">
             {#if noThumb}
-              <span class="placeholder"><Icon name={b?.kind === "video" ? "film" : "image"} size={26} stroke={1.4} /></span>
+              <span class="placeholder"><Icon name={b?.kind === "video" ? "film" : b?.kind === "nonmedia" ? "file" : "image"} size={26} stroke={1.4} /></span>
             {:else}
               <img src={thumbUrl(id)} alt="" decoding="async" loading="lazy" draggable="false" onerror={() => broken.add(id)} />
             {/if}
