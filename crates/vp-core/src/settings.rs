@@ -522,6 +522,10 @@ pub struct UiSettings {
     pub media_only: bool,
     /// Pause after typing before the search runs.
     pub search_debounce_ms: u32,
+    /// Suggestions shown while typing a list (enum) value.
+    pub suggest_limit: u32,
+    /// Values listed by a value field's dropdown button.
+    pub value_list_limit: u32,
 }
 
 impl Default for UiSettings {
@@ -550,6 +554,8 @@ impl Default for UiSettings {
             reduce_motion: false,
             media_only: false,
             search_debounce_ms: 200,
+            suggest_limit: 20,
+            value_list_limit: 500,
         }
     }
 }

@@ -197,6 +197,8 @@ export interface UiSettings {
   reduce_motion: boolean;
   media_only: boolean;
   search_debounce_ms: number;
+  suggest_limit: number;
+  value_list_limit: number;
 }
 
 export interface AppSettings {
@@ -382,7 +384,8 @@ export const api = {
   /** `recursive` also applies the change to every item and subfolder inside. */
   editFolderValues: (sourceId: number, path: string, key: string, edit: FolderEdit, recursive: boolean) =>
     invoke<number>("edit_folder_values", { sourceId, path, key, edit, recursive }),
-  suggestValues: (key: string, prefix: string) => invoke<string[]>("suggest_values", { key, prefix }),
+  /** Known values of a text or enum field starting with `prefix`, most used first. */
+  suggestValues: (key: string, prefix: string, limit?: number) => invoke<string[]>("suggest_values", { key, prefix, limit }),
   queryVocabulary: (locale: string) => invoke<Vocabulary>("query_vocabulary", { locale }),
   listSavedQueries: (locale: string) => invoke<SavedQuery[]>("list_saved_queries", { locale }),
   saveQuery: (id: number | null, label: string, text: string) => invoke<number>("save_query", { id, label, text }),

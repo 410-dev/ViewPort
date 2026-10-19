@@ -77,7 +77,7 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
 - 화면 가리기는 **Esc 빠른 두 번 누름**(`privacy.panic_keys` + `panic_double_ms`)이다. `routes/+layout.svelte`가 캡처 단계에서
   처리하며 뷰어·몰입 모드에서도 같다. 한 번 누름은 원래 기능(대화 상자·드롭다운·뷰어 닫기, 검색어 지우기)을 그대로 한다.
   몰입 모드(`immersive.svelte.ts`, 전체 화면에서 자동)에서는 한 번 누름이 몰입 모드만 나간다.
-- 드롭다운은 WebView 기본 `<select>`/`<datalist>`를 쓰지 않는다. `ui/Select.svelte`, `ui/Combobox.svelte`(목록 값 제안),
+- 드롭다운은 WebView 기본 `<select>`/`<datalist>`를 쓰지 않는다. `ui/Select.svelte`, `ui/Combobox.svelte`(목록 값 제안·전체 목록 버튼·인라인 자동완성, IME 조합 중에는 강조만),
   공용 `ui/Dropdown.svelte`(body로 portal, 고정 위치)를 쓴다.
 - 쿼리 편집기 모달은 열에서 고르거나 입력할 때마다 미완성 조건을 텍스트에 바로 쓴다(`live()`). '조건 완료하기'는 초안을
   확정하고 열을 비우며, '다음 조건'은 연결어(그리고/혹은)까지 미리 쓴다.

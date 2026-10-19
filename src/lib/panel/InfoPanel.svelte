@@ -239,7 +239,7 @@
             <Combobox
               placeholder={many ? t("info.addToAll") : t("info.add")}
               bind:value={() => tagInput[f.key] ?? "", (v) => (tagInput[f.key] = v)}
-              suggest={(prefix) => api.suggestValues(f.key, prefix)}
+              suggest={(prefix, limit) => api.suggestValues(f.key, prefix, limit)}
               onpick={() => addTag(f.key)}
               onenter={() => addTag(f.key)}
             />

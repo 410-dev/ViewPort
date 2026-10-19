@@ -374,7 +374,7 @@
                   {:else}
                     {#if field.ext}
                       {@const key = field.key}
-                      <Combobox value={params[i] ?? ""} suggest={(prefix) => api.suggestValues(key, prefix)} oninput={(v) => setParam(i, v)} />
+                      <Combobox value={params[i] ?? ""} suggest={(prefix, limit) => api.suggestValues(key, prefix, limit)} oninput={(v) => setParam(i, v)} />
                     {:else}
                       <input class="input" value={params[i] ?? ""} oninput={(e) => setParam(i, e.currentTarget.value)} />
                     {/if}

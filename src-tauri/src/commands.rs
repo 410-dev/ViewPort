@@ -583,8 +583,9 @@ pub async fn edit_folder_values(
 }
 
 #[tauri::command]
-pub fn suggest_values(state: State<'_, AppState>, key: String, prefix: String) -> CmdResult<Vec<String>> {
-    Ok(workspace(&state)?.read_db.lock().unwrap().suggest_values(&key, &prefix, 20)?)
+pub fn suggest_values(state: State<'_, AppState>, key: String, prefix: String, limit: Option<u32>) -> CmdResult<Vec<String>> {
+    let limit = limit.unwrap_or(crate::recent::cached_app_settings().ui.suggest_limit).max(1) as usize;
+    Ok(workspace(&state)?.read_db.lock().unwrap().suggest_values(&key, &prefix, limit)?)
 }
 
 /// Words the query editor offers as completions, in the given locale.

@@ -684,6 +684,11 @@ const ko = {
   "info.deepMerge": "켜면 이 필드를 바꿀 때 폴더 안의 모든 항목·하위 폴더에도 병합해 적용합니다",
   "info.deepReplace": "켜면 이 필드를 바꿀 때 폴더 안의 모든 항목·하위 폴더의 값도 대체합니다",
   "info.appliedInside": "폴더 안의 {n}개 항목에도 적용했습니다",
+  "cb.showAll": "목록에서 고르기",
+  "cb.new": "새로 추가",
+  "set.suggestLimit": "입력 중 제안 개수",
+  "set.valueListLimit": "값 목록 최대 개수",
+  "set.valueListLimit.help": "태그처럼 목록에서 고르는 필드의 드롭다운 버튼이 보여 주는 최대 값 개수입니다.",
 } as const;
 
 export type Key = keyof typeof ko;

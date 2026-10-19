@@ -685,6 +685,11 @@ const en: Record<Key, string> = {
   "info.deepMerge": "When on, changes to this field are merged into every item and subfolder inside",
   "info.deepReplace": "When on, changes to this field replace the value of every item and subfolder inside",
   "info.appliedInside": "Also applied to {n} items inside",
+  "cb.showAll": "Pick from the list",
+  "cb.new": "Add new",
+  "set.suggestLimit": "Suggestions while typing",
+  "set.valueListLimit": "Values in the value list",
+  "set.valueListLimit.help": "Most values the dropdown button of a list field (such as tags) shows.",
 };
 
 export default en;
