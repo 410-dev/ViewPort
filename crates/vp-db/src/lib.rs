@@ -77,6 +77,8 @@ pub struct KnownFile {
     pub id: i64,
     pub size: u64,
     pub modified_ms: Option<i64>,
+    /// Width and height are recorded (images scanned by older versions may lack them).
+    pub has_size: bool,
 }
 
 /// An extension field as shown in the UI.
@@ -545,14 +547,22 @@ impl Db {
     }
 
     pub fn known_files(&self, source_id: i64) -> Result<std::collections::HashMap<String, KnownFile>> {
-        let mut stmt = self.conn.prepare("SELECT rel_path, id, size, modified_ms FROM media WHERE source_id = ?1")?;
+        let mut stmt = self.conn.prepare("SELECT rel_path, id, size, modified_ms, width IS NOT NULL FROM media WHERE source_id = ?1")?;
         let rows = stmt.query_map([source_id], |r| {
             Ok((
                 r.get::<_, String>(0)?,
-                KnownFile { id: r.get(1)?, size: r.get::<_, i64>(2)? as u64, modified_ms: r.get(3)? },
+                KnownFile { id: r.get(1)?, size: r.get::<_, i64>(2)? as u64, modified_ms: r.get(3)?, has_size: r.get(4)? },
             ))
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Records the pixel size of an image found unchanged but scanned without one.
+    pub fn set_dimensions(&self, media_id: i64, width: u32, height: u32) -> Result<()> {
+        self.conn
+            .prepare_cached("UPDATE media SET width = ?2, height = ?3 WHERE id = ?1")?
+            .execute(params![media_id, width, height])?;
+        Ok(())
     }
 
     pub fn mark_seen(&self, media_id: i64, gen_id: i64) -> Result<()> {

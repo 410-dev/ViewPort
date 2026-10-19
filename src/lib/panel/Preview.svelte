@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { mediaUrl, thumbUrl } from "../api";
+  import { displayUrl, mediaUrl, thumbUrl } from "../api";
   import { fmtBytes, fmtDuration } from "../format";
   import { t } from "../i18n.svelte";
-  import { ui } from "../prefs.svelte";
+  import { prefs, ui } from "../prefs.svelte";
   import { fraction, tasks } from "../tasks.svelte";
   import Icon from "../ui/Icon.svelte";
   import { briefs, want } from "../views/briefs.svelte";
@@ -80,7 +80,7 @@
             <img
               class="full"
               class:hidden={!loaded}
-              src={mediaUrl(b.id)}
+              src={displayUrl(b, prefs.app?.viewer.display_max_px ?? 4096)}
               alt={b.name}
               decoding="async"
               onload={() => (loaded = true)}

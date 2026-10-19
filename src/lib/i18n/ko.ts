@@ -526,6 +526,9 @@ const ko = {
   "set.swipeThreshold": "넘기기 거리",
   "set.swipeThreshold.help": "화면 너비의 이 비율 이상 끌거나 빠르게 튕기면 다음 항목으로 넘어가고, 짧으면 제자리로 돌아갑니다.",
   "set.swipeMs": "넘기기 애니메이션 시간",
+  "set.displayMax": "큰 이미지 표시 해상도",
+  "set.displayMax.help": "긴 변이 이보다 큰 이미지는 이 크기로 줄인 사본을 먼저 보여 주고, 그 해상도를 넘게 확대할 때만 원본을 읽습니다. 0이면 항상 원본.",
+  "set.displayQuality": "표시용 사본 품질",
 } as const;
 
 export type Key = keyof typeof ko;

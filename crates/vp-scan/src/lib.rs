@@ -66,7 +66,44 @@ impl Classifier {
 
 enum Action {
     Seen(i64),
+    /// Unchanged, but its pixel size was missing and is now known.
+    SeenWithSize(i64, u32, u32),
     Upsert(NewMedia),
+}
+
+/// Pixel size from a JPEG's frame header, walking the file marker by marker. Camera photos
+/// can carry more EXIF data before that header than a fixed-size probe reads (Samsung:
+/// over 80 KB). `read` fills the buffer at an offset and reports success.
+pub fn jpeg_size(len: u64, read: &mut dyn FnMut(u64, &mut [u8]) -> bool) -> Option<(u32, u32)> {
+    let mut b = [0u8; 5];
+    if len < 4 || !read(0, &mut b[..2]) || b[..2] != [0xFF, 0xD8] {
+        return None;
+    }
+    let mut pos = 2u64;
+    for _ in 0..512 {
+        if pos + 4 > len || !read(pos, &mut b[..4]) || b[0] != 0xFF {
+            return None;
+        }
+        let marker = b[1];
+        match marker {
+            // Fill byte, or markers without a length.
+            0xFF => pos += 1,
+            0x01 | 0xD0..=0xD8 => pos += 2,
+            // End of image or start of scan: no frame header before it.
+            0xD9 | 0xDA => return None,
+            // SOF0..SOF15, except DHT (C4), JPG (C8) and DAC (CC).
+            0xC0..=0xCF if !matches!(marker, 0xC4 | 0xC8 | 0xCC) => {
+                if !read(pos + 4, &mut b) {
+                    return None;
+                }
+                let h = u16::from_be_bytes([b[1], b[2]]) as u32;
+                let w = u16::from_be_bytes([b[3], b[4]]) as u32;
+                return (w > 0 && h > 0).then_some((w, h));
+            }
+            _ => pos += 2 + u16::from_be_bytes([b[2], b[3]]) as u64,
+        }
+    }
+    None
 }
 
 pub struct Scanner<'a> {
@@ -134,6 +171,11 @@ impl Scanner<'_> {
         if let Some(k) = known.get(&e.path) {
             if k.size == e.size && k.modified_ms == e.modified_ms {
                 p.unchanged += 1;
+                if kind == MediaKind::Image && !k.has_size
+                    && let Some((Some(w), Some(h))) = self.probe_image(&e.path)
+                {
+                    return Action::SeenWithSize(k.id, w, h);
+                }
                 return Action::Seen(k.id);
             }
             p.updated += 1;
@@ -162,6 +204,10 @@ impl Scanner<'_> {
 
     fn probe_image(&self, path: &str) -> Option<(Option<u32>, Option<u32>)> {
         let reader = self.driver.open(path).ok()?;
+        let mut read = |off: u64, buf: &mut [u8]| reader.read_full_at(off, buf).is_ok_and(|n| n == buf.len());
+        if let Some((w, h)) = jpeg_size(reader.len(), &mut read) {
+            return Some((Some(w), Some(h)));
+        }
         let mut buf = vec![0u8; (self.settings.header_probe_bytes as u64).min(reader.len()) as usize];
         let n = reader.read_full_at(0, &mut buf).ok()?;
         let size = imagesize::blob_size(&buf[..n]).ok()?;
@@ -177,6 +223,10 @@ impl Scanner<'_> {
             for a in batch.iter() {
                 match a {
                     Action::Seen(id) => db.mark_seen(*id, self.now_ms)?,
+                    Action::SeenWithSize(id, w, h) => {
+                        db.mark_seen(*id, self.now_ms)?;
+                        db.set_dimensions(*id, *w, *h)?;
+                    }
                     Action::Upsert(m) => {
                         db.upsert_media(m)?;
                     }
@@ -258,6 +308,89 @@ mod tests {
         assert_eq!(p.missing, Some(1));
         assert_eq!(p.added, 0);
         assert_eq!(p.unchanged + p.updated, 2);
+    }
+
+    /// A JPEG head like a Samsung camera's: over 128 KB of EXIF before the frame header.
+    fn camera_jpeg(w: u16, h: u16) -> Vec<u8> {
+        let mut v = vec![0xFF, 0xD8];
+        for _ in 0..2 {
+            v.extend([0xFF, 0xE1, 0xFF, 0xFF]);
+            v.extend(std::iter::repeat_n(0u8, 0xFFFF - 2));
+        }
+        v.extend([0xFF, 0xDB, 0x00, 0x04, 0x00, 0x00]);
+        v.extend([0xFF, 0xC0, 0x00, 0x11, 0x08]);
+        v.extend(h.to_be_bytes());
+        v.extend(w.to_be_bytes());
+        v.extend([0x03, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1]);
+        v.extend([0xFF, 0xDA, 0x00, 0x02, 0xFF, 0xD9]);
+        v
+    }
+
+    fn reader(data: &[u8]) -> impl FnMut(u64, &mut [u8]) -> bool + '_ {
+        move |off, buf| {
+            let off = off as usize;
+            let Some(src) = data.get(off..off + buf.len()) else { return false };
+            buf.copy_from_slice(src);
+            true
+        }
+    }
+
+    #[test]
+    fn jpeg_size_skips_large_exif() {
+        let data = camera_jpeg(16320, 12240);
+        assert!(data.len() > 128 * 1024);
+        assert_eq!(jpeg_size(data.len() as u64, &mut reader(&data)), Some((16320, 12240)));
+        let png = png(3, 4);
+        assert_eq!(jpeg_size(png.len() as u64, &mut reader(&png)), None);
+        assert_eq!(jpeg_size(data.len() as u64 - 100_000, &mut reader(&data[..data.len() - 100_000])), None);
+    }
+
+    #[test]
+    fn rescan_fills_missing_image_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.jpg");
+        // First seen without a readable frame header (as by an older version)...
+        let good = camera_jpeg(4000, 3000);
+        let sof = good.windows(2).position(|w| w == [0xFF, 0xC0]).unwrap();
+        let mut bad = good.clone();
+        bad[sof + 1] = 0xFE;
+        fs::write(&path, &bad).unwrap();
+        let mtime = fs::metadata(&path).unwrap().modified().unwrap();
+
+        let db = Mutex::new(Db::open_in_memory().unwrap());
+        let source_id = db
+            .lock()
+            .unwrap()
+            .add_source(&NewSource {
+                name: "t".into(),
+                driver: "local".into(),
+                config: serde_json::json!({}),
+                root: dir.path().display().to_string(),
+            })
+            .unwrap();
+        let driver = LocalDriver::new(dir.path());
+        let settings = ScanSettings::default();
+        let cancel = AtomicBool::new(false);
+        let scan = |now_ms| {
+            let s = Scanner { db: &db, driver: &driver, settings: &settings, source_id, now_ms, cancel: &cancel };
+            s.run(&mut |_| {}).unwrap()
+        };
+        let size = || {
+            let db = db.lock().unwrap();
+            let id = db.known_files(source_id).unwrap()["big.jpg"].id;
+            let b = db.media_brief(&[id]).unwrap().pop().unwrap();
+            (b.width, b.height)
+        };
+        scan(1);
+        assert_eq!(size(), (None, None));
+
+        // ...then readable with the same size and time: the rescan fills the size in
+        // without counting the file as changed.
+        fs::write(&path, &good).unwrap();
+        fs::File::options().write(true).open(&path).unwrap().set_modified(mtime).unwrap();
+        let p = scan(2);
+        assert_eq!((p.unchanged, p.updated), (1, 0));
+        assert_eq!(size(), (Some(4000), Some(3000)));
     }
 
     #[test]

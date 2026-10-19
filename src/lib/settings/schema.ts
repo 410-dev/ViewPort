@@ -295,6 +295,8 @@ export const SECTIONS: Section[] = [
           { kind: "number", ...app({ path: "viewer.double_tap_ms", label: "set.doubleTap", help: "set.doubleTap.help" }), min: 120, max: 800, step: 20, unit: "ms" },
           { kind: "number", ...app({ path: "viewer.swipe_threshold", label: "set.swipeThreshold", help: "set.swipeThreshold.help" }), min: 5, max: 60, step: 5, scale: 0.01, unit: "%" },
           { kind: "number", ...app({ path: "viewer.swipe_ms", label: "set.swipeMs" }), min: 0, max: 1000, step: 20, unit: "ms" },
+          { kind: "number", ...app({ path: "viewer.display_max_px", label: "set.displayMax", help: "set.displayMax.help" }), min: 0, max: 16384, step: 256, unit: "px" },
+          { kind: "number", ...app({ path: "viewer.display_quality", label: "set.displayQuality" }), min: 1, max: 100, step: 1 },
         ],
       },
     ],

@@ -37,7 +37,7 @@ pub fn start<R: Runtime>(app: &AppHandle<R>) -> std::io::Result<String> {
         for stream in listener.incoming().flatten() {
             let (app, prefix) = (app.clone(), prefix.clone());
             std::thread::spawn(move || {
-                let _ = serve_connection(stream, &prefix, |id, range| crate::media::answer(&app, id, range));
+                let _ = serve_connection(stream, &prefix, |id, range, fit| crate::media::answer(&app, id, range, fit));
             });
         }
     });
@@ -99,7 +99,7 @@ fn read_head(reader: &mut impl BufRead) -> std::io::Result<Option<Head>> {
 fn serve_connection(
     stream: TcpStream,
     prefix: &str,
-    answer: impl Fn(Option<i64>, Option<String>) -> Response<Vec<u8>>,
+    answer: impl Fn(Option<i64>, Option<String>, Option<u32>) -> Response<Vec<u8>>,
 ) -> std::io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
     let mut writer = stream.try_clone()?;
@@ -107,8 +107,8 @@ fn serve_connection(
     while let Some(head) = read_head(&mut reader)? {
         let response = match head.path.strip_prefix(prefix) {
             Some(rest) if head.method == "GET" || head.method == "HEAD" => {
-                let id = rest.split(['?', '#']).next().and_then(|s| s.parse::<i64>().ok());
-                answer(id, head.range)
+                let (path, query) = rest.split_once('?').map_or((rest, None), |(p, q)| (p, Some(q)));
+                answer(path.parse::<i64>().ok(), head.range, crate::media::fit_param(query))
             }
             Some(_) => Response::builder().status(405).body(Vec::new()).unwrap(),
             None => Response::builder().status(404).body(Vec::new()).unwrap(),
@@ -149,8 +149,8 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
-            serve_connection(stream, "/tok/", |id, range| {
-                let body = format!("id={id:?} range={range:?}").into_bytes();
+            serve_connection(stream, "/tok/", |id, range, fit| {
+                let body = format!("id={id:?} range={range:?} fit={fit:?}").into_bytes();
                 Response::builder().status(206).header("Content-Range", "bytes 0-1/2").body(body).unwrap()
             })
             .unwrap();
@@ -166,11 +166,11 @@ mod tests {
     #[test]
     fn answers_ranges_and_keeps_alive() {
         let out = run(
-            "GET /tok/27?v=1 HTTP/1.1\r\nHost: x\r\nRange: bytes=5-\r\n\r\nGET /tok/3 HTTP/1.1\r\nConnection: close\r\n\r\n",
+            "GET /tok/27?v=1 HTTP/1.1\r\nHost: x\r\nRange: bytes=5-\r\n\r\nGET /tok/3?fit=4096 HTTP/1.1\r\nConnection: close\r\n\r\n",
         );
         assert!(out.starts_with("HTTP/1.1 206 Partial Content\r\n"), "{out}");
-        assert!(out.contains("id=Some(27) range=Some(\"bytes=5-\")"));
-        assert!(out.contains("id=Some(3) range=None"));
+        assert!(out.contains("id=Some(27) range=Some(\"bytes=5-\") fit=None"));
+        assert!(out.contains("id=Some(3) range=None fit=Some(4096)"));
         assert!(out.contains("Connection: close"));
         assert!(out.to_ascii_lowercase().contains("content-range: bytes 0-1/2"));
     }

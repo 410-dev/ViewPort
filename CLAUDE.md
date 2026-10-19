@@ -84,6 +84,7 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
   새 오버레이·대화 상자는 열려 있는 동안 `back.svelte.ts`의 `onBack`으로 닫기를 등록한다. 호버로만 보이는 컨트롤은
   `@media (hover: none)`에서 항상 보이게 한다. 네이티브 기능은 `platform.rs` ↔ `gen/android/.../ViewPortPlugin.kt`.
   APK: `npm run tauri android build -- --apk --debug --target aarch64` (`ANDROID_HOME`, `NDK_HOME`, Android Studio JBR).
+- 이미지를 화면에 그릴 때는 원본 `mediaUrl` 대신 `displayUrl(brief, viewer.display_max_px)`를 쓴다(큰 이미지는 축소 사본).
 - 글꼴: 한국어 고정폭 글꼴을 쓰지 않는다. 기본은 시스템 고딕, 사용자가 설정에서 바꾼다(`ui.font_ui`, `ui.font_editor`).
 
 ## 핵심 규칙과 불변식

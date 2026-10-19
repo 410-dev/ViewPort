@@ -1,8 +1,8 @@
 <script lang="ts">
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { onDestroy, onMount } from "svelte";
-  import { SvelteMap } from "svelte/reactivity";
-  import { api, mediaUrl, thumbUrl, platformApi, onConvert, type ConvertEvent, type LoopSegment, type MediaBrief, type Settings } from "./api";
+  import { SvelteMap, SvelteSet } from "svelte/reactivity";
+  import { api, displayUrl, mediaUrl, thumbUrl, platformApi, onConvert, type ConvertEvent, type LoopSegment, type MediaBrief, type Settings } from "./api";
   import { t } from "./i18n.svelte";
   import { fraction, tasks } from "./tasks.svelte";
   import { fmtBytes } from "./format";
@@ -139,6 +139,23 @@
   const preloaded = new Map<number, HTMLImageElement>();
   /** Briefs of the current item and its neighbours, so the swipe strip can draw them. */
   const known = new SvelteMap<number, MediaBrief>();
+
+  // Huge images show a display copy. Zooming in past its pixels loads a copy twice as
+  // large, and so on up to the original, so a 200-megapixel photo is never decoded whole
+  // unless the zoom really needs it.
+  const displayMax = () => prefs.app?.viewer.display_max_px ?? 4096;
+  /** Edge in px of the copy shown per id (absent: `displayMax`; 0: the original). */
+  const tiers = new SvelteMap<number, number>();
+  const upgrading = new Set<number>();
+  /** Items whose picture has loaded; until then the thumbnail stands in. */
+  const loaded = new SvelteSet<number>();
+  /** Largest copy the backend makes (`media::display_key`); beyond it, the original. */
+  const MAX_COPY_PX = 16383;
+  const imageSrc = (b: MediaBrief) => {
+    const tier = tiers.get(b.id);
+    if (tier === undefined) return displayUrl(b, displayMax());
+    return tier === 0 ? mediaUrl(b.id) : mediaUrl(b.id, tier);
+  };
   let shownAt = performance.now();
   let lastId: number | undefined;
 
@@ -170,7 +187,7 @@
         keep.add(b.id);
         if (!preloaded.has(b.id)) {
           const img = new Image();
-          img.src = mediaUrl(b.id);
+          img.src = imageSrc(b);
           img.decode().catch(() => {});
           preloaded.set(b.id, img);
         }
@@ -422,6 +439,28 @@
     const current = id;
     zoom.reset();
     zoom.natural = naturals.get(current) ?? { w: 0, h: 0 };
+  });
+
+  // Zoomed past the shown copy's own pixels: load the next size, swap once decoded.
+  $effect(() => {
+    const current = id;
+    const n = zoom.natural;
+    const scale = zoom.scale;
+    if (!zoomable || !n.w || upgrading.has(current)) return;
+    const tier = tiers.get(current) ?? displayMax();
+    // Copies come out within a few percent of their size; a smaller picture is the whole image.
+    if (tier <= 0 || Math.max(n.w, n.h) < tier * 0.9) return;
+    const fit = Math.min(stageW / n.w, stageH / n.h);
+    if (fit * scale * devicePixelRatio <= 1.05) return;
+    const next = tier * 2 > MAX_COPY_PX ? 0 : tier * 2;
+    upgrading.add(current);
+    const img = new Image();
+    img.src = next ? mediaUrl(current, next) : mediaUrl(current);
+    img
+      .decode()
+      .then(() => tiers.set(current, next))
+      .catch(() => {})
+      .finally(() => upgrading.delete(current));
   });
 
   /** Event position relative to the stage center. */
@@ -686,14 +725,18 @@
               onerror={() => (error = true)}
             ></video>
           {:else if b}
+            {#if b.kind === "image" && !loaded.has(s.id)}
+              <img class="ph" src={thumbUrl(s.id)} alt="" draggable="false" style:transform={s.pos === 0 ? zoom.transform : null} />
+            {/if}
             <!-- Neighbouring videos show their thumbnail until they become current. -->
             <img
-              src={b.kind === "video" ? thumbUrl(s.id) : mediaUrl(s.id)}
+              src={b.kind === "video" ? thumbUrl(s.id) : imageSrc(b)}
               alt={b.name}
               draggable="false"
               style:transform={s.pos === 0 ? zoom.transform : null}
               onload={(e) => {
                 if (b.kind !== "image") return;
+                loaded.add(s.id);
                 const img = e.currentTarget as HTMLImageElement;
                 const size = { w: img.naturalWidth, h: img.naturalHeight };
                 naturals.set(s.id, size);

@@ -333,6 +333,12 @@ pub struct ViewerSettings {
     pub swipe_threshold: f32,
     /// Duration of the slide to the next item or back after a swipe.
     pub swipe_ms: u32,
+    /// Images whose longer edge exceeds this are shown as a copy scaled to it: decoding a
+    /// 200-megapixel photo takes the WebView seconds and hundreds of MB. The original loads
+    /// only when zooming in past the copy's resolution. 0 always shows originals.
+    pub display_max_px: u32,
+    /// JPEG quality of those display copies.
+    pub display_quality: u8,
 }
 
 impl Default for ViewerSettings {
@@ -347,6 +353,8 @@ impl Default for ViewerSettings {
             double_tap_ms: 280,
             swipe_threshold: 0.2,
             swipe_ms: 220,
+            display_max_px: if MOBILE { 4096 } else { 8192 },
+            display_quality: 90,
         }
     }
 }

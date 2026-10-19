@@ -496,10 +496,27 @@ impl Workspace {
             return Ok(None);
         }
         let _generating = GENERATING.guard();
-        let reader = self.open_media(registry, &loc)?;
-        let bytes = read_tracked(reader.as_ref(), &loc.rel_path, Some(media_id))?;
+        // The OS decoder subsamples while decoding (Android): much faster and lighter than
+        // decoding a camera photo at full size. Anything it cannot read goes the usual way.
+        let os = self
+            .os_media_path(registry, &loc)?
+            .and_then(|p| crate::platform::scaled_image(&p, settings.max_edge_px, settings.quality))
+            .map(|s| vp_thumb::Thumb {
+                data: s.data,
+                width: s.width,
+                height: s.height,
+                mime: if s.png { "image/png" } else { "image/jpeg" },
+            });
+        let generated = match os {
+            Some(t) => Ok(t),
+            None => {
+                let reader = self.open_media(registry, &loc)?;
+                let bytes = read_tracked(reader.as_ref(), &loc.rel_path, Some(media_id))?;
+                vp_thumb::generate(&bytes, &settings)
+            }
+        };
 
-        match vp_thumb::generate(&bytes, &settings) {
+        match generated {
             Ok(t) if !self.autosave() => Ok(Some((t.data, t.mime.into()))),
             Ok(t) => {
                 let stored = self.seal_thumb(&t.data)?;

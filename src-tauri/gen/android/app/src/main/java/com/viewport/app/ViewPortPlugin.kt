@@ -6,7 +6,10 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.graphics.Matrix
+import android.media.ExifInterface
 import android.media.MediaCodecList
 import android.media.MediaExtractor
 import android.media.MediaFormat
@@ -172,6 +175,69 @@ class ViewPortPlugin(private val activity: Activity) : Plugin(activity) {
         r.release()
       }
     }
+  }
+
+  /**
+   * A copy of a (huge) image scaled to fit `maxEdge`, EXIF orientation applied. The decoder
+   * subsamples while decoding (inSampleSize), so a 200-megapixel JPEG never exists in memory
+   * at full size.
+   */
+  @Command
+  fun scaledImage(invoke: Invoke) {
+    val args = invoke.parseArgs(FrameArgs::class.java)
+    pool.execute {
+      try {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(args.path, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) throw Exception("not a decodable image")
+        val edge = args.maxEdge.coerceAtLeast(16)
+        // The largest power-of-two subsampling that still decodes to (nearly) the target size;
+        // a few percent short is invisible and decodes several times faster.
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= edge * 0.95) sample *= 2
+        val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+        var bmp = BitmapFactory.decodeFile(args.path, opts) ?: throw Exception("decode failed")
+        val scale = edge.toFloat() / maxOf(bmp.width, bmp.height)
+        val matrix = orientation(args.path)
+        if (scale < 1f) matrix.preScale(scale, scale)
+        if (!matrix.isIdentity) {
+          val t = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, matrix, true)
+          if (t !== bmp) bmp.recycle()
+          bmp = t
+        }
+        val png = bmp.hasAlpha()
+        val out = File.createTempFile("vpimage", if (png) ".png" else ".jpg", activity.cacheDir)
+        out.outputStream().use {
+          bmp.compress(if (png) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG, args.quality.coerceIn(1, 100), it)
+        }
+        val result = JSObject().put("path", out.absolutePath).put("width", bmp.width).put("height", bmp.height).put("png", png)
+        bmp.recycle()
+        invoke.resolve(result)
+      } catch (e: Throwable) {
+        // OutOfMemoryError included: the caller falls back to the original.
+        invoke.reject(e.message ?: "scale failed")
+      }
+    }
+  }
+
+  /** The EXIF orientation of an image file as a transform. */
+  private fun orientation(path: String): Matrix {
+    val m = Matrix()
+    val o = try {
+      ExifInterface(path).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+    } catch (_: Exception) {
+      ExifInterface.ORIENTATION_NORMAL
+    }
+    when (o) {
+      ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> m.setScale(-1f, 1f)
+      ExifInterface.ORIENTATION_ROTATE_180 -> m.setRotate(180f)
+      ExifInterface.ORIENTATION_FLIP_VERTICAL -> m.setScale(1f, -1f)
+      ExifInterface.ORIENTATION_TRANSPOSE -> { m.setRotate(90f); m.postScale(-1f, 1f) }
+      ExifInterface.ORIENTATION_ROTATE_90 -> m.setRotate(90f)
+      ExifInterface.ORIENTATION_TRANSVERSE -> { m.setRotate(-90f); m.postScale(-1f, 1f) }
+      ExifInterface.ORIENTATION_ROTATE_270 -> m.setRotate(-90f)
+    }
+    return m
   }
 
   private fun grab(r: MediaMetadataRetriever, atUs: Long, edge: Int): Bitmap? {

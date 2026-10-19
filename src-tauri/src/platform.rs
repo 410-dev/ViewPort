@@ -1,7 +1,8 @@
 //! Services only the mobile OS provides, behind one interface for every platform:
 //! storage access, hiding the system bars, a file browser for platforms without a
 //! usable folder dialog, and (Android) video probing and frame grabs through the OS
-//! media framework, which stands in for FFmpeg there (no conversion).
+//! media framework, which stands in for FFmpeg there (no conversion), and scaled decoding
+//! of huge images for display.
 //!
 //! The Android side is `ViewPortPlugin.kt` in the generated Android project. Desktop
 //! builds get answers that mean "nothing to do".
@@ -12,6 +13,16 @@ use serde::{Deserialize, Serialize};
 use tauri::plugin::TauriPlugin;
 
 use crate::error::{CmdError, CmdResult};
+
+/// An image decoded and scaled by the OS (`scaled_image`).
+#[derive(Debug, Clone)]
+pub struct ScaledImage {
+    pub data: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+    /// PNG (the image has transparency) rather than JPEG.
+    pub png: bool,
+}
 
 /// What the OS media framework reports about a video.
 #[derive(Debug, Clone, Deserialize)]
@@ -103,6 +114,23 @@ mod imp {
         let _ = std::fs::remove_file(&out.path);
         data.filter(|d| !d.is_empty())
     }
+
+    #[derive(Deserialize)]
+    struct Scaled {
+        path: PathBuf,
+        width: u32,
+        height: u32,
+        png: bool,
+    }
+
+    pub fn scaled_image(path: &Path, max_edge: u32, quality: u8) -> Option<super::ScaledImage> {
+        let args = json!({ "path": path, "maxEdge": max_edge, "quality": quality });
+        let out: Scaled = HANDLE.get()?.run_mobile_plugin("scaledImage", args).ok()?;
+        let data = std::fs::read(&out.path).ok();
+        let _ = std::fs::remove_file(&out.path);
+        let data = data.filter(|d| !d.is_empty())?;
+        Some(super::ScaledImage { data, width: out.width, height: out.height, png: out.png })
+    }
 }
 
 #[cfg(not(target_os = "android"))]
@@ -134,9 +162,13 @@ mod imp {
     pub fn frame(_path: &Path, _at_ms: i64, _max_edge: u32, _quality: u8) -> Option<Vec<u8>> {
         None
     }
+
+    pub fn scaled_image(_path: &Path, _max_edge: u32, _quality: u8) -> Option<super::ScaledImage> {
+        None
+    }
 }
 
-pub use imp::{frame, media_available, probe};
+pub use imp::{frame, media_available, probe, scaled_image};
 
 /// The Tauri plugin that connects to the native side.
 pub fn init() -> TauriPlugin<tauri::Wry> {

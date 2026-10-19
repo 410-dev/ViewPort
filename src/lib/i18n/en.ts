@@ -527,6 +527,9 @@ const en: Record<Key, string> = {
   "set.swipeThreshold": "Swipe distance",
   "set.swipeThreshold.help": "Dragging this fraction of the screen width, or flicking, goes to the next item; shorter drags spring back.",
   "set.swipeMs": "Swipe animation",
+  "set.displayMax": "Large image display size",
+  "set.displayMax.help": "Images with a longer edge above this are first shown as a copy scaled to it; the original loads only when zooming in past that. 0 always shows originals.",
+  "set.displayQuality": "Display copy quality",
 };
 
 export default en;

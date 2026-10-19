@@ -62,7 +62,7 @@ impl Workspace {
     }
 
     /// A filesystem path for the OS media framework, which cannot read from drivers.
-    fn os_media_path(&self, drivers: &DriverRegistry, loc: &MediaLocation) -> CmdResult<Option<PathBuf>> {
+    pub(crate) fn os_media_path(&self, drivers: &DriverRegistry, loc: &MediaLocation) -> CmdResult<Option<PathBuf>> {
         if !crate::platform::media_available() {
             return Ok(None);
         }

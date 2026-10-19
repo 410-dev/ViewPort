@@ -220,6 +220,8 @@ export interface AppSettings {
     double_tap_ms: number;
     swipe_threshold: number;
     swipe_ms: number;
+    display_max_px: number;
+    display_quality: number;
   };
 }
 
@@ -413,7 +415,21 @@ let mediaBase: string | null = null;
 export async function initMediaUrls() {
   mediaBase = await invoke<string | null>("media_base_url").catch(() => null);
 }
-export const mediaUrl = (id: number) => (mediaBase ? `${mediaBase}/${id}` : convertFileSrc(String(id), "vpmedia"));
+/** The original file, or with `fit` a display copy scaled to fit that many px (`media.rs`). */
+export const mediaUrl = (id: number, fit?: number) => {
+  const url = mediaBase ? `${mediaBase}/${id}` : convertFileSrc(String(id), "vpmedia");
+  return fit ? `${url}?fit=${fit}` : url;
+};
+
+/**
+ * What to show for an item: huge images (longer edge over `maxPx`, or size unknown) as a
+ * display copy, since decoding a 200-megapixel original stalls the WebView; else the original.
+ */
+export function displayUrl(b: MediaBrief, maxPx: number): string {
+  if (b.kind !== "image" || maxPx <= 0) return mediaUrl(b.id);
+  const edge = Math.max(b.width ?? 0, b.height ?? 0);
+  return edge > 0 && edge <= maxPx ? mediaUrl(b.id) : mediaUrl(b.id, maxPx);
+}
 
 export interface PlatformInfo {
   /** "android", "ios", "windows", "macos" or "linux". */
