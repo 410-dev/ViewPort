@@ -631,6 +631,9 @@ pub struct FfmpegStatus {
     pub available: bool,
     pub path: Option<String>,
     pub version: Option<String>,
+    /// Without FFmpeg, the OS media framework still probes videos and grabs frames
+    /// (Android); conversion stays unavailable.
+    pub os_media: bool,
 }
 
 #[tauri::command]
@@ -642,6 +645,7 @@ pub async fn ffmpeg_status(app: AppHandle) -> CmdResult<FfmpegStatus> {
             available: ff.is_some(),
             path: ff.as_ref().map(|f| f.ffmpeg.display().to_string()),
             version: ff.and_then(|f| f.version()),
+            os_media: crate::platform::media_available(),
         })
     })
     .await

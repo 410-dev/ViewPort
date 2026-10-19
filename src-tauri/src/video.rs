@@ -61,16 +61,44 @@ impl Workspace {
         Ok(Input::Stream(Box::new(ReaderStream::new(driver.open(&loc.rel_path)?))))
     }
 
+    /// A filesystem path for the OS media framework, which cannot read from drivers.
+    fn os_media_path(&self, drivers: &DriverRegistry, loc: &MediaLocation) -> CmdResult<Option<PathBuf>> {
+        if !crate::platform::media_available() {
+            return Ok(None);
+        }
+        let source =
+            self.read_db.lock().unwrap().source(loc.source_id)?.ok_or_else(|| CmdError::new("not_found", "source"))?;
+        Ok(self.driver(drivers, &source)?.local_path(&loc.rel_path))
+    }
+
+    /// Whether videos can be probed and get frame thumbnails here (FFmpeg or the OS).
+    pub fn can_probe(&self) -> bool {
+        self.ffmpeg().is_some() || crate::platform::media_available()
+    }
+
     /// Probes a video and records codecs, compatibility, duration and size.
     pub fn probe_video(&self, drivers: &DriverRegistry, id: i64) -> CmdResult<Option<Probe>> {
-        let Some(ff) = self.ffmpeg() else { return Ok(None) };
+        if !self.can_probe() {
+            return Ok(None);
+        }
         let Some(loc) = self.read_db.lock().unwrap().media_location(id)? else { return Ok(None) };
         let ext = loc.rel_path.rsplit_once('.').map(|(_, e)| e.to_string()).unwrap_or_default();
-        let result = ff.probe(self.media_input(drivers, &loc)?);
+        // FFmpeg judges compatibility by codec; the OS asks its own decoders. Without
+        // FFmpeg, files the OS cannot open by path (network shares) count as failed.
+        let result = match self.ffmpeg() {
+            Some(ff) => ff.probe(self.media_input(drivers, &loc)?).map(|p| {
+                let compatible = p.webview_compatible(&ext);
+                (p, compatible)
+            }),
+            None => self
+                .os_media_path(drivers, &loc)?
+                .and_then(|path| crate::platform::probe(&path))
+                .map(|p| (p.to_probe(), p.playable))
+                .ok_or_else(|| vp_media::MediaError::Failed("the OS could not read this video".into())),
+        };
         let db = self.write_db.lock().unwrap();
         match result {
-            Ok(p) => {
-                let compatible = p.webview_compatible(&ext);
+            Ok((p, compatible)) => {
                 db.set_probe(
                     id,
                     true,
@@ -92,7 +120,9 @@ impl Workspace {
 
     /// A JPEG frame for a video thumbnail, or `None` without FFmpeg or on failure.
     pub fn video_frame(&self, drivers: &DriverRegistry, id: i64, loc: &MediaLocation) -> CmdResult<Option<Vec<u8>>> {
-        let Some(ff) = self.ffmpeg() else { return Ok(None) };
+        if !self.can_probe() {
+            return Ok(None);
+        }
         let known = self.read_db.lock().unwrap().media_brief(&[id])?.first().and_then(|b| b.duration_ms);
         let duration = match known {
             Some(d) => Some(d),
@@ -100,6 +130,10 @@ impl Workspace {
         };
         let s = self.settings.read().unwrap().thumbnails.clone();
         let at = duration.map(|d| d as f64 / 1000.0 * s.video_frame_position as f64).unwrap_or(0.0);
+        let Some(ff) = self.ffmpeg() else {
+            let Some(path) = self.os_media_path(drivers, loc)? else { return Ok(None) };
+            return Ok(crate::platform::frame(&path, (at * 1000.0) as i64, s.max_edge_px, s.quality));
+        };
         let hw = crate::recent::cached_app_settings().hardware;
         let hwaccel = hw.hwaccel();
         // Attempts in order: hardware decode at the chosen position, software decode there
@@ -221,7 +255,7 @@ fn convert_one(
 
 /// Probes every unprobed video in the background (duration, size, codecs). One at a time.
 pub fn spawn_probe_backfill<R: Runtime>(app: &AppHandle<R>, ws: Arc<Workspace>) {
-    if ws.ffmpeg().is_none() || ws.probing.swap(true, Ordering::AcqRel) {
+    if !ws.can_probe() || ws.probing.swap(true, Ordering::AcqRel) {
         return;
     }
     let app = app.clone();

@@ -93,6 +93,7 @@ pub fn restore(app: &AppHandle) {
     for label in labels {
         if let Some(w) = app.get_webview_window(&label) {
             let _ = w.show();
+            #[cfg(desktop)]
             let _ = w.unminimize();
             last = Some(w);
         }

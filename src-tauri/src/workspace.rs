@@ -144,13 +144,14 @@ impl Workspace {
             n => n as usize,
         };
         let ffmpeg = crate::video::locate(&settings.playback.ffmpeg_path);
-        if ffmpeg.is_some() && !manual {
-            // Retry video thumbnails that failed while FFmpeg was unavailable.
+        if (ffmpeg.is_some() || crate::platform::media_available()) && !manual {
+            // Retry video thumbnails that failed while no video decoder was available.
             write_db.lock().unwrap().reset_video_thumbnails()?;
         }
         let saved_changes = AtomicU64::new(write_db.lock().unwrap().total_changes());
         let c = &settings.cache;
-        let cache = MediaCache::new(c.memory_bytes, c.chunk_bytes, c.max_item_bytes);
+        let capacity = crate::recent::cached_app_settings().hardware.cache_bytes(c.memory_bytes);
+        let cache = MediaCache::new(capacity, c.chunk_bytes, c.max_item_bytes);
         let prefetch_permits = Arc::new(tokio::sync::Semaphore::new(c.prefetch_workers.max(1) as usize));
         Ok(Self {
             bundle,

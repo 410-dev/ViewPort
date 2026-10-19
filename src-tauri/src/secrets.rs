@@ -2,7 +2,9 @@
 //! bundle. A source's stored config keeps a marker in place of each secret; the real
 //! value is put back just before connecting.
 //!
-//! On platforms without a supported credential store the secret stays in the config.
+//! Android has no credential store reachable from native code; secrets go to a file in
+//! the app's private data directory, which other apps cannot read. On platforms without
+//! either, the secret stays in the config.
 
 use serde_json::Value;
 use vp_driver::{ConfigField, ConfigKind};
@@ -33,7 +35,39 @@ mod store {
     }
 }
 
-#[cfg(not(any(windows, target_os = "macos", target_os = "ios", target_os = "linux")))]
+#[cfg(target_os = "android")]
+mod store {
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+    use std::sync::{Mutex, OnceLock};
+
+    static FILE: OnceLock<PathBuf> = OnceLock::new();
+    static LOCK: Mutex<()> = Mutex::new(());
+
+    pub fn init(dir: PathBuf) {
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = FILE.set(dir.join("secrets.json"));
+    }
+
+    fn load(file: &PathBuf) -> BTreeMap<String, String> {
+        std::fs::read(file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    }
+
+    pub fn set(account: &str, secret: &str) -> bool {
+        let Some(file) = FILE.get() else { return false };
+        let _guard = LOCK.lock().unwrap();
+        let mut all = load(file);
+        all.insert(account.to_string(), secret.to_string());
+        serde_json::to_vec(&all).is_ok_and(|json| std::fs::write(file, json).is_ok())
+    }
+
+    pub fn get(account: &str) -> Option<String> {
+        let _guard = LOCK.lock().unwrap();
+        load(FILE.get()?).remove(account)
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "ios", target_os = "linux", target_os = "android")))]
 mod store {
     pub fn set(_account: &str, _secret: &str) -> bool {
         false
@@ -42,6 +76,12 @@ mod store {
     pub fn get(_account: &str) -> Option<String> {
         None
     }
+}
+
+/// Where the private secret store lives on platforms that need one (Android).
+pub fn init(_private_dir: std::path::PathBuf) {
+    #[cfg(target_os = "android")]
+    store::init(_private_dir);
 }
 
 /// Moves secrets out of `config` into the credential store where possible.

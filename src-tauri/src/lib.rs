@@ -3,6 +3,7 @@ mod audio;
 mod commands;
 mod error;
 mod media;
+mod platform;
 mod recent;
 mod secrets;
 mod tasks;
@@ -31,6 +32,7 @@ pub fn run() {
     builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(platform::init())
         .manage(AppState {
             workspace: RwLock::new(None),
             drivers: Arc::new(DriverRegistry::with_builtin()),
@@ -39,6 +41,10 @@ pub fn run() {
         .register_asynchronous_uri_scheme_protocol(thumbs::SCHEME, thumbs::handle)
         .register_asynchronous_uri_scheme_protocol(media::SCHEME, media::handle)
         .setup(|app| {
+            use tauri::Manager;
+            if let Ok(dir) = app.path().app_data_dir() {
+                secrets::init(dir);
+            }
             tasks::init(app.handle());
             create_main_window(app.handle())?;
             audio::init(app.handle());
@@ -108,8 +114,23 @@ pub fn run() {
             windows::take_window_payload,
             windows::panic,
             windows::restore_windows,
+            platform::platform_info,
+            platform::request_storage_access,
+            platform::set_system_fullscreen,
+            platform::set_system_bars,
+            platform::storage_roots,
+            platform::browse_dir,
         ])
         .on_window_event(|window, event| {
+            // Mobile: the OS may end a backgrounded app without notice; write what a locked
+            // bundle holds in memory while that is still possible.
+            #[cfg(mobile)]
+            if matches!(event, tauri::WindowEvent::Suspended) {
+                use tauri::Manager;
+                if let Some(ws) = window.app_handle().state::<AppState>().workspace.read().unwrap().as_ref() {
+                    ws.flush();
+                }
+            }
             // Closing the main window ends the app, extra windows included.
             if window.label() == windows::MAIN && matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
                 use tauri::Manager;

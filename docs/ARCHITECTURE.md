@@ -176,3 +176,16 @@ UI에 전달되며 작업별로 `progress.emit_interval_ms` 간격으로 제한�
 
 - 데이터 샤드 저장: `MediaDriver` 구현 + 샤드 메타데이터는 별도 DB. 미디어 경로 모델이 `(source_id, path)`이므로 영향 없음.
 - 자동 태깅/인식: 확장 필드 값에 `origin`(user/auto:<provider>) 컬럼을 두어 자동 생성 값과 수동 값을 구분·재처리.
+
+## Android
+
+- 프로젝트는 `src-tauri/gen/android`(`tauri android init`으로 생성 후 수정). 빌드: `npm run tauri android build -- --apk`
+  (`ANDROID_HOME`, `NDK_HOME` 필요).
+- 저장소: 미디어를 경로로 읽기 위해 "모든 파일 접근"(`MANAGE_EXTERNAL_STORAGE`, API 29 이하는 읽기/쓰기 권한)을 쓴다.
+  Android 대화 상자 플러그인은 폴더 선택을 지원하지 않으므로 `browse_dir`/`storage_roots` 커맨드로 앱 내부 경로 선택기를 쓴다.
+- 네이티브 기능은 `ViewPortPlugin.kt` ↔ `src-tauri/src/platform.rs`: 저장소 권한, 시스템 바 숨김(전체 화면), 시스템 바 색,
+  FFmpeg 대신 OS 미디어 프레임워크(`MediaMetadataRetriever`/`MediaExtractor`)로 영상 분석·프레임 썸네일(로컬 경로만, 변환 없음).
+- `MainActivity`가 시스템 바·컷아웃·키보드 인셋을 콘텐츠 패딩으로 적용한다. 백그라운드 전환(`WindowEvent::Suspended`) 시 `flush`.
+- 네트워크 비밀번호는 앱 전용 데이터 디렉터리의 파일에 저장(다른 앱이 읽을 수 없음).
+- 기기 설정 `hardware.cache_limit_bytes`가 번들 캐시 크기를 제한한다(모바일 기본 512MB). 모바일 기본값: 글꼴 15px, 패널 숨김.
+

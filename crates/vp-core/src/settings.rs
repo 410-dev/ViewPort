@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 
 const MIB: u64 = 1024 * 1024;
 const GIB: u64 = 1024 * MIB;
+/// Phones and tablets: several defaults differ there (memory, touch-sized UI).
+const MOBILE: bool = cfg!(any(target_os = "android", target_os = "ios"));
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -68,7 +70,7 @@ impl Default for CacheSettings {
     fn default() -> Self {
         Self {
             memory_bytes: 2 * GIB,
-            preallocate: !cfg!(any(target_os = "android", target_os = "ios")),
+            preallocate: !MOBILE,
             chunk_bytes: 256 * 1024,
             autoload_top_n: 30,
             autoload_ratio: 0.5,
@@ -460,15 +462,16 @@ impl Default for UiSettings {
             accent: "#6b7cff".into(),
             font_ui: String::new(),
             font_editor: String::new(),
-            font_size: 13,
+            // Phones are read at arm's length and tapped with fingers.
+            font_size: if MOBILE { 15 } else { 13 },
             view_mode: "grid".into(),
             recursive: false,
             panel_mode: "both".into(),
-            panel_visible: true,
+            panel_visible: !MOBILE,
             panel_width: 340,
             sidebar_width: 232,
             preview_split: 0.45,
-            row_px: 30,
+            row_px: if MOBILE { 44 } else { 30 },
             columns: ["name", "kind", "size", "dimensions", "duration", "modified"].map(String::from).to_vec(),
             preview_autoplay: true,
             preview_delay_ms: 150,
@@ -517,6 +520,9 @@ pub struct HardwareSettings {
     pub video_encode: bool,
     /// Hardware encoders tried in order before falling back to libx264.
     pub encoders: Vec<String>,
+    /// Upper bound for any bundle's memory cache on this device (0 = no limit). Bundle
+    /// settings travel between devices; a phone should not take a desktop-sized cache.
+    pub cache_limit_bytes: u64,
 }
 
 impl Default for HardwareSettings {
@@ -538,11 +544,17 @@ impl Default for HardwareSettings {
             ffmpeg_hwaccel: "auto".into(),
             video_encode: true,
             encoders: encoders.iter().map(|e| e.to_string()).collect(),
+            cache_limit_bytes: if MOBILE { 512 * MIB } else { 0 },
         }
     }
 }
 
 impl HardwareSettings {
+    /// The cache size to use for a bundle that asks for `requested` bytes.
+    pub fn cache_bytes(&self, requested: u64) -> u64 {
+        if self.cache_limit_bytes == 0 { requested } else { requested.min(self.cache_limit_bytes) }
+    }
+
     /// The `-hwaccel` value to pass to FFmpeg, if any.
     pub fn hwaccel(&self) -> Option<&str> {
         if !self.video_decode {
