@@ -141,9 +141,93 @@ pub fn open(key: &BundleKey, sealed: &[u8], label: &[u8]) -> Result<Vec<u8>> {
     cipher.decrypt(XNonce::from_slice(nonce), Payload { msg: ct, aad: label }).map_err(|_| CryptoError::Corrupt)
 }
 
+impl BundleKey {
+    /// A fresh random key (e.g. a shard's master key, which a password only wraps).
+    pub fn random() -> Result<Self> {
+        Ok(Self(Zeroizing::new(random::<32>()?)))
+    }
+
+    /// Hex form, for keeping the key inside an encrypted bundle.
+    pub fn to_hex(&self) -> Zeroizing<String> {
+        Zeroizing::new(self.0.iter().map(|b| format!("{b:02x}")).collect())
+    }
+
+    pub fn from_hex(hex: &str) -> Result<Self> {
+        let hex = hex.as_bytes();
+        if hex.len() != 64 {
+            return Err(CryptoError::Corrupt);
+        }
+        let mut out = Zeroizing::new([0u8; 32]);
+        for (i, pair) in hex.chunks(2).enumerate() {
+            let s = std::str::from_utf8(pair).map_err(|_| CryptoError::Corrupt)?;
+            out[i] = u8::from_str_radix(s, 16).map_err(|_| CryptoError::Corrupt)?;
+        }
+        Ok(Self(out))
+    }
+}
+
+/// Encrypts `key` with `kek` (a password-derived key) for storing next to the data.
+pub fn wrap_key(kek: &BundleKey, key: &BundleKey) -> Result<String> {
+    Ok(B64.encode(seal(kek, key.0.as_ref(), b"wrapped-key")?))
+}
+
+pub fn unwrap_key(kek: &BundleKey, wrapped: &str) -> Result<BundleKey> {
+    let sealed = B64.decode(wrapped).map_err(|_| CryptoError::Corrupt)?;
+    let bytes = Zeroizing::new(open(kek, &sealed, b"wrapped-key").map_err(|_| CryptoError::WrongKey)?);
+    let arr: [u8; 32] = bytes.as_slice().try_into().map_err(|_| CryptoError::Corrupt)?;
+    Ok(BundleKey(Zeroizing::new(arr)))
+}
+
+/// Size of the authentication tag added to every sealed segment.
+pub const TAG_LEN: usize = 16;
+
+/// XChaCha20-Poly1305 with caller-chosen nonces, for data that is read piecewise (shard
+/// segments). The caller guarantees nonce uniqueness, e.g. a random per-file prefix plus
+/// the segment number, and binds each piece to its place with the associated data.
+pub struct SegmentCipher(XChaCha20Poly1305);
+
+impl SegmentCipher {
+    pub fn new(key: &BundleKey) -> Self {
+        Self(XChaCha20Poly1305::new(Key::from_slice(key.0.as_ref())))
+    }
+
+    /// Returns ciphertext followed by the tag (`plaintext.len() + TAG_LEN` bytes).
+    pub fn seal(&self, nonce: &[u8; 24], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
+        self.0.encrypt(XNonce::from_slice(nonce), Payload { msg: plaintext, aad }).map_err(|_| CryptoError::Corrupt)
+    }
+
+    pub fn open(&self, nonce: &[u8; 24], sealed: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
+        self.0.decrypt(XNonce::from_slice(nonce), Payload { msg: sealed, aad }).map_err(|_| CryptoError::Corrupt)
+    }
+}
+
+/// Fills `buf` with secure random bytes.
+pub fn fill_random(buf: &mut [u8]) -> Result<()> {
+    getrandom::fill(buf).map_err(|e| CryptoError::Random(e.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wrapped_keys_and_segments() {
+        let (kek, _) = new_key("pw", None, M, T).unwrap();
+        let key = BundleKey::random().unwrap();
+        let wrapped = wrap_key(&kek, &key).unwrap();
+        let back = unwrap_key(&kek, &wrapped).unwrap();
+        assert_eq!(back.to_hex().as_str(), key.to_hex().as_str());
+        assert_eq!(BundleKey::from_hex(&key.to_hex()).unwrap().to_hex().as_str(), key.to_hex().as_str());
+        let (other, _) = new_key("other", None, M, T).unwrap();
+        assert!(matches!(unwrap_key(&other, &wrapped), Err(CryptoError::WrongKey)));
+
+        let c = SegmentCipher::new(&key);
+        let nonce = [7u8; 24];
+        let sealed = c.seal(&nonce, b"segment", b"aad").unwrap();
+        assert_eq!(sealed.len(), 7 + TAG_LEN);
+        assert_eq!(c.open(&nonce, &sealed, b"aad").unwrap(), b"segment");
+        assert!(c.open(&nonce, &sealed, b"other").is_err());
+    }
 
     // Small cost so tests are fast.
     const M: u32 = 64;

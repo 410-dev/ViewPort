@@ -9,6 +9,8 @@
 //! protocols block on their own runtime internally.
 
 pub mod local;
+#[cfg(feature = "shard")]
+pub mod shard;
 #[cfg(feature = "smb")]
 pub mod smb;
 
@@ -166,6 +168,8 @@ impl DriverRegistry {
         r.register(Arc::new(local::LocalFactory));
         #[cfg(feature = "smb")]
         r.register(Arc::new(smb::SmbFactory));
+        #[cfg(feature = "shard")]
+        r.register(Arc::new(shard::ShardFactory));
         r
     }
 

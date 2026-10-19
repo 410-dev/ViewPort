@@ -1,0 +1,16 @@
+[package]
+name = "vp-shard"
+description = "ViewPort shard store: many small files packed into large, optionally encrypted chunk files"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.11.1"
+thiserror.workspace = true
+vp-crypto.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

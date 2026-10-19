@@ -59,6 +59,10 @@ pub struct Workspace {
     pub converts: Mutex<HashMap<i64, Arc<AtomicBool>>>,
     /// A video probe backfill is running.
     pub probing: AtomicBool,
+    /// Open shards of shard sources (see `shards.rs`).
+    pub(crate) shards: Mutex<HashMap<i64, Arc<vp_shard::Shard>>>,
+    /// Master keys of encrypted shards unlocked in this session, by source.
+    pub(crate) shard_keys: Mutex<HashMap<i64, vp_crypto::BundleKey>>,
 }
 
 impl Workspace {
@@ -170,6 +174,8 @@ impl Workspace {
             ffmpeg: RwLock::new(ffmpeg),
             converts: Mutex::default(),
             probing: AtomicBool::new(false),
+            shards: Mutex::default(),
+            shard_keys: Mutex::default(),
             settings: RwLock::new(settings),
         })
     }
@@ -345,6 +351,10 @@ impl Workspace {
     pub fn flush(&self) {
         let _ = self.persist_locked(false);
         let _ = self.thumbs.sync();
+        let shards: Vec<_> = self.shards.lock().unwrap().values().cloned().collect();
+        for s in shards {
+            let _ = s.flush();
+        }
     }
 
     /// Encrypts this (unlocked) bundle with a new key and returns the key. Thumbnails are
@@ -386,6 +396,11 @@ impl Workspace {
         {
             let db = self.write_db.lock().unwrap();
             db.conn().execute("DELETE FROM thumbnail", [])?;
+            // Shard keys may only be remembered inside an encrypted bundle.
+            db.conn().execute(
+                "UPDATE source SET config = json_remove(config, '$.key') WHERE driver = ?1",
+                [crate::shards::DRIVER],
+            )?;
             db.backup_to(&self.bundle.path(vp_bundle::DB_FILE))?;
         }
         let json = serde_json::to_vec_pretty(&*self.settings.read().unwrap())?;
@@ -414,10 +429,12 @@ impl Workspace {
         if let Some(d) = self.drivers.lock().unwrap().get(&source.id) {
             return Ok(d.clone());
         }
-        let driver = if source.driver == BUNDLE_DRIVER {
+        let driver: Arc<dyn MediaDriver> = if source.driver == BUNDLE_DRIVER {
             let mut root: PathBuf = self.bundle.root.clone();
             root.extend(vp_driver::checked_components(&source.root)?);
             registry.get("local")?.connect(&root.display().to_string(), &source.config)?
+        } else if source.driver == crate::shards::DRIVER {
+            Arc::new(vp_driver::shard::ShardDriver::new(self.shard(source)?))
         } else {
             let factory = registry.get(&source.driver)?;
             let config = crate::secrets::reveal(&source.driver, &source.config, &factory.config_schema());
@@ -434,8 +451,66 @@ impl Workspace {
         })
     }
 
-    pub fn forget_driver(&self, source_id: i64) {
+    /// Drops the cached connection (and open shard) of a source; the next use reconnects.
+    pub fn forget_driver(&self, source_id: i64) -> Option<Arc<vp_shard::Shard>> {
         self.drivers.lock().unwrap().remove(&source_id);
+        self.shards.lock().unwrap().remove(&source_id)
+    }
+
+    /// Stores a newly made thumbnail: next to the item for shard sources, otherwise in the
+    /// bundle's packs. `None` when it cannot be kept (manual-save mode, read-only shard).
+    fn keep_thumb(&self, shard: Option<&vp_shard::Shard>, rel_path: &str, t: &vp_thumb::Thumb) -> CmdResult<Option<ThumbRow>> {
+        if !self.autosave() {
+            return Ok(None);
+        }
+        let row = |pack, offset, len| ThumbRow {
+            status: ThumbStatus::Ok,
+            pack,
+            offset,
+            len,
+            width: t.width,
+            height: t.height,
+            mime: t.mime.into(),
+        };
+        match shard {
+            Some(s) if !s.is_writable() => Ok(None),
+            Some(s) => {
+                let mut attrs = serde_json::Map::new();
+                attrs.insert("mime".into(), t.mime.into());
+                attrs.insert("width".into(), t.width.into());
+                attrs.insert("height".into(), t.height.into());
+                s.put_blob(vp_shard::Stream::Thumbs, rel_path, &t.data, attrs)?;
+                Ok(Some(row(vp_db::THUMB_IN_SOURCE, 0, t.data.len() as u32)))
+            }
+            None => {
+                let stored = self.seal_thumb(&t.data)?;
+                let (pack, offset) = self.thumbs.append(&stored)?;
+                Ok(Some(row(pack, offset, stored.len() as u32)))
+            }
+        }
+    }
+
+    /// Thumbnail bytes as stored in the bundle packs or a shard, for moving them elsewhere.
+    pub fn stored_thumb(&self, media_id: i64, rel_path: &str, source_id: i64) -> CmdResult<Option<vp_thumb::Thumb>> {
+        let Some(row) = self.read_db.lock().unwrap().thumbnail(media_id)? else { return Ok(None) };
+        if row.status != ThumbStatus::Ok {
+            return Ok(None);
+        }
+        let data = if row.pack == vp_db::THUMB_IN_SOURCE {
+            let Some(shard) = self.shard_for(source_id)? else { return Ok(None) };
+            match shard.blob(vp_shard::Stream::Thumbs, rel_path)? {
+                Some(r) => r.read_all()?,
+                None => return Ok(None),
+            }
+        } else {
+            let data = self.thumbs.read(row.pack, row.offset, row.len)?;
+            match &self.key {
+                Some(k) => vp_crypto::open(k, &data, b"thumb")?,
+                None => data,
+            }
+        };
+        let mime = if row.mime == "image/png" { "image/png" } else { "image/jpeg" };
+        Ok(Some(vp_thumb::Thumb { data, width: row.width, height: row.height, mime }))
     }
 
     /// Returns the thumbnail bytes and MIME type, generating and storing it on first use.
@@ -443,18 +518,20 @@ impl Workspace {
     /// Blocking; call from a worker thread.
     pub fn thumbnail(&self, registry: &DriverRegistry, media_id: i64) -> CmdResult<Option<(Vec<u8>, String)>> {
         let existing = self.read_db.lock().unwrap().thumbnail(media_id)?;
-        if let Some(row) = existing {
-            return Ok(match row.status {
+        if let Some(row) = &existing {
+            match row.status {
+                // Kept by the item's shard: read below.
+                ThumbStatus::Ok if row.pack == vp_db::THUMB_IN_SOURCE => {}
                 ThumbStatus::Ok => {
                     let data = self.thumbs.read(row.pack, row.offset, row.len)?;
                     let data = match &self.key {
                         Some(k) => vp_crypto::open(k, &data, b"thumb")?,
                         None => data,
                     };
-                    Some((data, row.mime))
+                    return Ok(Some((data, row.mime.clone())));
                 }
-                _ => None,
-            });
+                _ => return Ok(None),
+            }
         }
         let Some(loc) = self.read_db.lock().unwrap().media_location(media_id)? else { return Ok(None) };
         let settings = self.settings.read().unwrap().thumbnails.clone();
@@ -466,25 +543,37 @@ impl Workspace {
             }
             Ok(())
         };
+        // A shard keeps its items' thumbnails, also from other bundles it was attached to.
+        let shard = self.shard_for(loc.source_id)?;
+        if let Some(s) = &shard
+            && let Some(r) = s.blob(vp_shard::Stream::Thumbs, &loc.rel_path)?
+        {
+            let data = r.read_all()?;
+            let attr = |k: &str| r.attrs().get(k).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let mime = r.attrs().get("mime").and_then(|v| v.as_str()).unwrap_or("image/jpeg").to_string();
+            if existing.is_none() {
+                record(ThumbRow {
+                    status: ThumbStatus::Ok,
+                    pack: vp_db::THUMB_IN_SOURCE,
+                    offset: 0,
+                    len: data.len() as u32,
+                    width: attr("width"),
+                    height: attr("height"),
+                    mime: mime.clone(),
+                })?;
+            }
+            return Ok(Some((data, mime)));
+        }
         if loc.kind == MediaKind::Video {
             let _generating = GENERATING.guard();
             return match self.video_frame(registry, media_id, &loc)? {
-                Some(jpeg) if self.autosave() => {
-                    let stored = self.seal_thumb(&jpeg)?;
-                    let (pack, offset) = self.thumbs.append(&stored)?;
-                    let row = ThumbRow {
-                        status: ThumbStatus::Ok,
-                        pack,
-                        offset,
-                        len: stored.len() as u32,
-                        width: 0,
-                        height: 0,
-                        mime: "image/jpeg".into(),
-                    };
-                    record(row)?;
-                    Ok(Some((jpeg, "image/jpeg".into())))
+                Some(jpeg) => {
+                    let t = vp_thumb::Thumb { data: jpeg, width: 0, height: 0, mime: "image/jpeg" };
+                    if let Some(row) = self.keep_thumb(shard.as_deref(), &loc.rel_path, &t)? {
+                        record(row)?;
+                    }
+                    Ok(Some((t.data, "image/jpeg".into())))
                 }
-                Some(jpeg) => Ok(Some((jpeg, "image/jpeg".into()))),
                 None => {
                     record(ThumbRow::without_data(ThumbStatus::Unsupported))?;
                     Ok(None)
@@ -517,19 +606,10 @@ impl Workspace {
         };
 
         match generated {
-            Ok(t) if !self.autosave() => Ok(Some((t.data, t.mime.into()))),
             Ok(t) => {
-                let stored = self.seal_thumb(&t.data)?;
-                let (pack, offset) = self.thumbs.append(&stored)?;
-                record(ThumbRow {
-                    status: ThumbStatus::Ok,
-                    pack,
-                    offset,
-                    len: stored.len() as u32,
-                    width: t.width,
-                    height: t.height,
-                    mime: t.mime.into(),
-                })?;
+                if let Some(row) = self.keep_thumb(shard.as_deref(), &loc.rel_path, &t)? {
+                    record(row)?;
+                }
                 Ok(Some((t.data, t.mime.into())))
             }
             Err(vp_thumb::ThumbError::Io(e)) => Err(e.into()),
@@ -685,7 +765,7 @@ mod tests {
         for id in all.iter().filter(|i| **i != a) {
             assert!(ws.thumbnail(&registry, *id).unwrap().is_none());
         }
-        assert!(ws.read_db.lock().unwrap().missing_thumbnails(10).unwrap().is_empty());
+        assert!(ws.read_db.lock().unwrap().missing_thumbnails(10, &[]).unwrap().is_empty());
         drop(ws);
 
         // Reopening finds everything again.
@@ -735,5 +815,123 @@ mod lock_tests {
         let ws = Workspace::open(&root, false).unwrap();
         assert_eq!(ws.read_db.lock().unwrap().source(id).unwrap().unwrap().name, "renamed");
         assert!(!root.join(vp_bundle::DB_ENC_FILE).exists());
+    }
+}
+
+#[cfg(test)]
+mod shard_tests {
+    use super::*;
+    use vp_db::NewSource;
+
+    fn jpeg() -> Vec<u8> {
+        let img = image::RgbImage::from_fn(640, 480, |x, y| image::Rgb([(x % 256) as u8, (y % 256) as u8, 7]));
+        let mut out = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new(&mut out).encode_image(&img).unwrap();
+        out
+    }
+
+    fn scan(ws: &Workspace, registry: &DriverRegistry, id: i64) -> vp_scan::ScanProgress {
+        let source = ws.read_db.lock().unwrap().source(id).unwrap().unwrap();
+        let drv = ws.driver(registry, &source).unwrap();
+        let settings = ws.settings.read().unwrap().scan.clone();
+        let cancel = AtomicBool::new(false);
+        vp_scan::Scanner { db: &ws.write_db, driver: drv.as_ref(), settings: &settings, source_id: id, now_ms: 1, cancel: &cancel }
+            .run(&mut |_| {})
+            .unwrap()
+    }
+
+    #[test]
+    fn encrypted_shard_source_keeps_thumbnails_inside() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("Lib.vpbun");
+        let ws = Workspace::create(&root, "Lib").unwrap();
+        let shard_dir = root.join(vp_bundle::SHARDS_DIR).join("s.vpshard");
+        let opts = vp_shard::CreateOptions {
+            password: Some("pw".into()),
+            kdf_memory_kib: 64,
+            kdf_iterations: 1,
+            chunk_bytes: 1 << 20,
+            ..Default::default()
+        };
+        let key = vp_shard::Shard::create(&shard_dir, &opts).unwrap().unwrap();
+        let id = ws
+            .write_db
+            .lock()
+            .unwrap()
+            .add_source(&NewSource {
+                name: "s".into(),
+                driver: crate::shards::DRIVER.into(),
+                config: serde_json::json!({ "in_bundle": true }),
+                root: "shards/s.vpshard".into(),
+            })
+            .unwrap();
+        let registry = DriverRegistry::with_builtin();
+        let source = ws.read_db.lock().unwrap().source(id).unwrap().unwrap();
+
+        // Locked: no driver, and background jobs leave it alone.
+        let err = ws.driver(&registry, &source).err().expect("locked");
+        assert_eq!(err.code, "shard_locked");
+        assert_eq!(ws.locked_sources(), [id]);
+
+        ws.shard_keys.lock().unwrap().insert(id, key);
+        let shard = ws.shard(&source).unwrap();
+        shard.put("여행/secret-photo.jpg", &jpeg(), None, Some(5)).unwrap();
+        assert!(ws.locked_sources().is_empty());
+        assert_eq!(scan(&ws, &registry, id).files, 1);
+
+        let media = ws.read_db.lock().unwrap().known_files(id).unwrap()["여행/secret-photo.jpg"].id;
+        let (data, mime) = ws.thumbnail(&registry, media).unwrap().expect("thumbnail");
+        assert_eq!(mime, "image/jpeg");
+        let row = ws.read_db.lock().unwrap().thumbnail(media).unwrap().unwrap();
+        assert_eq!(row.pack, vp_db::THUMB_IN_SOURCE, "kept by the shard, not the bundle packs");
+        assert!(shard.has_blob(vp_shard::Stream::Thumbs, "여행/secret-photo.jpg"));
+        assert_eq!(ws.thumbnail(&registry, media).unwrap().unwrap().0, data);
+
+        // Nothing readable in the shard folder; the bundle's thumbnail packs stay empty.
+        ws.flush();
+        let packs: u64 = std::fs::read_dir(root.join(vp_bundle::THUMBS_DIR))
+            .unwrap()
+            .flatten()
+            .map(|e| e.metadata().unwrap().len())
+            .sum();
+        assert_eq!(packs, 0);
+        for f in std::fs::read_dir(shard_dir.join("data")).unwrap().flatten() {
+            let raw = std::fs::read(f.path()).unwrap();
+            assert!(!raw.windows(12).any(|w| w == b"secret-photo"));
+        }
+
+        // A thumbnail cleared from the bundle is found again in the shard.
+        ws.write_db.lock().unwrap().conn().execute("DELETE FROM thumbnail", []).unwrap();
+        assert_eq!(ws.thumbnail(&registry, media).unwrap().unwrap().0, data);
+        drop(shard);
+        ws.close_shard(id).unwrap();
+    }
+
+    #[test]
+    fn unlocking_the_bundle_forgets_remembered_shard_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("K.vpbun");
+        let ws = Workspace::create(&root, "K").unwrap();
+        let key = ws.enable_lock("pw", None).unwrap();
+        drop(ws);
+        remove_files(&root, true).unwrap();
+        let ws = Workspace::open_with_key(&root, key).unwrap();
+        let id = ws
+            .write_db
+            .lock()
+            .unwrap()
+            .add_source(&NewSource {
+                name: "s".into(),
+                driver: crate::shards::DRIVER.into(),
+                config: serde_json::json!({ "in_bundle": true, "key": "ab".repeat(32) }),
+                root: "shards/s.vpshard".into(),
+            })
+            .unwrap();
+        ws.disable_lock().unwrap();
+        drop(ws);
+        remove_files(&root, false).unwrap();
+        let ws = Workspace::open(&root, false).unwrap();
+        let config = ws.read_db.lock().unwrap().source(id).unwrap().unwrap().config;
+        assert_eq!(config, serde_json::json!({ "in_bundle": true }));
     }
 }

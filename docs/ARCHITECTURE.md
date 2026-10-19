@@ -32,7 +32,8 @@ crates/
   vp-thumb/             썸네일 생성(EXIF 회전 적용, 불투명=JPEG/투명=PNG)과 팩 파일 저장소
   vp-cache/             청크 풀 기반 메모리 캐시(선점, LRU, 읽는 중인 항목은 축출하지 않음)
   vp-media/             외부 FFmpeg로 영상 분석·프레임 추출·고호환 변환
-  vp-crypto/            Argon2id 키 도출, XChaCha20-Poly1305 봉인
+  vp-crypto/            Argon2id 키 도출, XChaCha20-Poly1305 봉인(통째·조각 단위), 키 래핑
+  vp-shard/             샤드 저장소(.vpshard): 작은 파일 다수를 큰 청크 파일로 묶어 저장, 선택적 암호화
 src-tauri/              Tauri 앱: 커맨드, 상태, 백그라운드 작업 조율
 src/                    SvelteKit UI
 ```
@@ -81,6 +82,7 @@ MyLibrary.vpbun/
   thumbs/*.pack        썸네일 팩 (잠금 시 항목별 암호화)
   converted/<id>.mp4   고호환 변환본 (미디어로 취급, 암호화하지 않음)
   media/               (선택) 번들 내 미디어 → 상대 경로로 참조
+  shards/<이름>.vpshard (선택) 번들 안 샤드 → 아래 '샤드 저장소' 참고
 ```
 
 - 미디어 경로는 `(source_id, relative_path)`로 저장. 번들 내 미디어의 source는 "bundle"이며 번들 루트 기준 상대 경로.
@@ -100,7 +102,61 @@ MyLibrary.vpbun/
 
 `MediaDriver` trait: `list`, `stat`, `open_read`(Range 지원 `read_at`), 선택적 `write`/`rename`/`delete`, `capabilities()`.
 드라이버마다 `config_schema()`로 설정 필드(호스트, 사용자, 공유명, 볼륨 경로 등)를 자기 기술하여 UI가 폼을 자동 생성한다.
-향후 VeraCrypt 볼륨 파서와 데이터 샤드 저장소도 같은 trait로 들어온다.
+샤드 저장소는 `vp-driver::shard::ShardDriver`로 들어온다. 향후 VeraCrypt 볼륨 파서도 같은 trait로 들어온다.
+
+## 샤드 저장소(.vpshard)
+
+작은 파일(수십 KB) 수만~수십만 개를 큰 청크 파일 몇 개로 묶어 저장한다. 폴더째 옮기면 되므로 이동이 빠르고(I/O 입장에선
+큰 파일 수십 개), 청크가 4 GiB 미만이라 FAT32에도 들어가며, 암호화하면 이 프로그램과 키로만 읽을 수 있다.
+구현은 `crates/vp-shard`, 앱 쪽은 `src-tauri/src/shards.rs`.
+
+```
+name.vpshard/
+  info.json               평문: shard_version, min_reader_version, id, chunk_bytes, segment_bytes, 키 슬롯
+  index.vpidx             색인 스냅샷 ("VPIDX001" + JSON, 암호화 샤드는 봉인)
+  shard.lock              쓰는 인스턴스가 OS 파일 잠금을 잡는다
+  data/000000.vpchnk ...  저장된 파일
+  thumbs/000000.vpchnk    파일별 썸네일
+  converted/000000.vpchnk 파일별 고호환 변환본
+```
+
+- **샤드는 번들 안(`shards/`)에도, 밖(SD 카드·USB·다른 폴더)에도 둘 수 있다.** 소스 하나 = 샤드 하나(driver `shard`).
+  번들 안이면 `root`는 번들 기준 상대 경로이고 `config.in_bundle = true`. 번들 안팎으로 복사·이동(`shard_relocate`),
+  기존 샤드 연결(그 자리에서/번들로 복사/이동)을 지원한다. 같은 샤드(id)를 한 번들에 두 번 붙일 수 없다.
+- **청크 형식**: 64바이트 헤더(magic `VPCHNK01`, 샤드 id, 스트림, 암호화 플래그, 청크 번호, CRC) 뒤에 레코드가 이어지는
+  append-only 로그. 레코드는 `헤더(32B: magic, body_len, meta_len, CRC) | 본문 | 메타`. 본문이 먼저라 길이를 모르는
+  데이터(FFmpeg 출력)도 흘려 쓸 수 있고, 헤더는 마지막에 채운다. 헤더가 0인 레코드가 유효 데이터의 끝이다(충돌 시 잘라냄).
+  모든 정수는 little-endian 고정 폭, 경로는 `/` 구분 UTF-8.
+- **메타**(JSON)는 레코드가 무엇인지 스스로 설명한다: 항목 조각(`part`: seq, id, path 또는 owner, nonce, 조각 번호,
+  평문 범위, 마지막 여부, 크기, SHA-256, 시각), 삭제(`delete`), 이름 변경(`move`). 그래서 색인이 없어도 청크만으로
+  재구축된다. 한 청크에 들어가지 않는 큰 파일은 세그먼트 경계에서 여러 조각으로 나뉘어 다음 청크로 이어진다.
+- **색인**은 메모리에 두고 가끔 스냅샷으로 저장한다(`shard.snapshot_min_records`, 그리고 파일 수의 `snapshot_ratio` 이상
+  바뀌었을 때, 닫을 때). 스냅샷에는 스트림별로 "여기까지 반영됨" 위치가 있어, 열 때 그 뒤의 레코드만 다시 읽는다.
+  스냅샷 전에 청크를 `sync`한다. 재생 순서는 seq(전역 순번)라서 최신 쓰기·삭제·이동이 이긴다.
+- **삭제·교체**는 레코드를 덧붙이고 이전 공간은 쓰레기가 된다. **최적화(compaction)**는 쓰레기 비율이
+  `shard.compact_garbage_ratio` 이상인 봉인된 청크의 살아 있는 레코드를 활성 청크로 그대로(본문은 복호화 없이) 복사한 뒤
+  스냅샷을 쓰고 옛 청크를 지운다. 삭제·이동 레코드(tomb)는 부분 최적화 때 함께 옮겨, 색인을 다시 만들어도 지운 파일이
+  되살아나지 않는다. 전체 최적화(수동)는 tomb까지 없앤다. 청크 번호는 재사용하지 않는다.
+- **암호화**: 무작위 256비트 마스터 키를 비밀번호(+키 파일) Argon2id 도출 키로 감싸 `info.json`에 둔다(비밀번호 변경은
+  다시 감싸기만). 메타·색인은 `vp_crypto::seal`(무작위 nonce, 레이블에 샤드 id·스트림), 본문은 `segment_bytes` 평문 조각마다
+  XChaCha20-Poly1305로 봉인한다: nonce = 항목별 무작위 16B ‖ 조각 번호, AAD = 샤드 id·스트림·항목 id·조각 번호·마지막 여부.
+  임의 위치를 읽을 때 해당 조각만 복호화하고, 조각 바꿔치기·잘라내기는 인증 실패로 드러난다. 밖에서 보이는 것은 청크 수와
+  총용량뿐이다. 암호화 켜기·끄기는 새 샤드로 다시 쓰고(`repack`) 폴더를 바꿔 끼운다.
+- **키 관리**: 샤드는 번들과 독립된 비밀번호를 가진다. 세션 동안 `Workspace.shard_keys`에 두고, **잠긴 번들만** 마스터 키를
+  소스 설정(`config.key`, 암호화된 DB 안)에 기억할 수 있다. 번들 잠금을 풀면 기억된 키를 지운다. 잠긴 샤드의 항목은 썸네일·
+  영상 분석 백그라운드 작업에서 건너뛴다(`locked_sources`) — 실패로 기록되지 않는다.
+- **평문 번들 + 암호화 샤드**는 경고 후 허용한다. 샤드 안 파일·썸네일·변환본은 암호화되지만, 파일 이름·폴더·태그·점수·통계는
+  번들 DB에 평문으로 남는다.
+- **썸네일·변환본은 샤드 안에** 둔다(파일 id 기준이라 이름 변경을 따라가고, 다른 번들에 붙여도 재사용된다). 번들 DB의
+  `thumbnail.pack = THUMB_IN_SOURCE`, `media_variant.rel_path = "shard:converted"`가 "샤드에 있음"을 뜻한다.
+  샤드 항목의 변환은 FFmpeg 출력을 파이프로 받아(조각 MP4, `convert_to_writer`) 바로 샤드에 써서 평문이 디스크에 남지 않는다.
+- **동시 사용**: 쓰기는 `shard.lock` 잠금을 잡은 인스턴스 하나만. 다른 인스턴스는 읽기 전용으로 열리고, 스캔 때
+  `refresh()`로 따라잡는다. 자동 저장이 꺼진 번들은 샤드도 읽기 전용으로 연다.
+- **가져오기**: 파일·폴더 복사/이동(`shard_import`), 다른 소스에서 복사/이동(`shard_from_source`). 이동은
+  `shard.verify_moves`면 샤드에서 다시 읽어 SHA-256을 확인한 뒤 원본을 지운다. 소스에서 이동하면 미디어 행을 그대로
+  옮겨(`move_media`) id·태그·통계가 유지되고, 복사면 `copy_media_metadata`로 값을 복사한다. 썸네일·변환본도 함께 옮긴다.
+  풀기(`shard_export`), 검증(`shard_verify`), 최적화(`shard_compact`)는 진행 상황 작업으로 보인다.
+- 한계: OS 미디어 프레임워크(Android, FFmpeg 없음)는 경로로만 읽으므로 샤드 안 영상의 썸네일·분석은 FFmpeg가 있어야 한다.
 
 ## 썸네일
 
@@ -185,7 +241,6 @@ UI에 전달되며 작업별로 `progress.emit_interval_ms` 간격으로 제한�
 
 ## 향후 확장을 위한 고려
 
-- 데이터 샤드 저장: `MediaDriver` 구현 + 샤드 메타데이터는 별도 DB. 미디어 경로 모델이 `(source_id, path)`이므로 영향 없음.
 - 자동 태깅/인식: 확장 필드 값에 `origin`(user/auto:<provider>) 컬럼을 두어 자동 생성 값과 수동 값을 구분·재처리.
 
 ## Android

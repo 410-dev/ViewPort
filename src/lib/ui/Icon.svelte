@@ -73,6 +73,9 @@
     hardDrive: "M4 14h16v5H4zM4 14l2.5-8h11l2.5 8M8 16.5h.01",
     checkSquare: "M4 4h16v16H4zM8 12l3 3 5-6",
     eyeOff: "M3 3l18 18M10.6 6.1A9.8 9.8 0 0 1 12 6c6.5 0 10 6 10 6a17 17 0 0 1-3.2 3.9M6.6 7.7C3.8 9.5 2 12 2 12s3.5 7 10 7a9.6 9.6 0 0 0 4.4-1.1M9.9 10a3 3 0 0 0 4.2 4.2",
+    unlock: "M6 11h12v9H6zM8 11V8a4 4 0 0 1 7.7-1.5",
+    upload: "M12 16V4M7 9l5-5 5 5M4 20h16",
+    download: "M12 4v12M7 11l5 5 5-5M4 20h16",
   } as const;
   export type IconName = keyof typeof ICONS;
 </script>

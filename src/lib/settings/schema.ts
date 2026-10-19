@@ -367,6 +367,58 @@ export const SECTIONS: Section[] = [
     ],
   },
   {
+    id: "shard",
+    icon: "archive",
+    title: "set.shard",
+    groups: [
+      {
+        title: "set.shardNew",
+        fields: [
+          {
+            kind: "number",
+            ...bundle({ path: "shard.chunk_bytes", label: "set.shardChunk", help: "set.shardChunk.help" }),
+            min: 1,
+            max: 4095,
+            step: 64,
+            scale: MB,
+            unit: "MB",
+          },
+          {
+            kind: "number",
+            ...bundle({ path: "shard.segment_bytes", label: "set.shardSegment", help: "set.shardSegment.help" }),
+            min: 1,
+            max: 1024,
+            step: 16,
+            scale: 1024,
+            unit: "KB",
+          },
+        ],
+      },
+      {
+        title: "set.shardUpkeep",
+        fields: [
+          { kind: "toggle", ...bundle({ path: "shard.verify_moves", label: "set.shardVerifyMoves", help: "set.shardVerifyMoves.help" }) },
+          { kind: "toggle", ...bundle({ path: "shard.auto_compact", label: "set.shardAutoCompact" }) },
+          {
+            kind: "number",
+            ...bundle({ path: "shard.compact_garbage_ratio", label: "set.shardCompactRatio", help: "set.shardCompactRatio.help" }),
+            min: 5,
+            max: 90,
+            step: 5,
+            scale: 0.01,
+            unit: "%",
+          },
+          {
+            kind: "number",
+            ...bundle({ path: "shard.snapshot_min_records", label: "set.shardSnapshot", help: "set.shardSnapshot.help" }),
+            min: 100,
+            step: 500,
+          },
+        ],
+      },
+    ],
+  },
+  {
     id: "cache",
     icon: "database",
     title: "set.cache",

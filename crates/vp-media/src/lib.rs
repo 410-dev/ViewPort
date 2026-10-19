@@ -261,19 +261,113 @@ impl Ffmpeg {
         Err(last_err.unwrap_or_else(|| MediaError::Failed("no encoder".into())))
     }
 
+    /// Like [`Ffmpeg::convert`], but streams a fragmented MP4 into a writer instead of a
+    /// file, so the converted copy never touches the disk unencrypted (shards). `open`
+    /// makes a writer per attempt and `commit` completes it; a failed attempt's writer is
+    /// dropped.
     #[allow(clippy::too_many_arguments)]
-    fn convert_with(
+    pub fn convert_to_writer<W: Write>(
+        &self,
+        make_input: &mut dyn FnMut() -> Result<Input>,
+        open: &mut dyn FnMut() -> Result<W>,
+        commit: &mut dyn FnMut(W) -> Result<()>,
+        probe: &Probe,
+        hw_encoders: &[String],
+        progress: &mut dyn FnMut(f64),
+        cancel: &AtomicBool,
+    ) -> Result<()> {
+        let plan = probe.plan();
+        let encoders: Vec<&str> = if plan.copy_video {
+            vec!["copy"]
+        } else {
+            hw_encoders.iter().map(String::as_str).filter(|e| *e != "libx264").chain(["libx264"]).collect()
+        };
+        let mut last_err = None;
+        for enc in encoders {
+            let mut out = open()?;
+            match self.stream_with(make_input()?, &mut out, probe, plan, enc, progress, cancel) {
+                Ok(()) => return commit(out),
+                Err(MediaError::Cancelled) => return Err(MediaError::Cancelled),
+                Err(e) => last_err = Some(e),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| MediaError::Failed("no encoder".into())))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn stream_with(
         &self,
         input: Input,
-        output: &Path,
+        out: &mut dyn Write,
         probe: &Probe,
         plan: ConvertPlan,
         encoder: &str,
         progress: &mut dyn FnMut(f64),
         cancel: &AtomicBool,
     ) -> Result<()> {
+        // Progress goes to stderr, since stdout carries the video.
+        let mut args = Self::convert_args(&input, plan, encoder, "pipe:2");
+        args.extend(["-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"].map(String::from));
+        let (mut child, feeder) = self.spawn(&self.ffmpeg, &args, input)?;
+        let mut stdout = child.stdout.take().expect("piped stdout");
+        let stderr = child.stderr.take().expect("piped stderr");
+        let (tx, rx) = std::sync::mpsc::channel::<i64>();
+        let err_reader = std::thread::spawn(move || {
+            let mut errors = Vec::new();
+            for line in BufReader::new(stderr).lines().map_while(std::result::Result::ok) {
+                if let Some(us) = line.strip_prefix("out_time_us=").and_then(|v| v.parse::<i64>().ok()) {
+                    let _ = tx.send(us);
+                } else if !line.split_once('=').is_some_and(|(k, _)| !k.is_empty() && !k.contains(' ')) {
+                    errors.extend_from_slice(line.as_bytes());
+                    errors.push(b'\n');
+                }
+            }
+            errors
+        });
+        let total_us = probe.duration_ms.unwrap_or(0) as f64 * 1000.0;
+        let mut buf = vec![0u8; 256 * 1024];
+        let mut write_err = None;
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(MediaError::Cancelled);
+            }
+            let n = match stdout.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e.into()),
+            };
+            if let Err(e) = out.write_all(&buf[..n]) {
+                let _ = child.kill();
+                write_err = Some(e);
+                break;
+            }
+            while let Ok(us) = rx.try_recv() {
+                if total_us > 0.0 {
+                    progress((us as f64 / total_us).clamp(0.0, 1.0));
+                }
+            }
+        }
+        let status = child.wait()?;
+        if let Some(f) = feeder {
+            let _ = f.join();
+        }
+        let stderr = err_reader.join().unwrap_or_default();
+        if let Some(e) = write_err {
+            return Err(e.into());
+        }
+        if !status.success() {
+            return Err(MediaError::Failed(format!("{encoder}: {}", last_lines(&stderr))));
+        }
+        progress(1.0);
+        Ok(())
+    }
+
+    fn convert_args(input: &Input, plan: ConvertPlan, encoder: &str, progress_to: &str) -> Vec<String> {
         let mut args: Vec<String> =
-            vec!["-v".into(), "error".into(), "-y".into(), "-nostats".into(), "-progress".into(), "pipe:1".into()];
+            vec!["-v".into(), "error".into(), "-y".into(), "-nostats".into(), "-progress".into(), progress_to.into()];
         args.extend(["-i".into(), input.arg(), "-map".into(), "0:v:0".into(), "-map".into(), "0:a:0?".into()]);
         args.extend(["-c:v".into(), encoder.into()]);
         match encoder {
@@ -291,9 +385,35 @@ impl Ffmpeg {
                 args.extend(["-c:a", "aac", "-b:a", "192k"].map(String::from));
             }
         }
+        args
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn convert_with(
+        &self,
+        input: Input,
+        output: &Path,
+        probe: &Probe,
+        plan: ConvertPlan,
+        encoder: &str,
+        progress: &mut dyn FnMut(f64),
+        cancel: &AtomicBool,
+    ) -> Result<()> {
+        let mut args = Self::convert_args(&input, plan, encoder, "pipe:1");
         args.extend(["-movflags", "+faststart", "-f", "mp4"].map(String::from));
         args.push(output.display().to_string());
+        self.run_convert(args, input, probe, encoder, progress, cancel)
+    }
 
+    fn run_convert(
+        &self,
+        args: Vec<String>,
+        input: Input,
+        probe: &Probe,
+        encoder: &str,
+        progress: &mut dyn FnMut(f64),
+        cancel: &AtomicBool,
+    ) -> Result<()> {
         let (mut child, feeder) = self.spawn(&self.ffmpeg, &args, input)?;
         let stdout = child.stdout.take().expect("piped stdout");
         let mut stderr = child.stderr.take().expect("piped stderr");
@@ -449,6 +569,26 @@ mod tests {
         assert_eq!(last, 1.0);
         let converted = ff.probe(Input::File(out)).unwrap();
         assert!(converted.webview_compatible("mp4"), "{converted:?}");
+
+        // Streamed into a writer (fragmented MP4) instead of a file.
+        let mut got = None;
+        ff.convert_to_writer(
+            &mut || Ok(Input::File(src.clone())),
+            &mut || Ok(Vec::<u8>::new()),
+            &mut |v| {
+                got = Some(v);
+                Ok(())
+            },
+            &probe,
+            &[],
+            &mut |_| {},
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let streamed = tmp.join("streamed.mp4");
+        std::fs::write(&streamed, got.expect("committed")).unwrap();
+        let p = ff.probe(Input::File(streamed)).unwrap();
+        assert!(p.webview_compatible("mp4") && p.duration_ms.is_some_and(|d| d > 0), "{p:?}");
         let _ = std::fs::remove_dir_all(tmp);
     }
 }

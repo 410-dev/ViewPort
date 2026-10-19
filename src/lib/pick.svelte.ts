@@ -58,6 +58,16 @@ export async function pickFile(title: string, filter?: { name: string; extension
   return inApp({ mode: "file", title, extensions: filter?.extensions ?? [] });
 }
 
+/** Several files on desktop; one at a time on mobile (the in-app browser picks one). */
+export async function pickFiles(title: string): Promise<string[]> {
+  if (!isMobile) {
+    const p = await open({ title, multiple: true });
+    return Array.isArray(p) ? p : typeof p === "string" ? [p] : [];
+  }
+  const one = await pickFile(title);
+  return one ? [one] : [];
+}
+
 /** A new path named by the user: `<folder>/<name>.<ext>`. */
 export async function pickSave(title: string, name: string, filter: { name: string; extensions: string[] }): Promise<string | null> {
   if (!isMobile) {

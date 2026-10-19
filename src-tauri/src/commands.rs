@@ -238,15 +238,27 @@ pub async fn add_local_source(app: AppHandle, path: String) -> CmdResult<SourceR
     Ok(source)
 }
 
+/// Removes a source. For a shard, `delete_data` also deletes the shard folder itself.
 #[tauri::command]
-pub fn remove_source(state: State<'_, AppState>, id: i64) -> CmdResult<()> {
-    let ws = workspace(&state)?;
-    if let Some(cancel) = ws.scans.lock().unwrap().get(&id) {
-        cancel.store(true, Ordering::Relaxed);
-    }
-    ws.write_db.lock().unwrap().remove_source(id)?;
-    ws.forget_driver(id);
-    Ok(())
+pub async fn remove_source(app: AppHandle, id: i64, delete_data: Option<bool>) -> CmdResult<()> {
+    let ws = workspace(&app.state::<AppState>())?;
+    blocking(move || {
+        if let Some(cancel) = ws.scans.lock().unwrap().get(&id) {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        let source = ws.read_db.lock().unwrap().source(id)?.ok_or_else(|| CmdError::new("not_found", "source"))?;
+        let shard_root = (source.driver == crate::shards::DRIVER).then(|| ws.shard_root(&source)).transpose()?;
+        ws.write_db.lock().unwrap().remove_source(id)?;
+        ws.shard_keys.lock().unwrap().remove(&id);
+        ws.close_shard(id)?;
+        if let Some(root) = shard_root.filter(|_| delete_data == Some(true))
+            && vp_shard::Shard::read_info(&root).is_ok()
+        {
+            std::fs::remove_dir_all(&root)?;
+        }
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -273,60 +285,72 @@ struct ScanEvent {
     error: Option<String>,
 }
 
-fn start_scan(app: &AppHandle, ws: Arc<Workspace>, source: SourceRow) {
+pub(crate) fn start_scan(app: &AppHandle, ws: Arc<Workspace>, source: SourceRow) {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _ = scan_now(&app, ws, source);
+    });
+}
+
+/// Scans a source on this thread and returns when done (or at once if a scan of it is
+/// already running).
+pub(crate) fn scan_now(app: &AppHandle, ws: Arc<Workspace>, source: SourceRow) -> Result<vp_scan::ScanProgress, String> {
     let cancel = Arc::new(AtomicBool::new(false));
     {
         let mut scans = ws.scans.lock().unwrap();
         if scans.contains_key(&source.id) {
-            return; // already running
+            return Err("already scanning".into());
         }
         scans.insert(source.id, cancel.clone());
     }
-    let app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let registry = app.state::<AppState>().drivers.clone();
-        let settings = ws.settings.read().unwrap().scan.clone();
-        let task = crate::tasks::begin_with_cancel("scan", &source.name, crate::tasks::Unit::Items, None, Some(cancel.clone()));
-        let interval = std::time::Duration::from_millis(crate::recent::cached_app_settings().progress.emit_interval_ms);
-        let mut last = std::time::Instant::now() - interval;
-        let mut emit = |progress: &vp_scan::ScanProgress, done: bool, error: Option<String>| {
-            task.set(progress.files, None);
-            task.detail(if progress.current.is_empty() { "/".to_string() } else { progress.current.clone() });
-            // Scans report every folder; the UI only needs a few updates per second.
-            if done || last.elapsed() >= interval {
-                last = std::time::Instant::now();
-                let _ = app.emit("scan-progress", ScanEvent { progress: progress.clone(), done, error });
-            }
+    let registry = app.state::<AppState>().drivers.clone();
+    let settings = ws.settings.read().unwrap().scan.clone();
+    let task = crate::tasks::begin_with_cancel("scan", &source.name, crate::tasks::Unit::Items, None, Some(cancel.clone()));
+    let interval = std::time::Duration::from_millis(crate::recent::cached_app_settings().progress.emit_interval_ms);
+    let mut last = std::time::Instant::now() - interval;
+    let mut emit = |progress: &vp_scan::ScanProgress, done: bool, error: Option<String>| {
+        task.set(progress.files, None);
+        task.detail(if progress.current.is_empty() { "/".to_string() } else { progress.current.clone() });
+        // Scans report every folder; the UI only needs a few updates per second.
+        if done || last.elapsed() >= interval {
+            last = std::time::Instant::now();
+            let _ = app.emit("scan-progress", ScanEvent { progress: progress.clone(), done, error });
+        }
+    };
+    let result = ws.driver(&registry, &source).map_err(|e| e.message).and_then(|driver| {
+        // A shard another instance writes to is open read-only here: catch up first.
+        let shard = ws.shards.lock().unwrap().get(&source.id).cloned();
+        if let Some(s) = shard {
+            s.refresh().map_err(|e| e.to_string())?;
+        }
+        let scanner = vp_scan::Scanner {
+            db: &ws.write_db,
+            driver: driver.as_ref(),
+            settings: &settings,
+            source_id: source.id,
+            now_ms: now_ms(),
+            cancel: &cancel,
         };
-        let result = ws.driver(&registry, &source).map_err(|e| e.message).and_then(|driver| {
-            let scanner = vp_scan::Scanner {
-                db: &ws.write_db,
-                driver: driver.as_ref(),
-                settings: &settings,
-                source_id: source.id,
-                now_ms: now_ms(),
-                cancel: &cancel,
-            };
-            scanner.run(&mut |p| emit(p, false, None)).map_err(|e| e.to_string())
-        });
-        let empty = vp_scan::ScanProgress { source_id: source.id, ..Default::default() };
-        match &result {
-            Ok(p) => emit(p, true, None),
-            Err(e) => emit(&empty, true, Some(e.clone())),
-        }
-        match &result {
-            Ok(_) => task.finish(),
-            Err(_) if cancel.load(Ordering::Relaxed) => task.cancelled(),
-            Err(e) => task.fail(e.clone()),
-        }
-        ws.scans.lock().unwrap().remove(&source.id);
-        if result.is_ok() && ws.autosave() {
-            crate::video::spawn_probe_backfill(&app, ws.clone());
-        }
-        if result.is_ok() && settings.thumbnails_after_scan && ws.autosave() {
-            crate::thumbs::spawn_backfill(app.clone(), ws.clone());
-        }
+        scanner.run(&mut |p| emit(p, false, None)).map_err(|e| e.to_string())
     });
+    let empty = vp_scan::ScanProgress { source_id: source.id, ..Default::default() };
+    match &result {
+        Ok(p) => emit(p, true, None),
+        Err(e) => emit(&empty, true, Some(e.clone())),
+    }
+    match &result {
+        Ok(_) => task.finish(),
+        Err(_) if cancel.load(Ordering::Relaxed) => task.cancelled(),
+        Err(e) => task.fail(e.clone()),
+    }
+    ws.scans.lock().unwrap().remove(&source.id);
+    if result.is_ok() && ws.autosave() {
+        crate::video::spawn_probe_backfill(app, ws.clone());
+    }
+    if result.is_ok() && settings.thumbnails_after_scan && ws.autosave() {
+        crate::thumbs::spawn_backfill(app.clone(), ws.clone());
+    }
+    result
 }
 
 // ---------------------------------------------------------------- search
@@ -722,7 +746,7 @@ pub fn driver_kinds(state: State<'_, AppState>) -> Vec<DriverKind> {
     let mut kinds: Vec<DriverKind> = state
         .drivers
         .kinds()
-        .filter(|k| *k != "local")
+        .filter(|k| *k != "local" && *k != crate::shards::DRIVER)
         .filter_map(|k| state.drivers.get(k).ok().map(|f| DriverKind { kind: k.into(), fields: f.config_schema() }))
         .collect();
     kinds.sort_by(|a, b| a.kind.cmp(&b.kind));
@@ -791,7 +815,7 @@ pub async fn update_source(
     blocking(move || {
         let old = ws.read_db.lock().unwrap().source(id)?.ok_or_else(|| CmdError::new("not_found", "source"))?;
         let mut config = match (&config, old.driver.as_str()) {
-            (Some(c), d) if d != "local" && d != crate::workspace::BUNDLE_DRIVER => {
+            (Some(c), d) if d != "local" && d != crate::workspace::BUNDLE_DRIVER && d != crate::shards::DRIVER => {
                 let schema = drivers.get(d)?.config_schema();
                 let merged = crate::secrets::merge_edit(&old.config, c, &schema);
                 let mut revealed = crate::secrets::reveal(d, &merged, &schema);
@@ -807,8 +831,15 @@ pub async fn update_source(
             config = serde_json::json!({});
         }
         let name = if name.trim().is_empty() { old.name.clone() } else { name.trim().to_string() };
+        // A shard pointed at a new folder: kept relative when that is inside the bundle.
+        let mut root = root;
+        if old.driver == crate::shards::DRIVER && root != old.root && std::path::Path::new(&root).is_absolute() {
+            let (r, in_bundle) = ws.shard_location(std::path::Path::new(&root));
+            root = r;
+            config["in_bundle"] = serde_json::Value::Bool(in_bundle);
+        }
         ws.write_db.lock().unwrap().update_source(id, &name, &root, &config, enabled)?;
-        ws.forget_driver(id);
+        ws.close_shard(id)?;
         ws.read_db.lock().unwrap().source(id)?.ok_or_else(|| CmdError::new("not_found", "source"))
     })
     .await

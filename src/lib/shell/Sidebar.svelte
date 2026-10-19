@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { BundleSummary, SavedQuery, ScanEvent, SourceRow } from "../api";
+  import type { BundleSummary, SavedQuery, ScanEvent, ShardStatus, SourceRow } from "../api";
   import { t } from "../i18n.svelte";
   import Icon from "../ui/Icon.svelte";
 
@@ -8,12 +8,14 @@
     sources,
     selected,
     scans,
+    shards = {},
     saved,
     activeQuery,
     secondary = false,
     onselect,
     onaddfolder,
     onaddnetwork,
+    onaddshard,
     onrescan,
     onedit,
     onremove,
@@ -28,12 +30,15 @@
     sources: SourceRow[];
     selected: number | null;
     scans: Record<number, ScanEvent>;
+    /** Status of shard sources by source id. */
+    shards?: Record<number, ShardStatus>;
     saved: SavedQuery[];
     activeQuery: string;
     secondary?: boolean;
     onselect: (id: number | null) => void;
     onaddfolder: () => void;
     onaddnetwork: () => void;
+    onaddshard: () => void;
     onrescan: (s: SourceRow) => void;
     onedit: (s: SourceRow) => void;
     onremove: (s: SourceRow) => void;
@@ -91,14 +96,24 @@
               onaddnetwork();
             }}><Icon name="server" size={15} /><span class="label">{t("side.addNetwork")}</span></button
           >
+          <button
+            class="item"
+            onclick={() => {
+              addMenu = false;
+              onaddshard();
+            }}><Icon name="archive" size={15} /><span class="label">{t("side.addShard")}</span></button
+          >
         </div>
       {/if}
       {#each sources as s (s.id)}
         {@const scanning = scans[s.id] && !scans[s.id].done}
+        {@const shard = s.driver === "shard" ? shards[s.id] : undefined}
+        {@const shardLocked = !!shard && shard.found && shard.encrypted && !shard.unlocked}
         <div class="row" class:off={!s.enabled}>
-          <button class="item" class:on={selected === s.id} onclick={() => onselect(s.id)} title={s.root}>
-            <Icon name={s.driver === "local" || s.driver === "bundle" ? "folder" : "server"} size={15} />
+          <button class="item" class:on={selected === s.id} onclick={() => onselect(s.id)} title={shardLocked ? t("side.shardLocked") : s.root}>
+            <Icon name={s.driver === "shard" ? "archive" : s.driver === "local" || s.driver === "bundle" ? "folder" : "server"} size={15} />
             <span class="label">{s.name}</span>
+            {#if shardLocked}<span class="lock"><Icon name="lock" size={12} /></span>{/if}
             {#if scanning}<span class="spinner"></span>{/if}
           </button>
           <span class="actions">

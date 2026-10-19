@@ -37,6 +37,7 @@ vp-thumb.workspace = true
 vp-cache.workspace = true
 vp-media.workspace = true
 vp-crypto.workspace = true
+vp-shard.workspace = true
 zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]

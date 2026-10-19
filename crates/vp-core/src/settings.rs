@@ -21,6 +21,7 @@ pub struct Settings {
     pub thumbnails: ThumbnailSettings,
     pub scan: ScanSettings,
     pub grid: GridSettings,
+    pub shard: ShardSettings,
     pub keys: KeyBindings,
 }
 
@@ -273,6 +274,39 @@ impl Default for GridSettings {
             overscan_rows: 3,
             show_names: true,
             default_sort: "sort(name) AND sort(folder) AND sort(source)".into(),
+        }
+    }
+}
+
+/// Shard stores (`.vpshard`): many small files packed into large, optionally encrypted chunks.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ShardSettings {
+    /// Size of each chunk file of a new shard. At most 4 GiB - 1 so it fits on FAT32.
+    pub chunk_bytes: u64,
+    /// Encrypted data is sealed in pieces of this size; reads decrypt whole pieces.
+    pub segment_bytes: u32,
+    /// Save the shard index after this many changes...
+    pub snapshot_min_records: u64,
+    /// ...once they are also this fraction of the stored files.
+    pub snapshot_ratio: f32,
+    /// Compact a shard in the background once this fraction of it is garbage.
+    pub compact_garbage_ratio: f32,
+    pub auto_compact: bool,
+    /// When moving files into a shard, read each back and compare before deleting the original.
+    pub verify_moves: bool,
+}
+
+impl Default for ShardSettings {
+    fn default() -> Self {
+        Self {
+            chunk_bytes: GIB,
+            segment_bytes: 64 * 1024,
+            snapshot_min_records: 2000,
+            snapshot_ratio: 0.25,
+            compact_garbage_ratio: 0.3,
+            auto_compact: true,
+            verify_moves: true,
         }
     }
 }

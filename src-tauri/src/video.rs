@@ -154,8 +154,19 @@ impl Workspace {
         Ok(None)
     }
 
-    pub fn variant_path(&self, id: i64) -> CmdResult<Option<PathBuf>> {
-        Ok(self.read_db.lock().unwrap().variant(id)?.map(|rel| self.bundle.root.join(rel)).filter(|p| p.is_file()))
+    /// The converted copy of `id`: a file in the bundle, or kept by the item's shard.
+    pub fn variant_reader(&self, id: i64) -> CmdResult<Option<Box<dyn vp_driver::MediaReader>>> {
+        let Some(rel) = self.read_db.lock().unwrap().variant(id)? else { return Ok(None) };
+        if rel == crate::shards::VARIANT_IN_SHARD {
+            let Some(loc) = self.read_db.lock().unwrap().media_location(id)? else { return Ok(None) };
+            let Some(shard) = self.shard_for(loc.source_id)? else { return Ok(None) };
+            return Ok(shard.blob(vp_shard::Stream::Converted, &loc.rel_path)?.map(vp_driver::shard::media_reader));
+        }
+        let path = self.bundle.root.join(rel);
+        if !path.is_file() {
+            return Ok(None);
+        }
+        Ok(Some(vp_driver::local::open_file(&path)?))
     }
 }
 
@@ -237,16 +248,41 @@ fn convert_one(
         Some(p) => p,
         None => return Err(CmdError::new("probe_failed", "could not read the video")),
     };
-    let rel = format!("{CONVERTED_DIR}/{id}.mp4");
-    let out = ws.bundle.root.join(&rel);
-    std::fs::create_dir_all(out.parent().unwrap())?;
     let hw = crate::recent::cached_app_settings().hardware;
     let encoders = if hw.video_encode { hw.encoders.clone() } else { Vec::new() };
     let mut make_input = || ws.media_input(drivers, &loc).map_err(|e| vp_media::MediaError::Failed(e.message));
-    ff.convert(&mut make_input, &out, &probe, &encoders, progress, cancel).map_err(|e| match e {
+    let failed = |e: vp_media::MediaError| match e {
         vp_media::MediaError::Cancelled => CmdError::new("cancelled", "cancelled"),
         other => CmdError::new("convert_failed", other),
-    })?;
+    };
+    // Items in a shard keep their converted copy there, streamed straight in so it is
+    // never on disk unencrypted.
+    if let Some(shard) = ws.shard_for(loc.source_id)? {
+        if !shard.is_writable() {
+            return Err(CmdError::new("read_only", "the shard is open read-only"));
+        }
+        let fail = |e: vp_shard::ShardError| vp_media::MediaError::Failed(e.to_string());
+        let mut attrs = serde_json::Map::new();
+        attrs.insert("mime".into(), "video/mp4".into());
+        ff.convert_to_writer(
+            &mut make_input,
+            &mut || shard.blob_writer(vp_shard::Stream::Converted, &loc.rel_path, None, attrs.clone()).map_err(fail),
+            &mut |w| w.finish().map_err(fail),
+            &probe,
+            &encoders,
+            progress,
+            cancel,
+        )
+        .map_err(failed)?;
+        let size = shard.blob(vp_shard::Stream::Converted, &loc.rel_path)?.map(|r| r.len()).unwrap_or(0);
+        ws.write_db.lock().unwrap().set_variant(id, crate::shards::VARIANT_IN_SHARD, size, now_ms())?;
+        ws.cache.remove(-id);
+        return Ok(());
+    }
+    let rel = format!("{CONVERTED_DIR}/{id}.mp4");
+    let out = ws.bundle.root.join(&rel);
+    std::fs::create_dir_all(out.parent().unwrap())?;
+    ff.convert(&mut make_input, &out, &probe, &encoders, progress, cancel).map_err(failed)?;
     let size = std::fs::metadata(&out)?.len();
     ws.write_db.lock().unwrap().set_variant(id, &rel, size, now_ms())?;
     ws.cache.remove(-id);
@@ -261,13 +297,14 @@ pub fn spawn_probe_backfill<R: Runtime>(app: &AppHandle<R>, ws: Arc<Workspace>) 
     let app = app.clone();
     std::thread::spawn(move || {
         let drivers = app.state::<AppState>().drivers.clone();
-        let total = ws.read_db.lock().unwrap().count_unprobed_videos().ok();
+        let skip = ws.locked_sources();
+        let total = ws.read_db.lock().unwrap().count_unprobed_videos(&skip).ok();
         let task = (total != Some(0)).then(|| crate::tasks::begin("probe", "", crate::tasks::Unit::Items, total));
         loop {
             if ws.closed.load(Ordering::Relaxed) {
                 break;
             }
-            let batch = ws.read_db.lock().unwrap().unprobed_videos(32).unwrap_or_default();
+            let batch = ws.read_db.lock().unwrap().unprobed_videos(32, &skip).unwrap_or_default();
             if batch.is_empty() {
                 break;
             }

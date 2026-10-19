@@ -103,3 +103,24 @@ impl From<serde_json::Error> for CmdError {
         CmdError::new("json", e)
     }
 }
+
+impl From<vp_shard::ShardError> for CmdError {
+    fn from(e: vp_shard::ShardError) -> Self {
+        use vp_shard::ShardError as S;
+        let code = match &e {
+            S::NotAShard(_) => "not_a_shard",
+            S::AlreadyExists(_) => "already_exists",
+            S::TooNew { .. } => "shard_too_new",
+            S::Locked => "shard_locked",
+            S::WrongKey => "wrong_key",
+            S::ReadOnly => "read_only",
+            S::NotFound(_) => "not_found",
+            S::InvalidPath(_) | S::Invalid(_) => "invalid",
+            S::Cancelled => "cancelled",
+            S::Crypto(_) => "crypto",
+            S::Io(_) => "io",
+            S::Json(_) => "json",
+        };
+        CmdError::new(code, e)
+    }
+}

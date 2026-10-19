@@ -3,7 +3,17 @@
   import { pickFolder } from "./pick.svelte";
   import { onBack, PASS } from "./back.svelte";
   import { onDestroy } from "svelte";
-  import { api, asCmdError, onScan, type BundleSummary, type SavedQuery, type ScanEvent, type Settings, type SourceRow } from "./api";
+  import {
+    api,
+    asCmdError,
+    onScan,
+    type BundleSummary,
+    type SavedQuery,
+    type ScanEvent,
+    type Settings,
+    type ShardStatus,
+    type SourceRow,
+  } from "./api";
   import { i18n, t } from "./i18n.svelte";
   import { isTyping, matches } from "./keys";
   import RightPanel from "./panel/RightPanel.svelte";
@@ -11,6 +21,8 @@
   import { quoteParam } from "./query";
   import QueryModal from "./query/QueryModal.svelte";
   import SettingsPanel from "./settings/SettingsPanel.svelte";
+  import ShardDialog from "./shard/ShardDialog.svelte";
+  import ShardPanel from "./shard/ShardPanel.svelte";
   import Sidebar from "./shell/Sidebar.svelte";
   import Toolbar from "./shell/Toolbar.svelte";
   import SourceDialog from "./SourceDialog.svelte";
@@ -62,6 +74,10 @@
   let modal = $state<{ editing: SavedQuery | null } | null>(null);
   let showSettings = $state(false);
   let sourceDialog = $state<{ source: SourceRow | null } | null>(null);
+  let shardDialog = $state(false);
+  /** Source id of the shard being managed (or unlocked). */
+  let shardPanel = $state<number | null>(null);
+  let shards = $state<Record<number, ShardStatus>>({});
 
   const selection = new Selection();
   const selectedIds = $derived([...selection.set]);
@@ -71,6 +87,21 @@
   // ---- data
   async function refreshSources() {
     sources = await api.listSources();
+    refreshShards();
+  }
+  async function refreshShards() {
+    if (!sources.some((s) => s.driver === "shard")) {
+      shards = {};
+      return;
+    }
+    const list = await api.shardStatus().catch(() => []);
+    shards = Object.fromEntries(list.map((s) => [s.source_id, s]));
+  }
+  /** A locked shard opens its panel (to unlock it) when chosen. */
+  function selectSource(id: number | null) {
+    selected = id;
+    const st = id === null ? undefined : shards[id];
+    if (st && st.found && st.encrypted && !st.unlocked) shardPanel = id;
   }
   async function refreshSaved() {
     saved = await api.listSavedQueries(i18n.queryLocale).catch(() => []);
@@ -140,6 +171,7 @@
         if (e.done) invalidate();
         runSearch(false);
         if (e.done && selected === e.source_id) api.childFolders(e.source_id, folder).then((l) => (subfolders = l)).catch(() => {});
+        if (e.done && shards[e.source_id]) refreshShards();
       }
     }),
   ];
@@ -180,7 +212,13 @@
 
   async function removeSource(s: SourceRow) {
     if (!(await ask(t("side.removeConfirm", { name: s.name }), { kind: "warning" }))) return;
-    await api.removeSource(s.id);
+    const shardPath = s.driver === "shard" ? shards[s.id]?.path : undefined;
+    const deleteData = !!shardPath && (await ask(t("side.removeShardData", { path: shardPath }), { kind: "warning" }));
+    try {
+      await api.removeSource(s.id, deleteData);
+    } catch (e) {
+      alert(asCmdError(e).message);
+    }
     broadcast("sources");
     if (selected === s.id) selected = null;
     delete scans[s.id];
@@ -260,7 +298,7 @@
   // ---- keyboard
   let toolbar: Toolbar;
   function onKey(e: KeyboardEvent) {
-    if (!settings || viewing || modal || showSettings || sourceDialog) return;
+    if (!settings || viewing || modal || showSettings || sourceDialog || shardDialog || shardPanel !== null) return;
     const k = settings.keys;
     if (matches(e, k.focus_search)) toolbar?.focusSearch();
     else if (matches(e, k.query_editor)) modal = { editing: null };
@@ -345,11 +383,13 @@
       {saved}
       activeQuery={query}
       {secondary}
-      onselect={(id) => (selected = id)}
+      {shards}
+      onselect={selectSource}
       onaddfolder={addFolder}
       onaddnetwork={() => (sourceDialog = { source: null })}
+      onaddshard={() => (shardDialog = true)}
       onrescan={(s) => api.scanSource(s.id)}
-      onedit={(s) => (sourceDialog = { source: s })}
+      onedit={(s) => (s.driver === "shard" ? (shardPanel = s.id) : (sourceDialog = { source: s }))}
       onremove={removeSource}
       onrunsaved={(q) => (query = q.text)}
       oneditsaved={(q) => (modal = { editing: q })}
@@ -470,6 +510,40 @@
       runSearch(false);
     }}
   />
+{/if}
+
+{#if shardDialog}
+  <ShardDialog
+    {bundle}
+    {sources}
+    onclose={() => (shardDialog = false)}
+    ondone={async (s) => {
+      shardDialog = false;
+      await refreshSources();
+      broadcast("sources");
+      selected = s.id;
+      runSearch(false);
+    }}
+  />
+{/if}
+
+{#if shardPanel !== null}
+  {@const src = sources.find((s) => s.id === shardPanel)}
+  {#if src}
+    <ShardPanel
+      source={src}
+      status={shards[src.id] ?? null}
+      {bundle}
+      {sources}
+      onclose={() => (shardPanel = null)}
+      onchanged={async () => {
+        await refreshSources();
+        broadcast("sources");
+        invalidate();
+        runSearch(false);
+      }}
+    />
+  {/if}
 {/if}
 
 {#if showSettings && settings}

@@ -5153,6 +5153,7 @@ dependencies = [
  "vp-media",
  "vp-query",
  "vp-scan",
+ "vp-shard",
  "vp-thumb",
  "zip",
 ]
@@ -5219,6 +5220,8 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "vp-crypto",
+ "vp-shard",
 ]
 
 [[package]]
@@ -5253,6 +5256,18 @@ dependencies = [
  "vp-db",
  "vp-driver",
  "vp-query",
+]
+
+[[package]]
+name = "vp-shard"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "thiserror 2.0.21",
+ "vp-crypto",
 ]
 
 [[package]]

@@ -21,6 +21,8 @@ pub const THUMBS_DIR: &str = "thumbs";
 pub const STATS_DIR: &str = "stats";
 /// Media stored inside the bundle; referenced by paths relative to the bundle root.
 pub const MEDIA_DIR: &str = "media";
+/// Shard stores (`<name>.vpshard`) kept inside the bundle.
+pub const SHARDS_DIR: &str = "shards";
 
 #[derive(Debug, thiserror::Error)]
 pub enum BundleError {

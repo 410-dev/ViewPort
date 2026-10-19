@@ -335,7 +335,7 @@ export const api = {
   saveSettings: (settings: Settings) => invoke<void>("save_settings", { settings }),
   listSources: () => invoke<SourceRow[]>("list_sources"),
   addLocalSource: (path: string) => invoke<SourceRow>("add_local_source", { path }),
-  removeSource: (id: number) => invoke<void>("remove_source", { id }),
+  removeSource: (id: number, deleteData = false) => invoke<void>("remove_source", { id, deleteData }),
   scanSource: (id: number) => invoke<void>("scan_source", { id }),
   cancelScan: (id: number) => invoke<void>("cancel_scan", { id }),
   search: (query: string, sourceId: number | null, folder: string | null = null, recursive = false) =>
@@ -393,7 +393,77 @@ export const api = {
   takeWindowPayload: () => invoke<WindowPayload | null>("take_window_payload"),
   panic: () => invoke<void>("panic"),
   cancelTask: (id: number) => invoke<boolean>("cancel_task", { id }),
+
+  // Shard sources (src-tauri/src/shards.rs)
+  shardStatus: () => invoke<ShardStatus[]>("shard_status"),
+  inspectShard: (path: string) => invoke<ShardPeek>("inspect_shard", { path }),
+  createShard: (name: string, location: string | null, password: string | null, keyfile: string | null, remember: boolean) =>
+    invoke<SourceRow>("create_shard", { name, location, password, keyfile, remember }),
+  attachShard: (path: string, mode: ShardPlace, password: string | null, keyfile: string | null, remember: boolean) =>
+    invoke<SourceRow>("attach_shard", { path, mode, password, keyfile, remember }),
+  unlockShard: (sourceId: number, password: string, keyfile: string | null, remember: boolean) =>
+    invoke<void>("unlock_shard", { sourceId, password, keyfile, remember }),
+  lockShard: (sourceId: number) => invoke<void>("lock_shard", { sourceId }),
+  shardChangePassword: (sourceId: number, password: string, keyfile: string | null) =>
+    invoke<void>("shard_change_password", { sourceId, password, keyfile }),
+  shardImport: (sourceId: number, paths: string[], dest: string, mode: TransferMode) =>
+    invoke<void>("shard_import", { sourceId, paths, dest, mode }),
+  shardFromSource: (from: number, to: number, dest: string, mode: TransferMode) =>
+    invoke<void>("shard_from_source", { from, to, dest, mode }),
+  shardExport: (sourceId: number, paths: string[], dest: string) => invoke<void>("shard_export", { sourceId, paths, dest }),
+  shardVerify: (sourceId: number) => invoke<VerifyReport>("shard_verify", { sourceId }),
+  shardCompact: (sourceId: number) => invoke<CompactReport>("shard_compact", { sourceId }),
+  shardSetEncryption: (sourceId: number, password: string | null, keyfile: string | null, remember: boolean) =>
+    invoke<void>("shard_set_encryption", { sourceId, password, keyfile, remember }),
+  shardRelocate: (sourceId: number, target: string | null, mode: TransferMode) =>
+    invoke<SourceRow>("shard_relocate", { sourceId, target, mode }),
 };
+
+export type TransferMode = "copy" | "move";
+/** Attaching a shard: use it where it is, or copy/move it into the bundle. */
+export type ShardPlace = "link" | TransferMode;
+
+export interface ShardStats {
+  files: number;
+  bytes: number;
+  thumbs: number;
+  converted: number;
+  chunks: number;
+  disk_bytes: number;
+  garbage_bytes: number;
+}
+
+export interface ShardStatus {
+  source_id: number;
+  path: string;
+  in_bundle: boolean;
+  found: boolean;
+  encrypted: boolean;
+  requires_keyfile: boolean;
+  unlocked: boolean;
+  remembered: boolean;
+  writable: boolean;
+  busy: boolean;
+  chunk_bytes: number;
+  stats: ShardStats | null;
+}
+
+export interface ShardPeek {
+  name: string;
+  encrypted: boolean;
+  requires_keyfile: boolean;
+  shard_version: number;
+}
+
+export interface VerifyReport {
+  items: number;
+  damaged: string[];
+}
+
+export interface CompactReport {
+  chunks_removed: number;
+  bytes_freed: number;
+}
 
 export const onAudio = (f: (e: AudioState) => void): Promise<UnlistenFn> => listen<AudioState>("audio", (e) => f(e.payload));
 export const onAppSettings = (f: () => void): Promise<UnlistenFn> => listen("app-settings", () => f());

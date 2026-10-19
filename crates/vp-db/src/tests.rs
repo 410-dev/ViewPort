@@ -175,7 +175,9 @@ fn rescan_marks_missing_and_invalidates_thumbs() {
     assert!(lib.db.thumbnail(1).unwrap().is_none(), "changed file drops its thumbnail");
     assert_eq!(lib.db.thumbnail(2).unwrap().unwrap().status, ThumbStatus::Failed);
     assert_eq!(lib.ids("유형(비디오)"), [3, 5], "missing item 4 is hidden");
-    assert_eq!(lib.db.missing_thumbnails(10).unwrap(), [1, 3, 5]);
+    assert_eq!(lib.db.missing_thumbnails(10, &[]).unwrap(), [1, 3, 5]);
+    assert_eq!(lib.db.missing_thumbnails(10, &[2]).unwrap(), [1], "skipped sources");
+    assert_eq!(lib.db.count_missing_thumbnails(&[2]).unwrap(), 1);
     let brief = lib.db.media_brief(&[5, 2, 99]).unwrap();
     assert_eq!(brief.iter().map(|b| b.id).collect::<Vec<_>>(), [5, 2]);
     assert_eq!(brief[1].thumb.as_deref(), Some("failed"));
@@ -269,11 +271,11 @@ fn saved_queries_round_trip() {
 #[test]
 fn video_probe_variant_and_flags() {
     let lib = library();
-    assert_eq!(lib.db.unprobed_videos(10).unwrap(), [3, 4, 5]);
+    assert_eq!(lib.db.unprobed_videos(10, &[]).unwrap(), [3, 4, 5]);
     lib.db.set_probe(3, true, Some("matroska,webm"), Some("hevc"), None, false, Some((Some(8000), Some(960), Some(540))), 1).unwrap();
     lib.db.set_probe(5, true, Some("mov,mp4"), Some("h264"), Some("aac"), true, None, 1).unwrap();
     lib.db.set_probe(4, false, None, None, None, false, None, 1).unwrap();
-    assert!(lib.db.unprobed_videos(10).unwrap().is_empty());
+    assert!(lib.db.unprobed_videos(10, &[]).unwrap().is_empty());
     assert_eq!(lib.db.incompatible_videos().unwrap(), [3], "failed probes are not reported as incompatible");
     let b = &lib.db.media_brief(&[3]).unwrap()[0];
     assert_eq!((b.compatible, b.has_variant, b.ignore_warning, b.duration_ms), (Some(false), false, false, Some(8000)));
@@ -290,7 +292,7 @@ fn video_probe_variant_and_flags() {
     // A changed file drops its probe and variant.
     lib.db.conn().execute("UPDATE media SET size = size + 1 WHERE id = 3", []).unwrap();
     assert!(lib.db.variant(3).unwrap().is_none());
-    assert_eq!(lib.db.unprobed_videos(10).unwrap(), [3]);
+    assert_eq!(lib.db.unprobed_videos(10, &[]).unwrap(), [3]);
 }
 
 #[test]
@@ -362,4 +364,47 @@ fn folder_browsing() {
     assert_eq!(lib.db.search_in(&all, &lib.reg, &ctx, &direct).unwrap().len(), 3);
     let deep = Scope { recursive: true, ..direct };
     assert_eq!(lib.db.search_in(&all, &lib.reg, &ctx, &deep).unwrap().len(), 6, "tripx is not inside trip");
+}
+
+#[test]
+fn metadata_follows_files_into_another_source() {
+    let mut lib = library();
+    let shard = lib
+        .db
+        .add_source(&NewSource { name: "샤드".into(), driver: "shard".into(), config: serde_json::json!({}), root: "s".into() })
+        .unwrap();
+    let copy_of = |db: &Db, path: &str| {
+        db.upsert_media(&NewMedia {
+            source_id: shard,
+            rel_path: path.into(),
+            kind: MediaKind::Image,
+            size: 10 << 20,
+            created_ms: None,
+            modified_ms: None,
+            added_ms: OCT18,
+            duration_ms: None,
+            width: None,
+            height: None,
+            seen_gen: 1,
+        })
+        .unwrap()
+    };
+    // Copy: the shard's items get the originals' tags, ratings and stats.
+    let b2 = copy_of(&lib.db, "in/trip/b2.jpg");
+    lib.db.record_view(2, OCT18, 5_000, DAY as f64).unwrap();
+    lib.db.set_flag(2, FLAG_IGNORE_PLAYBACK_WARNING, true).unwrap();
+    assert_eq!(lib.db.copy_media_metadata(1, shard, "in/").unwrap(), 1);
+    let d = lib.db.media_detail(b2).unwrap().unwrap();
+    assert_eq!((d.width, d.view_count), (Some(1920), 1));
+    assert_eq!(lib.db.media_detail(2).unwrap().unwrap().values, d.values);
+    assert_eq!(lib.ids("태그(바다)"), [1, 2, b2]);
+
+    // Move: the item itself changes source and keeps its id; one at the target is replaced.
+    copy_of(&lib.db, "b10.jpg");
+    lib.db.move_media(1, shard, "b10.jpg").unwrap();
+    let loc = lib.db.media_location(1).unwrap().unwrap();
+    assert_eq!((loc.source_id, loc.rel_path.as_str()), (shard, "b10.jpg"));
+    assert_eq!(lib.db.child_folders(shard, "").unwrap(), [("in".to_string(), 1)]);
+    lib.reg = lib.db.field_registry().unwrap();
+    assert_eq!(lib.ids("점수(5)"), [1, 4]);
 }

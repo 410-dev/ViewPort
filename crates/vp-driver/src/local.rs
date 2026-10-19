@@ -137,6 +137,13 @@ pub fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
     fs::rename(&tmp, path)
 }
 
+/// A positional reader over a local file outside any source (e.g. a converted copy).
+pub fn open_file(path: &Path) -> std::io::Result<Box<dyn MediaReader>> {
+    let file = File::open(path)?;
+    let len = file.metadata()?.len();
+    Ok(Box::new(LocalReader { file, len }))
+}
+
 struct LocalReader {
     file: File,
     len: u64,

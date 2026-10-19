@@ -66,24 +66,19 @@ struct Body {
     mime: &'static str,
 }
 
-/// Serves a converted copy from the bundle, cached under the negated media id.
-fn serve_variant(ws: &Workspace, id: i64, path: &std::path::Path, range: Option<&str>) -> CmdResult<Body> {
+/// Serves a converted copy (from the bundle or a shard), cached under the negated media id.
+fn serve_variant(ws: &Workspace, id: i64, reader: Box<dyn vp_driver::MediaReader>, range: Option<&str>) -> CmdResult<Body> {
     let key = -id;
     let cached = match ws.cache.get(key) {
         Some(c) => Some(c),
-        None => {
-            let file = std::fs::File::open(path)?;
-            let len = file.metadata()?.len();
-            let reader = LocalFile(file);
-            ws.cache.insert_with(key, len, |off, buf| {
-                let n = vp_driver::MediaReader::read_full_at(&reader, off, buf)?;
-                if n < buf.len() { Err(std::io::ErrorKind::UnexpectedEof.into()) } else { Ok(()) }
-            })?
-        }
+        None => ws.cache.insert_with(key, reader.len(), |off, buf| {
+            let n = reader.read_full_at(off, buf)?;
+            if n < buf.len() { Err(std::io::ErrorKind::UnexpectedEof.into()) } else { Ok(()) }
+        })?,
     };
     let total = match &cached {
         Some(c) => c.len(),
-        None => std::fs::metadata(path)?.len(),
+        None => reader.len(),
     };
     let stream_max = ws.settings.read().unwrap().cache.stream_chunk_bytes.max(64 * 1024);
     let (start, end) = range.and_then(|r| parse_range(r, total)).unwrap_or((0, total.saturating_sub(1)));
@@ -91,34 +86,14 @@ fn serve_variant(ws: &Workspace, id: i64, path: &std::path::Path, range: Option<
     let data = match &cached {
         Some(c) => c.to_vec(start, want),
         None => {
-            let reader = LocalFile(std::fs::File::open(path)?);
             let mut buf = vec![0u8; want as usize];
-            let n = vp_driver::MediaReader::read_full_at(&reader, start, &mut buf)?;
+            let n = reader.read_full_at(start, &mut buf)?;
             buf.truncate(n);
             buf
         }
     };
     let partial = range.is_some() || (data.len() as u64) < total;
     Ok(Body { data, start, total, partial, mime: "video/mp4" })
-}
-
-/// Minimal positional reader over a local file.
-struct LocalFile(std::fs::File);
-
-impl vp_driver::MediaReader for LocalFile {
-    fn len(&self) -> u64 {
-        self.0.metadata().map(|m| m.len()).unwrap_or(0)
-    }
-
-    #[cfg(unix)]
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
-        std::os::unix::fs::FileExt::read_at(&self.0, buf, offset)
-    }
-
-    #[cfg(windows)]
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
-        std::os::windows::fs::FileExt::seek_read(&self.0, buf, offset)
-    }
 }
 
 /// `fit=<px>` from a query string: the viewer asks for a display copy of a huge image.
@@ -214,8 +189,8 @@ fn serve(
     }
     let mode = ws.settings.read().unwrap().playback.fallback_mode;
     if loc.kind == vp_core::MediaKind::Video && mode != vp_core::settings::VideoFallbackMode::Never
-        && let Some(path) = ws.variant_path(id)? {
-            return serve_variant(ws, id, &path, range.as_deref()).map(Some);
+        && let Some(reader) = ws.variant_reader(id)? {
+            return serve_variant(ws, id, reader, range.as_deref()).map(Some);
         }
     let mime = mime_for(&loc.rel_path);
     let stream_max = ws.settings.read().unwrap().cache.stream_chunk_bytes.max(64 * 1024);

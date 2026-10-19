@@ -195,6 +195,10 @@ impl ThumbStatus {
     }
 }
 
+/// `ThumbRow::pack` of a thumbnail kept by the source itself (a shard stores its items'
+/// thumbnails next to them) rather than in the bundle's pack files.
+pub const THUMB_IN_SOURCE: u32 = u32::MAX;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ThumbRow {
     pub status: ThumbStatus,
@@ -670,24 +674,28 @@ impl Db {
     }
 
     /// Present items on enabled sources that have no thumbnail attempt yet.
-    pub fn missing_thumbnails(&self, limit: usize) -> Result<Vec<i64>> {
+    /// Items of sources in `skip` (e.g. locked shards) are left out.
+    pub fn missing_thumbnails(&self, limit: usize, skip: &[i64]) -> Result<Vec<i64>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT m.id FROM media m JOIN source src ON src.id = m.source_id
              LEFT JOIN thumbnail t ON t.media_id = m.id
              WHERE t.media_id IS NULL AND NOT m.missing AND src.enabled
+               AND m.source_id NOT IN (SELECT value FROM json_each(?2))
              ORDER BY m.id LIMIT ?1",
         )?;
-        let ids = stmt.query_map([limit as i64], |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
+        let skip = serde_json::to_string(skip)?;
+        let ids = stmt.query_map(params![limit as i64, skip], |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
         Ok(ids)
     }
 
     /// Number of items [`Db::missing_thumbnails`] would eventually return.
-    pub fn count_missing_thumbnails(&self) -> Result<u64> {
+    pub fn count_missing_thumbnails(&self, skip: &[i64]) -> Result<u64> {
         Ok(self.conn.query_row(
             "SELECT COUNT(*) FROM media m JOIN source src ON src.id = m.source_id
              LEFT JOIN thumbnail t ON t.media_id = m.id
-             WHERE t.media_id IS NULL AND NOT m.missing AND src.enabled",
-            [],
+             WHERE t.media_id IS NULL AND NOT m.missing AND src.enabled
+               AND m.source_id NOT IN (SELECT value FROM json_each(?1))",
+            [serde_json::to_string(skip)?],
             |r| r.get::<_, i64>(0),
         )? as u64)
     }
@@ -960,24 +968,28 @@ impl Db {
     }
 
     /// Videos that have not been probed yet.
-    pub fn unprobed_videos(&self, limit: usize) -> Result<Vec<i64>> {
+    /// Items of sources in `skip` (e.g. locked shards) are left out.
+    pub fn unprobed_videos(&self, limit: usize, skip: &[i64]) -> Result<Vec<i64>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT m.id FROM media m JOIN source src ON src.id = m.source_id
              LEFT JOIN media_probe p ON p.media_id = m.id
              WHERE m.kind = 'video' AND p.media_id IS NULL AND NOT m.missing AND src.enabled
+               AND m.source_id NOT IN (SELECT value FROM json_each(?2))
              ORDER BY m.id LIMIT ?1",
         )?;
-        let ids = stmt.query_map([limit as i64], |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
+        let skip = serde_json::to_string(skip)?;
+        let ids = stmt.query_map(params![limit as i64, skip], |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
         Ok(ids)
     }
 
     /// Number of videos [`Db::unprobed_videos`] would eventually return.
-    pub fn count_unprobed_videos(&self) -> Result<u64> {
+    pub fn count_unprobed_videos(&self, skip: &[i64]) -> Result<u64> {
         Ok(self.conn.query_row(
             "SELECT COUNT(*) FROM media m JOIN source src ON src.id = m.source_id
              LEFT JOIN media_probe p ON p.media_id = m.id
-             WHERE m.kind = 'video' AND p.media_id IS NULL AND NOT m.missing AND src.enabled",
-            [],
+             WHERE m.kind = 'video' AND p.media_id IS NULL AND NOT m.missing AND src.enabled
+               AND m.source_id NOT IN (SELECT value FROM json_each(?1))",
+            [serde_json::to_string(skip)?],
             |r| r.get::<_, i64>(0),
         )? as u64)
     }
@@ -1120,6 +1132,69 @@ impl Db {
 
     pub fn delete_loop_segment(&self, id: i64) -> Result<()> {
         self.conn.execute("DELETE FROM loop_segment WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// Copies what is recorded about the items of source `from` (field values, statistics,
+    /// flags, loop segments, probe results, sizes) to the items of source `to` found at
+    /// `prefix + rel_path`, replacing what those had. Used after files were copied into
+    /// another source. Returns how many items matched.
+    pub fn copy_media_metadata(&self, from: i64, to: i64, prefix: &str) -> Result<usize> {
+        self.batch(|db| {
+            db.conn.execute_batch(
+                "DROP TABLE IF EXISTS temp.media_map;
+                 CREATE TEMP TABLE media_map (src INTEGER PRIMARY KEY, dst INTEGER NOT NULL);",
+            )?;
+            let n = db.conn.execute(
+                "INSERT INTO temp.media_map (src, dst)
+                 SELECT a.id, b.id FROM media a JOIN media b ON b.source_id = ?2 AND b.rel_path = ?3 || a.rel_path
+                 WHERE a.source_id = ?1",
+                params![from, to, prefix],
+            )?;
+            db.conn.execute_batch(
+                "DELETE FROM ext_value WHERE media_id IN (SELECT dst FROM temp.media_map);
+                 INSERT INTO ext_value (media_id, field_id, int_val, real_val, text_val, origin)
+                    SELECT m.dst, e.field_id, e.int_val, e.real_val, e.text_val, e.origin
+                    FROM ext_value e JOIN temp.media_map m ON m.src = e.media_id;
+                 INSERT OR REPLACE INTO media_stats (media_id, view_count, total_view_ms, last_viewed_ms, score)
+                    SELECT m.dst, s.view_count, s.total_view_ms, s.last_viewed_ms, s.score
+                    FROM media_stats s JOIN temp.media_map m ON m.src = s.media_id;
+                 INSERT OR IGNORE INTO media_flag (media_id, flag)
+                    SELECT m.dst, f.flag FROM media_flag f JOIN temp.media_map m ON m.src = f.media_id;
+                 DELETE FROM loop_segment WHERE media_id IN (SELECT dst FROM temp.media_map);
+                 INSERT INTO loop_segment (media_id, label, start_ms, end_ms, sort_index, autoplay)
+                    SELECT m.dst, l.label, l.start_ms, l.end_ms, l.sort_index, l.autoplay
+                    FROM loop_segment l JOIN temp.media_map m ON m.src = l.media_id;
+                 INSERT OR REPLACE INTO media_probe (media_id, ok, container, video_codec, audio_codec, compatible, probed_ms)
+                    SELECT m.dst, p.ok, p.container, p.video_codec, p.audio_codec, p.compatible, p.probed_ms
+                    FROM media_probe p JOIN temp.media_map m ON m.src = p.media_id;
+                 UPDATE media SET
+                    duration_ms = COALESCE(duration_ms, (SELECT a.duration_ms FROM media a JOIN temp.media_map m ON m.src = a.id WHERE m.dst = media.id)),
+                    width = COALESCE(width, (SELECT a.width FROM media a JOIN temp.media_map m ON m.src = a.id WHERE m.dst = media.id)),
+                    height = COALESCE(height, (SELECT a.height FROM media a JOIN temp.media_map m ON m.src = a.id WHERE m.dst = media.id))
+                 WHERE id IN (SELECT dst FROM temp.media_map);
+                 DROP TABLE temp.media_map;",
+            )?;
+            Ok(n)
+        })
+    }
+
+    /// Moves item `id` to `rel_path` in source `to`, keeping its id and everything recorded
+    /// about it (used when its file moved into another source). An item already at the
+    /// destination is replaced.
+    pub fn move_media(&self, id: i64, to: i64, rel_path: &str) -> Result<()> {
+        let parent = rel_path.rsplit_once('/').map(|(p, _)| p).unwrap_or("");
+        self.conn.execute("DELETE FROM media WHERE source_id = ?1 AND rel_path = ?2 AND id <> ?3", params![to, rel_path, id])?;
+        self.conn.execute(
+            "UPDATE media SET source_id = ?2, rel_path = ?3, parent_path = ?4, missing = 0 WHERE id = ?1",
+            params![id, to, rel_path, parent],
+        )?;
+        Ok(())
+    }
+
+    /// Forgets the converted copy of an item.
+    pub fn remove_variant(&self, media_id: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM media_variant WHERE media_id = ?1", [media_id])?;
         Ok(())
     }
 

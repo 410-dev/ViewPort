@@ -32,13 +32,14 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
 | `vp-core` | 공용 타입, `settings.rs` = **모든 튜닝값의 단일 출처** (`Settings` 번들별, `AppSettings` 기기별) |
 | `vp-query` | 고급 검색 언어: `lang`(다국어 별칭) → `parser`(AST+span) → `analyze`(필드 레지스트리) → `compile`(SQL) / `render`(AST→로케일 텍스트) |
 | `vp-db` | 스키마 마이그레이션(`schema.rs`, `PRAGMA user_version`), 미디어·확장 필드·저장 쿼리·통계, 검색 실행. 통합 테스트는 `tests.rs` |
-| `vp-driver` | `MediaDriver` trait + `DriverRegistry`. `local`, `smb`(feature `smb`, 순수 Rust `smb2`) |
+| `vp-driver` | `MediaDriver` trait + `DriverRegistry`. `local`, `smb`(feature `smb`, 순수 Rust `smb2`), `shard`(feature `shard`) |
 | `vp-bundle` | `.vpbun` 레이아웃, `info.json`, 버전 호환 검사(`BUNDLE_FORMAT_VERSION`) |
 | `vp-scan` | 드라이버로 소스 순회 → DB 기록. 크기·수정 시각 같으면 seen만, 사라지면 missing |
 | `vp-thumb` | 썸네일 생성, append-only 팩 파일(`thumbs/NNNNNN.pack`) |
 | `vp-cache` | 선점형 청크 풀 메모리 캐시(LRU, 읽는 중 항목은 축출 안 함) |
 | `vp-media` | 외부 FFmpeg/ffprobe: 분석, 프레임 추출, 고호환 변환(HW 인코더 → libx264) |
-| `vp-crypto` | Argon2id 키 도출, XChaCha20-Poly1305 봉인 |
+| `vp-crypto` | Argon2id 키 도출, XChaCha20-Poly1305 봉인(통째·조각 단위), 키 래핑 |
+| `vp-shard` | 샤드 저장소(`.vpshard`): 작은 파일 다수를 4 GiB 미만 청크로 묶음, 선택적 암호화, 최적화·검증·재구축 |
 
 의존 방향: `src-tauri → vp-* → vp-core`. **vp-query는 DB에 의존하지 않는다** — `(sql, params)`만 만들고 컬럼 매핑은 주입받는다.
 
@@ -52,7 +53,7 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
   프론트엔드는 `code`로 분기한다(예: `locked`).
 - `media.rs`(`vpmedia://`, HTTP Range 지원, 캐시 경유), `thumbs.rs`(`vpthumb://`, 없으면 즉시 생성),
   `video.rs`(probe 백필·변환), `archive.rs`(zip 번들 해제, zip slip 방지), `secrets.rs`(OS 자격 증명 저장소),
-  `recent.rs`(기기별 상태: 최근 번들, `AppSettings`).
+  `recent.rs`(기기별 상태: 최근 번들, `AppSettings`), `shards.rs`(샤드 소스: 열기·키·만들기·연결·가져오기·풀기·최적화·재암호화).
 
 ### 프론트엔드 (`src/`)
 - `routes/+page.svelte`가 기기 설정(`prefs.svelte.ts`)을 불러온 뒤 `StartScreen` ↔ `Library` 전환. `app.css`가 디자인 토큰
@@ -120,12 +121,14 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
 
 ## 확장 지점 (향후 기능을 위해 유지할 것)
 
-- **새 스토리지 드라이버**(WebDAV, FTP, VeraCrypt 볼륨, 데이터 샤드): `MediaDriver` + `DriverFactory` 구현 후
+- **새 스토리지 드라이버**(WebDAV, FTP, VeraCrypt 볼륨): `MediaDriver` + `DriverFactory` 구현 후
   `DriverRegistry::with_builtin()`에 등록. 설정 폼은 `config_schema()`로 자기 기술하므로 UI는 수정할 필요가 없어야 한다.
   선택 기능(`write`/`rename`/`delete`/`local_path`)은 `capabilities()`로 알린다.
 - **기본 조건 추가**: `base_fields()`에 `FieldDef::column(...)` + `ko`/`en` 이름·별칭. 컬럼 별칭(`m.`, `s.`, `src.`)은 검색 쿼리 기준.
 - **자동 태깅/인식**: 확장 필드 값은 `origin`(user / auto:<provider>)으로 출처를 구분한다. 자동 생성 값이 수동 값을 덮어쓰지 않게 유지.
-- **데이터 샤드 저장**: 미디어 경로 모델이 `(source_id, path)`이므로 드라이버 하나로 추가돼야 한다. 샤드 메타데이터는 별도 DB.
+- **샤드**(`.vpshard`, 설계는 ARCHITECTURE '샤드 저장소'): 번들 안(`shards/`)이나 밖 어디든 소스 하나 = 샤드 하나. 샤드 항목의
+  썸네일·변환본은 샤드 안에 둔다(`THUMB_IN_SOURCE`, `VARIANT_IN_SHARD`). 샤드 마스터 키는 잠긴 번들의 소스 설정에만 기억한다.
+  청크 형식을 바꾸면 `SHARD_FORMAT_VERSION`을 올리고, 옛 앱이 읽을 수 있는 추가라면 `min_reader_version`은 그대로 둔다.
 - 하드웨어 가속은 `AppSettings.hardware`(기기별)로 제어한다: `gpu`, `gpu_rasterization`, `zero_copy`(WebView 인자),
   `video_decode` + `ffmpeg_hwaccel`(FFmpeg `-hwaccel`, 실패 시 소프트웨어 재시도), `video_encode` + `encoders`(시도 순서).
 

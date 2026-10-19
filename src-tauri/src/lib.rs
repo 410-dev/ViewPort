@@ -7,6 +7,7 @@ mod media_server;
 mod platform;
 mod recent;
 mod secrets;
+mod shards;
 mod tasks;
 mod thumbs;
 mod video;
@@ -111,6 +112,20 @@ pub fn run() {
             commands::child_folders,
             commands::list_tasks,
             commands::cancel_task,
+            shards::shard_status,
+            shards::inspect_shard,
+            shards::create_shard,
+            shards::attach_shard,
+            shards::unlock_shard,
+            shards::lock_shard,
+            shards::shard_change_password,
+            shards::shard_import,
+            shards::shard_from_source,
+            shards::shard_export,
+            shards::shard_verify,
+            shards::shard_compact,
+            shards::shard_set_encryption,
+            shards::shard_relocate,
             audio::get_audio,
             audio::set_audio,
             audio::set_audio_focus,

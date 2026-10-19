@@ -64,7 +64,9 @@ pub fn spawn_backfill(app: AppHandle, ws: Arc<Workspace>) {
     let drivers = state.drivers.clone();
     tauri::async_runtime::spawn(async move {
         let mut done = 0u64;
-        let total = ws.read_db.lock().unwrap().count_missing_thumbnails().ok();
+        // Items of locked shards are left for when they are unlocked.
+        let skip = ws.locked_sources();
+        let total = ws.read_db.lock().unwrap().count_missing_thumbnails(&skip).ok();
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let task = crate::tasks::begin_with_cancel("thumbs", "", crate::tasks::Unit::Items, total, Some(cancel.clone()));
         'outer: loop {
@@ -73,7 +75,7 @@ pub fn spawn_backfill(app: AppHandle, ws: Arc<Workspace>) {
             }
             let batch = {
                 let db = ws.read_db.lock().unwrap();
-                db.missing_thumbnails(64).unwrap_or_default()
+                db.missing_thumbnails(64, &skip).unwrap_or_default()
             };
             if batch.is_empty() {
                 break;
