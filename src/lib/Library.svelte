@@ -422,6 +422,8 @@
       {settings}
       error={queryError}
       viewKey={view.key}
+      {sort}
+      onsetsort={(s) => (sort = s)}
       onfolder={(f) => (folder = f)}
       onview={setView}
       ontile={setTile}

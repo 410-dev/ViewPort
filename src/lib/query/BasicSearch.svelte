@@ -139,7 +139,8 @@
 <style>
   .basic {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    /* minmax(0, …): date and number inputs must not widen the columns past the popover. */
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 12px 14px;
     padding: 16px;
   }
@@ -150,6 +151,16 @@
   .field {
     display: grid;
     gap: 5px;
+    min-width: 0;
+  }
+  .input {
+    width: 100%;
+  }
+  /* Phones (folded or not): one field per row. */
+  @media (max-width: 560px) {
+    .basic {
+      grid-template-columns: minmax(0, 1fr);
+    }
   }
   label > span:first-child,
   .field > span:first-child {
@@ -179,6 +190,11 @@
   }
   .field .seg button {
     flex: 1;
+    min-width: 0;
+    padding-inline: 4px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .buttons {
     display: flex;

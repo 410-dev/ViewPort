@@ -4,8 +4,10 @@
   import { t } from "../i18n.svelte";
   import { savePrefs, ui } from "../prefs.svelte";
   import BasicSearch from "../query/BasicSearch.svelte";
+  import Dropdown from "../ui/Dropdown.svelte";
   import Icon from "../ui/Icon.svelte";
   import { VIEWS } from "../views";
+  import { COLUMNS, type SortSpec } from "../views/columns";
 
   let {
     query = $bindable(),
@@ -14,6 +16,8 @@
     settings,
     error,
     viewKey,
+    sort,
+    onsetsort,
     onfolder,
     onview,
     ontile,
@@ -27,6 +31,9 @@
     settings: Settings | null;
     error: string | null;
     viewKey: string;
+    /** Sort applied on top of the query, shared by every view (the list headers set it too). */
+    sort: SortSpec | null;
+    onsetsort: (sort: SortSpec | null) => void;
     onfolder: (path: string) => void;
     onview: (key: "grid" | "list" | "tree") => void;
     ontile: (px: number) => void;
@@ -49,6 +56,26 @@
   }
 
   const parts = $derived(folder ? folder.split("/") : []);
+
+  const SORTS = COLUMNS.filter((c) => c.sort);
+  let sortBtn = $state<HTMLButtonElement>();
+  let sortOpen = $state(false);
+  const sortItems = $derived([
+    { label: t("basic.defaultSort") },
+    ...SORTS.map((c) => ({
+      label: t(c.label),
+      detail: sort?.field === c.sort ? t(sort!.desc ? "basic.desc" : "basic.asc") : undefined,
+    })),
+  ]);
+  const sortIndex = $derived(sort ? SORTS.findIndex((c) => c.sort === sort!.field) + 1 : 0);
+
+  /** The same field again flips the direction; another field starts ascending. */
+  function pickSort(i: number) {
+    sortOpen = false;
+    const field = i > 0 ? SORTS[i - 1].sort! : null;
+    if (!field) onsetsort(null);
+    else onsetsort({ field, desc: sort?.field === field ? !sort.desc : false });
+  }
 </script>
 
 <div class="toolbar" class:compact={!!onmenu}>
@@ -102,6 +129,26 @@
           savePrefs();
         }}><Icon name="layers" size={16} /></button
       >
+    {/if}
+    <button
+      bind:this={sortBtn}
+      class="icon-btn"
+      class:on={!!sort}
+      title={t("basic.sort")}
+      aria-label={t("basic.sort")}
+      aria-expanded={sortOpen}
+      onclick={() => (sortOpen = !sortOpen)}><Icon name={sort?.desc ? "sortDesc" : "sortAsc"} size={16} /></button
+    >
+    {#if sort}
+      <button
+        class="icon-btn"
+        title={t(sort.desc ? "basic.desc" : "basic.asc")}
+        aria-label={t(sort.desc ? "basic.desc" : "basic.asc")}
+        onclick={() => sort && onsetsort({ ...sort, desc: !sort.desc })}><Icon name={sort.desc ? "arrowDown" : "arrowUp"} size={15} /></button
+      >
+    {/if}
+    {#if sortOpen && sortBtn}
+      <Dropdown anchor={sortBtn} items={sortItems} selected={sortIndex} onpick={pickSort} onclose={() => (sortOpen = false)} />
     {/if}
     {#if viewKey === "grid" && settings && !onmenu}
       <input
@@ -263,6 +310,9 @@
     transform: translateX(-50%);
     z-index: 31;
     width: min(520px, calc(100vw - 24px));
+    max-height: calc(100dvh - 66px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
     border-radius: var(--radius-lg);
     background: var(--surface);
     border: 1px solid var(--border);
