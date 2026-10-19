@@ -107,6 +107,15 @@ fn display_key(id: i64, edge: u32) -> i64 {
     -((1i64 << 62) | ((edge.min(16383) as i64) << 40) | (id & ((1i64 << 40) - 1)))
 }
 
+/// Largest display copy edge (`display_key` keeps 14 bits of it).
+const MAX_DISPLAY_EDGE: u32 = 16383;
+
+/// Whether the WebView cannot show images like `rel_path` (`viewer.convert_image_extensions`).
+fn needs_conversion(rel_path: &str) -> bool {
+    let Some((_, ext)) = rel_path.rsplit_once('.') else { return false };
+    crate::recent::cached_app_settings().viewer.convert_image_extensions.iter().any(|e| e.eq_ignore_ascii_case(ext))
+}
+
 /// One display copy is made at a time: decoding a huge image takes a lot of memory.
 static DISPLAY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -139,7 +148,11 @@ fn display_copy(
             None => crate::workspace::read_tracked(ws.open_media(drivers, loc)?.as_ref(), &loc.rel_path, Some(id))?,
         };
         let s = vp_core::settings::ThumbnailSettings { max_edge_px: edge, quality, ..Default::default() };
-        data = vp_thumb::generate(&original, &s).ok().map(|t| t.data);
+        data = match vp_thumb::generate(&original, &s) {
+            Ok(t) => Some(t.data),
+            // HEIF/HEIC and other formats only the OS or FFmpeg decode.
+            Err(_) => ws.foreign_image(drivers, id, loc, Some(&original), edge, quality)?.map(|t| t.data),
+        };
     }
     let Some(data) = data else { return Ok(None) };
     let _ = ws.cache.insert_with(key, data.len() as u64, |off, buf| {
@@ -179,8 +192,15 @@ fn serve(
     fit: Option<u32>,
 ) -> CmdResult<Option<Body>> {
     let Some(loc) = ws.read_db.lock().unwrap().media_location(id)? else { return Ok(None) };
-    if let Some(edge) = fit.filter(|_| loc.kind == vp_core::MediaKind::Image)
-        && larger_than(ws, drivers, id, &loc, edge)?
+    // Formats the WebView cannot decode are always served as a copy, at full size when
+    // no size was asked for.
+    let convert = loc.kind == vp_core::MediaKind::Image && needs_conversion(&loc.rel_path);
+    let edge = match fit.filter(|_| loc.kind == vp_core::MediaKind::Image) {
+        Some(e) if convert || larger_than(ws, drivers, id, &loc, e)? => Some(e),
+        None if convert => Some(MAX_DISPLAY_EDGE),
+        _ => None,
+    };
+    if let Some(edge) = edge
         && let Some(data) = display_copy(ws, drivers, id, &loc, edge)?
     {
         let mime = if data.starts_with(b"\x89PNG") { "image/png" } else { "image/jpeg" };

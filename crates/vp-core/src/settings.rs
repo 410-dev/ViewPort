@@ -241,7 +241,7 @@ impl Default for ScanSettings {
     fn default() -> Self {
         let v = |exts: &[&str]| exts.iter().map(|e| e.to_string()).collect();
         Self {
-            image_extensions: v(&["jpg", "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff", "avif", "heic", "heif"]),
+            image_extensions: v(&["jpg", "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff", "avif", "heic", "heif", "hif"]),
             video_extensions: v(&["mp4", "m4v", "mov", "webm", "mkv", "avi", "wmv", "flv", "ts", "m2ts", "mpg", "mpeg"]),
             include_nonmedia: false,
             skip_hidden: true,
@@ -266,6 +266,8 @@ pub struct GridSettings {
     /// Sorts applied when a query has none, written as query text (any locale).
     /// The last sort is the most significant key.
     pub default_sort: String,
+    /// Folder tiles show an N x N grid of thumbnails from inside the folder (0 = icon only).
+    pub folder_preview: u32,
 }
 
 impl Default for GridSettings {
@@ -277,6 +279,7 @@ impl Default for GridSettings {
             overscan_rows: 3,
             show_names: true,
             default_sort: "sort(name) AND sort(folder) AND sort(source)".into(),
+            folder_preview: 2,
         }
     }
 }
@@ -379,6 +382,9 @@ pub struct ViewerSettings {
     pub display_max_px: u32,
     /// JPEG quality of those display copies.
     pub display_quality: u8,
+    /// Image formats the WebView cannot show (HEIF/HEIC): they are always shown as a JPEG
+    /// copy, decoded by the OS (Android) or FFmpeg.
+    pub convert_image_extensions: Vec<String>,
 }
 
 impl Default for ViewerSettings {
@@ -395,6 +401,7 @@ impl Default for ViewerSettings {
             swipe_ms: 220,
             display_max_px: if MOBILE { 4096 } else { 8192 },
             display_quality: 90,
+            convert_image_extensions: ["heic", "heif", "hif"].map(String::from).to_vec(),
         }
     }
 }

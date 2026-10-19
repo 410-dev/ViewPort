@@ -1087,6 +1087,15 @@ impl Db {
         )?)
     }
 
+    /// Forgets images whose thumbnail was recorded as unsupported (HEIF/HEIC before an
+    /// image decoder was available), so they are tried again.
+    pub fn reset_unsupported_image_thumbnails(&self) -> Result<usize> {
+        Ok(self.conn.execute(
+            "DELETE FROM thumbnail WHERE status = 'unsupported' AND media_id IN (SELECT id FROM media WHERE kind = 'image')",
+            [],
+        )?)
+    }
+
     pub fn loop_segments(&self, media_id: i64) -> Result<Vec<LoopSegment>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT id, media_id, label, start_ms, end_ms, autoplay FROM loop_segment
@@ -1193,6 +1202,52 @@ impl Db {
             params![id, to, rel_path, parent, name, ext],
         )?;
         Ok(())
+    }
+
+    /// Ids of every item inside `folder` (any depth) of a source, missing ones included.
+    pub fn folder_media(&self, source_id: i64, folder: &str) -> Result<Vec<i64>> {
+        let folder = folder.trim_matches('/');
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id FROM media WHERE source_id = ?1 AND substr(rel_path, 1, length(?2) + 1) = ?2 || '/' ORDER BY id",
+        )?;
+        let ids = stmt.query_map(params![source_id, folder], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+        Ok(ids)
+    }
+
+    /// Up to `limit` images or videos inside `folder` (any depth) to stand for it, files
+    /// directly in the folder first, then by path. Items whose thumbnail failed are skipped.
+    pub fn folder_samples(&self, source_id: i64, folder: &str, limit: u32) -> Result<Vec<i64>> {
+        let folder = folder.trim_matches('/');
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT m.id FROM media m LEFT JOIN thumbnail t ON t.media_id = m.id
+             WHERE m.source_id = ?1 AND NOT m.missing AND m.kind IN ('image', 'video')
+               AND substr(m.rel_path, 1, length(?2) + 1) = ?2 || '/'
+               AND (t.status IS NULL OR t.status = 'ok')
+             ORDER BY m.parent_path <> ?2, m.rel_path COLLATE {} LIMIT ?3",
+            collation::NATURAL
+        ))?;
+        let ids = stmt.query_map(params![source_id, folder, limit], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+        Ok(ids)
+    }
+
+    /// Records that folder `from` of a source is now at `to` (the files were moved as a
+    /// whole): every item inside keeps its id. Stale rows already under `to` are dropped.
+    pub fn move_folder(&mut self, source_id: i64, from: &str, to: &str) -> Result<usize> {
+        let (from, to) = (from.trim_matches('/'), to.trim_matches('/'));
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "DELETE FROM media WHERE source_id = ?1 AND substr(rel_path, 1, length(?2) + 1) = ?2 || '/'",
+            params![source_id, to],
+        )?;
+        let n = tx.execute(
+            "UPDATE media SET
+                rel_path = ?3 || substr(rel_path, length(?2) + 1),
+                parent_path = ?3 || substr(parent_path, length(?2) + 1)
+             WHERE source_id = ?1 AND substr(rel_path, 1, length(?2) + 1) = ?2 || '/'",
+            params![source_id, from, to],
+        )?;
+        tx.commit()?;
+        Ok(n)
     }
 
     /// Forgets an item and everything recorded about it (tags, stats, probe, variant).

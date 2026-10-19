@@ -998,6 +998,8 @@
     z-index: 3;
     width: min(400px, calc(100% - 32px));
     display: grid;
+    /* minmax: an input's intrinsic width must not widen the panel past the screen. */
+    grid-template-columns: minmax(0, 1fr);
     gap: 10px;
     padding: 14px;
     border-radius: var(--radius-lg);
@@ -1031,7 +1033,10 @@
   }
   .loops .seg {
     flex: 1;
+    min-width: 0;
     display: flex;
+    align-items: center;
+    gap: 8px;
     justify-content: space-between;
     height: 30px;
     padding: 0 12px;
@@ -1044,7 +1049,14 @@
   .loops .seg:hover {
     background: var(--hover);
   }
+  .loops .seg span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .loops small {
+    flex-shrink: 0;
     color: var(--muted);
   }
   .auto {
@@ -1060,12 +1072,18 @@
     border-color: var(--accent);
     color: var(--accent);
   }
+  /* A, B, name, save: the name takes what is left and the row always fits. */
   .marks {
-    display: flex;
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
+    align-items: center;
     gap: 6px;
   }
+  .marks .btn {
+    white-space: nowrap;
+  }
   .marks .input {
-    flex: 1;
+    width: 100%;
     height: var(--h-control-sm);
   }
   .seg-err {

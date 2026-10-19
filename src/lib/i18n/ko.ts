@@ -670,6 +670,14 @@ const ko = {
   "del.failed": "{n}개 파일을 삭제하지 못했습니다.",
   "set.includeNonmedia": "미디어가 아닌 파일도 등록",
   "set.includeNonmedia.help": "이미지·영상이 아닌 파일도 '기타 파일'로 목록에 넣습니다. 미리보기는 없고 내보내기만 됩니다. 샤드는 항상 등록합니다.",
+  "folder.open": "열기",
+  "folder.openWindow": "새 창에서 열기",
+  "folder.delTitle": "폴더 삭제",
+  "folder.delBody": "'{name}' 폴더 안의 파일 {n}개를 저장소에서 삭제합니다. 태그·점수 등 기록도 함께 지워지며 되돌릴 수 없습니다. 목록에 없는 파일은 남겨 둡니다.",
+  "set.folderPreview": "폴더 미리보기 격자",
+  "set.folderPreview.help": "그리드 보기의 폴더 타일 안에 N×N개의 대표 썸네일을 보여 줍니다(2 = 2×2, 3 = 3×3). 0이면 아이콘만 표시합니다.",
+  "set.convertImageExt": "변환해서 보여 줄 이미지 형식",
+  "set.convertImageExt.help": "WebView가 직접 표시하지 못하는 형식(HEIC·HEIF 등)은 JPEG 사본으로 바꿔 보여 줍니다. PC에서는 FFmpeg가, 안드로이드에서는 시스템 디코더가 필요합니다.",
 } as const;
 
 export type Key = keyof typeof ko;

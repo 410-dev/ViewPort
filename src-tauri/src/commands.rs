@@ -998,26 +998,7 @@ pub async fn delete_media(app: AppHandle, state: State<'_, AppState>, ids: Vec<i
             if ws.closed.load(Ordering::Relaxed) {
                 break;
             }
-            let one = (|| -> CmdResult<()> {
-                let Some(loc) = ws.read_db.lock().unwrap().media_location(id)? else { return Ok(()) };
-                task.detail(&crate::workspace::file_name(&loc.rel_path));
-                let source = ws.read_db.lock().unwrap().source(loc.source_id)?.ok_or_else(|| CmdError::new("not_found", "source"))?;
-                match ws.driver(&registry, &source)?.delete(&loc.rel_path) {
-                    Ok(()) | Err(vp_driver::DriverError::NotFound(_)) => {}
-                    Err(e) => return Err(CmdError::new("driver", format!("{}: {e}", loc.rel_path))),
-                }
-                let variant = ws.read_db.lock().unwrap().variant(id)?;
-                if let Some(rel) = variant.filter(|r| r != crate::shards::VARIANT_IN_SHARD) {
-                    if let Ok(parts) = vp_driver::checked_components(&rel) {
-                        let mut p = ws.bundle.root.clone();
-                        p.extend(parts);
-                        let _ = std::fs::remove_file(p);
-                    }
-                }
-                ws.write_db.lock().unwrap().delete_media(id)?;
-                Ok(())
-            })();
-            match one {
+            match delete_one(&ws, &registry, id, &task) {
                 Ok(()) => report.deleted += 1,
                 Err(e) => report.failed.push(e.message),
             }
@@ -1028,6 +1009,188 @@ pub async fn delete_media(app: AppHandle, state: State<'_, AppState>, ids: Vec<i
     })
     .await
     .map_err(|e| CmdError::new("io", e))
+}
+
+/// Deletes the file of item `id` through its source's driver and forgets the item (a
+/// file that is already gone only drops the item); its converted copy goes too.
+fn delete_one(ws: &Workspace, registry: &vp_driver::DriverRegistry, id: i64, task: &crate::tasks::Task) -> CmdResult<()> {
+    let Some(loc) = ws.read_db.lock().unwrap().media_location(id)? else { return Ok(()) };
+    task.detail(crate::workspace::file_name(&loc.rel_path));
+    let source = ws.read_db.lock().unwrap().source(loc.source_id)?.ok_or_else(|| CmdError::new("not_found", "source"))?;
+    match ws.driver(registry, &source)?.delete(&loc.rel_path) {
+        Ok(()) | Err(vp_driver::DriverError::NotFound(_)) => {}
+        Err(e) => return Err(CmdError::new("driver", format!("{}: {e}", loc.rel_path))),
+    }
+    let variant = ws.read_db.lock().unwrap().variant(id)?;
+    if let Some(rel) = variant.filter(|r| r != crate::shards::VARIANT_IN_SHARD) {
+        if let Ok(parts) = vp_driver::checked_components(&rel) {
+            let mut p = ws.bundle.root.clone();
+            p.extend(parts);
+            let _ = std::fs::remove_file(p);
+        }
+    }
+    ws.write_db.lock().unwrap().delete_media(id)?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------- folders
+
+/// Thumbnails standing for each folder of a source (for folder tiles), in `folders` order.
+#[tauri::command]
+pub async fn folder_samples(app: AppHandle, source_id: i64, folders: Vec<String>, limit: u32) -> CmdResult<Vec<Vec<i64>>> {
+    let ws = workspace(&app.state::<AppState>())?;
+    blocking(move || {
+        let db = ws.read_db.lock().unwrap();
+        folders.iter().map(|f| Ok(db.folder_samples(source_id, f, limit.min(16))?)).collect()
+    })
+    .await
+}
+
+#[derive(Debug, Serialize)]
+pub struct FolderMoveReport {
+    pub moved: usize,
+    /// Items that could not be moved, as "name: reason".
+    pub failed: Vec<String>,
+    /// Where the folder is now.
+    pub path: String,
+}
+
+/// Moves folder `from` of a source to `to` (both relative to the source root). A local
+/// folder moves as a whole (files the library does not list go with it); other sources
+/// move file by file. Every item keeps its id, tags and stats.
+fn relocate_folder(ws: &Workspace, registry: &vp_driver::DriverRegistry, source_id: i64, from: &str, to: &str) -> CmdResult<FolderMoveReport> {
+    let mut report = FolderMoveReport { moved: 0, failed: Vec::new(), path: to.to_string() };
+    if from == to {
+        return Ok(report);
+    }
+    if to.starts_with(&format!("{from}/")) {
+        return Err(CmdError::new("invalid_target", to));
+    }
+    let source = ws.read_db.lock().unwrap().source(source_id)?.ok_or_else(|| CmdError::new("not_found", "source"))?;
+    let driver = ws.driver(registry, &source)?;
+    if let (Some(src), Some(dst)) = (driver.local_path(from), driver.local_path(to)) {
+        if src.is_dir() {
+            // Case-only renames on case-insensitive file systems see the same folder.
+            if !from.eq_ignore_ascii_case(to) && dst.exists() {
+                return Err(CmdError::new("exists", to));
+            }
+            if let Some(parent) = dst.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::rename(&src, &dst)?;
+            report.moved = ws.write_db.lock().unwrap().move_folder(source_id, from, to)?;
+            return Ok(report);
+        }
+    }
+    let ids = ws.read_db.lock().unwrap().folder_media(source_id, from)?;
+    let task = crate::tasks::begin("move", from, crate::tasks::Unit::Items, Some(ids.len() as u64));
+    for id in ids {
+        if ws.closed.load(Ordering::Relaxed) {
+            break;
+        }
+        let one = (|| -> CmdResult<()> {
+            let loc = ws.read_db.lock().unwrap().media_location(id)?.ok_or_else(|| CmdError::new("not_found", "item"))?;
+            let name = crate::workspace::file_name(&loc.rel_path);
+            task.detail(&name);
+            let new_rel = format!("{to}{}", &loc.rel_path[from.len()..]);
+            // A file that is already gone only moves its record.
+            if matches!(driver.stat(&loc.rel_path), Err(vp_driver::DriverError::NotFound(_))) {
+                ws.write_db.lock().unwrap().move_media(id, source_id, &new_rel)?;
+                return Ok(());
+            }
+            relocate(ws, registry, id, &new_rel).map_err(|e| CmdError::new(e.code, format!("{name}: {}", e.message)))
+        })();
+        match one {
+            Ok(()) => report.moved += 1,
+            Err(e) => report.failed.push(e.message),
+        }
+        task.add(1);
+    }
+    if report.failed.is_empty() { task.finish() } else { task.fail(format!("{} files failed", report.failed.len())) }
+    Ok(report)
+}
+
+/// Renames a folder in place.
+#[tauri::command]
+pub async fn rename_folder(app: AppHandle, state: State<'_, AppState>, source_id: i64, path: String, name: String) -> CmdResult<FolderMoveReport> {
+    let ws = workspace(&state)?;
+    let registry = app.state::<AppState>().drivers.clone();
+    let name = name.trim().to_string();
+    if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\']) {
+        return Err(CmdError::new("invalid_name", name));
+    }
+    let from = vp_driver::checked_components(&path)?.join("/");
+    if from.is_empty() {
+        return Err(CmdError::new("invalid_target", path));
+    }
+    let to = match from.rsplit_once('/') {
+        Some((dir, _)) => format!("{dir}/{name}"),
+        None => name,
+    };
+    blocking(move || relocate_folder(&ws, &registry, source_id, &from, &to)).await
+}
+
+/// Moves a folder into `target` (relative to the source root, `""` = root) of the same source.
+#[tauri::command]
+pub async fn move_folder(app: AppHandle, state: State<'_, AppState>, source_id: i64, path: String, target: String) -> CmdResult<FolderMoveReport> {
+    let ws = workspace(&state)?;
+    let registry = app.state::<AppState>().drivers.clone();
+    let from = vp_driver::checked_components(&path)?.join("/");
+    let target = vp_driver::checked_components(&target)?.join("/");
+    if from.is_empty() {
+        return Err(CmdError::new("invalid_target", path));
+    }
+    let name = crate::workspace::file_name(&from);
+    let to = if target.is_empty() { name } else { format!("{target}/{name}") };
+    blocking(move || relocate_folder(&ws, &registry, source_id, &from, &to)).await
+}
+
+/// Deletes every listed file inside a folder and forgets the items. Local folders left
+/// empty are removed; files the library does not list stay where they are.
+#[tauri::command]
+pub async fn delete_folder(app: AppHandle, state: State<'_, AppState>, source_id: i64, path: String) -> CmdResult<DeleteReport> {
+    let ws = workspace(&state)?;
+    let registry = app.state::<AppState>().drivers.clone();
+    let folder = vp_driver::checked_components(&path)?.join("/");
+    if folder.is_empty() {
+        return Err(CmdError::new("invalid_target", path));
+    }
+    blocking(move || remove_folder(&ws, &registry, source_id, &folder)).await
+}
+
+fn remove_folder(ws: &Workspace, registry: &vp_driver::DriverRegistry, source_id: i64, folder: &str) -> CmdResult<DeleteReport> {
+    let ids = ws.read_db.lock().unwrap().folder_media(source_id, folder)?;
+    let task = crate::tasks::begin("delete", folder, crate::tasks::Unit::Items, Some(ids.len() as u64));
+    let mut report = DeleteReport { deleted: 0, failed: Vec::new() };
+    for id in ids {
+        if ws.closed.load(Ordering::Relaxed) {
+            break;
+        }
+        match delete_one(ws, registry, id, &task) {
+            Ok(()) => report.deleted += 1,
+            Err(e) => report.failed.push(e.message),
+        }
+        task.add(1);
+    }
+    let source = ws.read_db.lock().unwrap().source(source_id)?;
+    if let Some(source) = source
+        && let Some(dir) = ws.driver(registry, &source)?.local_path(folder)
+    {
+        remove_empty_dirs(&dir);
+    }
+    if report.failed.is_empty() { task.finish() } else { task.fail(format!("{} files failed", report.failed.len())) }
+    Ok(report)
+}
+
+/// Removes `dir` and the folders under it that are (or become) empty.
+fn remove_empty_dirs(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        if e.file_type().is_ok_and(|t| t.is_dir()) {
+            remove_empty_dirs(&e.path());
+        }
+    }
+    let _ = std::fs::remove_dir(dir);
 }
 
 /// Copies items (any kind, from any source) into a folder in the background. A name that
@@ -1092,4 +1255,101 @@ pub fn export_media(app: AppHandle, state: State<'_, AppState>, ids: Vec<i64>, d
         if failed > 0 { task.fail(format!("{failed} files failed")) } else { task.finish() }
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod folder_tests {
+    use super::*;
+    use vp_driver::DriverRegistry;
+
+    fn jpeg() -> Vec<u8> {
+        let img = image::RgbImage::from_fn(64, 48, |x, y| image::Rgb([x as u8, y as u8, 128]));
+        let mut out = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new(&mut out).encode_image(&img).unwrap();
+        out
+    }
+
+    /// Folder rename, move and delete on a local folder; HEIC thumbnails when FFmpeg is found.
+    #[test]
+    fn folder_operations_and_heic() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("Lib.vpbun");
+        let ws = Workspace::create(&root, "Lib").unwrap();
+        let media = root.join("media");
+        std::fs::create_dir_all(media.join("trip/day1/deep")).unwrap();
+        std::fs::write(media.join("trip/day1/a.jpg"), jpeg()).unwrap();
+        std::fs::write(media.join("trip/day1/deep/b.jpg"), jpeg()).unwrap();
+        std::fs::write(media.join("trip/day1/notes.txt"), b"not listed").unwrap();
+        std::fs::write(media.join("trip/c.jpg"), jpeg()).unwrap();
+        let heic = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../crates/vp-media/testdata/grid.heic")).unwrap();
+        std::fs::write(media.join("trip/phone.heic"), heic).unwrap();
+
+        let registry = DriverRegistry::with_builtin();
+        let (driver, rel) = ws.source_root_for(&media);
+        let src = ws
+            .write_db
+            .lock()
+            .unwrap()
+            .add_source(&NewSource { name: "media".into(), driver, config: serde_json::json!({}), root: rel })
+            .unwrap();
+        let source = ws.read_db.lock().unwrap().source(src).unwrap().unwrap();
+        let drv = ws.driver(&registry, &source).unwrap();
+        let settings = ws.settings.read().unwrap().scan.clone();
+        let cancel = AtomicBool::new(false);
+        vp_scan::Scanner {
+            db: &ws.write_db,
+            driver: drv.as_ref(),
+            settings: &settings,
+            source_id: src,
+            include_nonmedia: false,
+            now_ms: 1,
+            cancel: &cancel,
+        }
+        .run(&mut |_| {})
+        .unwrap();
+        let ids = ws.read_db.lock().unwrap().folder_media(src, "trip/day1").unwrap();
+        assert_eq!(ids.len(), 2);
+
+        // HEIC (a tiled grid, like phone photos) gets a thumbnail through FFmpeg.
+        if ws.ffmpeg().is_some() {
+            let id = ws.read_db.lock().unwrap().folder_samples(src, "trip", 10).unwrap();
+            let heic = id.into_iter().find(|i| {
+                ws.read_db.lock().unwrap().media_location(*i).unwrap().unwrap().rel_path.ends_with(".heic")
+            });
+            let (data, mime) = ws.thumbnail(&registry, heic.expect("heic listed")).unwrap().expect("heic thumbnail");
+            assert_eq!(mime, "image/jpeg");
+            let t = image::load_from_memory(&data).unwrap();
+            assert_eq!(t.width(), t.height(), "all four tiles");
+        }
+
+        // Rename: the folder moves as a whole (unlisted files too); items keep their ids.
+        let r = relocate_folder(&ws, &registry, src, "trip/day1", "trip/first").unwrap();
+        assert_eq!(r.moved, 2);
+        assert!(media.join("trip/first/notes.txt").is_file());
+        assert!(!media.join("trip/day1").exists());
+        let mut moved = ws.read_db.lock().unwrap().folder_media(src, "trip/first").unwrap();
+        moved.sort();
+        let mut before = ids.clone();
+        before.sort();
+        assert_eq!(moved, before);
+        let deep = ws.read_db.lock().unwrap().media_location(before[1]).unwrap().unwrap();
+        assert!(deep.rel_path.starts_with("trip/first/"));
+
+        // Never into itself; never over an existing folder.
+        assert_eq!(relocate_folder(&ws, &registry, src, "trip", "trip/first/x").unwrap_err().code, "invalid_target");
+        std::fs::create_dir_all(media.join("taken")).unwrap();
+        assert_eq!(relocate_folder(&ws, &registry, src, "trip/first", "taken").unwrap_err().code, "exists");
+
+        // Move to another parent.
+        relocate_folder(&ws, &registry, src, "trip/first", "archive/first").unwrap();
+        assert!(media.join("archive/first/deep/b.jpg").is_file());
+        assert_eq!(ws.read_db.lock().unwrap().child_folders(src, "archive").unwrap(), [("first".to_string(), 2)]);
+
+        // Delete: listed files and their items go, unlisted files and their folder stay.
+        let r = remove_folder(&ws, &registry, src, "archive/first").unwrap();
+        assert_eq!((r.deleted, r.failed.len()), (2, 0));
+        assert!(ws.read_db.lock().unwrap().folder_media(src, "archive").unwrap().is_empty());
+        assert!(!media.join("archive/first/deep").exists(), "emptied folders are removed");
+        assert!(media.join("archive/first/notes.txt").is_file());
+    }
 }

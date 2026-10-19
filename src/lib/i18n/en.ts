@@ -671,6 +671,14 @@ const en: Record<Key, string> = {
   "set.includeNonmedia": "List non-media files",
   "set.includeNonmedia.help": "Files that are neither images nor videos are listed as 'other files': no preview, export only. Shards always list them.",
   "set.shardSnapshot.help": "The shard index is saved after this many changes (once they are also a quarter of the stored files). Changes in between are recovered from the chunks on open.",
+  "folder.open": "Open",
+  "folder.openWindow": "Open in new window",
+  "folder.delTitle": "Delete folder",
+  "folder.delBody": "Deletes the {n} files inside '{name}' from storage, along with their tags, ratings and other records. This cannot be undone. Files the library does not list are left alone.",
+  "set.folderPreview": "Folder preview grid",
+  "set.folderPreview.help": "Folder tiles in the grid view show an N×N grid of thumbnails from inside (2 = 2×2, 3 = 3×3). 0 shows the icon only.",
+  "set.convertImageExt": "Image formats shown converted",
+  "set.convertImageExt.help": "Formats the WebView cannot show (HEIC, HEIF, ...) are shown as a JPEG copy. Needs FFmpeg on PCs, the system decoder on Android.",
 };
 
 export default en;

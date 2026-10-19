@@ -74,10 +74,12 @@
         {@const f = r.folder}
         <button
           class="row"
+          class:selected={selection.isFolder(f.sourceId, f.path)}
           style:height="{rowPx}px"
           style:transform="translateY({r.slot * rowPx}px)"
           onpointerdown={(e) => selection.pointer(e)}
-          onclick={() => selection.touch && onfolder(f.path)}
+          onclick={() => (selection.touch ? onfolder(f.path) : selection.selectFolder(f))}
+          oncontextmenu={(e) => selection.holdFolder(e, f)}
           ondblclick={() => onfolder(f.path)}
           onkeydown={(e) => e.key === "Enter" && onfolder(f.path)}
           tabindex="-1"

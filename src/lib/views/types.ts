@@ -2,6 +2,7 @@ import type { Column, SortSpec } from "./columns";
 import type { Selection } from "./selection.svelte";
 
 export interface FolderItem {
+  sourceId: number;
   name: string;
   /** Path relative to the source root. */
   path: string;
@@ -25,6 +26,8 @@ export interface ViewProps {
   resetKey: unknown;
   tile: number;
   showNames: boolean;
+  /** Folder tiles show an N x N grid of thumbnails (0 = icon only). */
+  folderPreview: number;
   overscan: number;
   columns: Column[];
   rowPx: number;

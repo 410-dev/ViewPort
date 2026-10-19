@@ -90,6 +90,7 @@
 <style>
   .select {
     display: inline-flex;
+    max-width: 100%;
     align-items: center;
     gap: 8px;
     padding-right: 10px;

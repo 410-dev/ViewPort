@@ -281,14 +281,17 @@
     color: var(--fg-2);
     user-select: text;
   }
+  /* minmax(0, 1fr): auto tracks would grow to an input's intrinsic width on narrow panels. */
   .fields {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 14px;
     padding-top: 14px;
     border-top: 1px solid var(--border);
   }
   .field {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 6px;
   }
   .label {
@@ -319,8 +322,16 @@
     flex-wrap: wrap;
     gap: 4px;
   }
+  /* Long tag values wrap inside the chip. */
   .chip {
     padding-right: 4px;
+    max-width: 100%;
+    height: auto;
+    min-height: 24px;
+    overflow-wrap: anywhere;
+  }
+  .chip button {
+    flex-shrink: 0;
   }
   .chip button {
     display: grid;
@@ -361,6 +372,7 @@
   }
   .new {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 6px;
   }
   .range {
@@ -368,6 +380,8 @@
     gap: 6px;
   }
   .range label {
+    flex: 1;
+    min-width: 0;
     display: flex;
     align-items: center;
     gap: 6px;
@@ -397,5 +411,6 @@
     color: var(--danger);
     margin: 0;
     font-size: 12px;
+    overflow-wrap: anywhere;
   }
 </style>

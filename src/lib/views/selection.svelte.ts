@@ -1,5 +1,14 @@
 import { SvelteSet } from "svelte/reactivity";
 
+/** A folder of a source, as views select it. */
+export interface FolderRef {
+  sourceId: number;
+  /** Relative to the source root. */
+  path: string;
+  /** Items inside (any depth), for confirmations. */
+  count: number;
+}
+
 /**
  * Selection over an ordered list of media ids, shared by every view: click selects,
  * Ctrl/Cmd toggles, Shift extends from the anchor; arrow keys move the focus.
@@ -14,6 +23,10 @@ export class Selection {
   focus = $state<number | null>(null);
   /** Where the selection's context menu is open (the library draws it), or null. */
   menu = $state<{ x: number; y: number } | null>(null);
+  /** A selected folder: folders are selected one at a time, never together with items. */
+  folder = $state<FolderRef | null>(null);
+  /** Where the folder's context menu is open, or null. */
+  folderMenu = $state<{ x: number; y: number } | null>(null);
   #anchor = -1;
   #pointer = "mouse";
 
@@ -42,6 +55,7 @@ export class Selection {
     const id = ids[index];
     if (id === undefined) return;
     e.preventDefault();
+    this.folder = null;
     if (this.touch) {
       navigator.vibrate?.(12);
       if (this.set.size === 0) return this.toggle(index, ids);
@@ -55,9 +69,30 @@ export class Selection {
     this.menu = { x: e.clientX, y: e.clientY };
   }
 
+  /** Selects folder `f` alone (a click on it). */
+  selectFolder(f: FolderRef) {
+    this.set.clear();
+    this.focus = null;
+    this.#anchor = -1;
+    this.folder = f;
+  }
+
+  isFolder(sourceId: number, path: string) {
+    return this.folder?.sourceId === sourceId && this.folder.path === path;
+  }
+
+  /** Long press or right click on a folder: selects it and opens its menu. */
+  holdFolder(e: MouseEvent, f: FolderRef) {
+    e.preventDefault();
+    if (this.touch) navigator.vibrate?.(12);
+    this.selectFolder(f);
+    this.folderMenu = { x: e.clientX, y: e.clientY };
+  }
+
   toggle(index: number, ids: number[]) {
     const id = ids[index];
     if (id === undefined) return;
+    this.folder = null;
     if (this.set.has(id)) {
       this.set.delete(id);
       if (this.focus === id) this.focus = this.set.size ? [...this.set].at(-1)! : null;
@@ -72,6 +107,7 @@ export class Selection {
     const id = ids[index];
     if (id === undefined) return;
     const additive = e.ctrlKey || e.metaKey;
+    this.folder = null;
     if (e.shiftKey && this.#anchor >= 0) {
       const [a, b] = this.#anchor < index ? [this.#anchor, index] : [index, this.#anchor];
       if (!additive) this.set.clear();
@@ -91,6 +127,7 @@ export class Selection {
   /** Moves the focus by `delta` items; with `extend`, grows the selection from the anchor. */
   move(delta: number, ids: number[], extend: boolean): number {
     if (ids.length === 0) return -1;
+    this.folder = null;
     const cur = this.focus == null ? -1 : ids.indexOf(this.focus);
     const next = cur < 0 ? (delta > 0 ? 0 : ids.length - 1) : Math.min(ids.length - 1, Math.max(0, cur + delta));
     if (extend && this.#anchor >= 0) {
@@ -107,10 +144,12 @@ export class Selection {
   }
 
   selectAll(ids: number[]) {
+    this.folder = null;
     for (const id of ids) this.set.add(id);
   }
 
   clear() {
+    this.folder = null;
     this.set.clear();
     this.focus = null;
     this.#anchor = -1;

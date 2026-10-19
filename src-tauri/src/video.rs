@@ -44,8 +44,10 @@ impl Workspace {
         let available = found.is_some();
         let was = std::mem::replace(&mut *self.ffmpeg.write().unwrap(), found).is_some();
         if available && !was {
-            // Videos may have been recorded as having no thumbnail while FFmpeg was missing.
+            // Videos (and HEIF images) may have been recorded as having no thumbnail while
+            // FFmpeg was missing.
             let _ = self.write_db.lock().unwrap().reset_video_thumbnails();
+            let _ = self.write_db.lock().unwrap().reset_unsupported_image_thumbnails();
         }
         available
     }
@@ -152,6 +154,63 @@ impl Workspace {
             }
         }
         Ok(None)
+    }
+
+    /// Decodes an image the built-in decoder cannot read (HEIF/HEIC, AVIF, ...) with the
+    /// OS decoder (Android) or FFmpeg, scaled to fit `max_edge`. `bytes` is the file when
+    /// the caller has already read it. Callers try the OS decoder on local paths first.
+    pub fn foreign_image(
+        &self,
+        drivers: &DriverRegistry,
+        id: i64,
+        loc: &MediaLocation,
+        bytes: Option<&[u8]>,
+        max_edge: u32,
+        quality: u8,
+    ) -> CmdResult<Option<vp_thumb::Thumb>> {
+        let ff = self.ffmpeg();
+        if ff.is_none() && !crate::platform::media_available() {
+            return Ok(None);
+        }
+        let scale = |data: &[u8]| {
+            let s = vp_core::settings::ThumbnailSettings { max_edge_px: max_edge, quality, ..Default::default() };
+            vp_thumb::generate(data, &s).ok()
+        };
+        let source =
+            self.read_db.lock().unwrap().source(loc.source_id)?.ok_or_else(|| CmdError::new("not_found", "source"))?;
+        let driver = self.driver(drivers, &source)?;
+        if let Some(path) = driver.local_path(&loc.rel_path) {
+            let Some(ff) = ff else { return Ok(None) };
+            return Ok(ff.image(Input::File(path)).ok().and_then(|bmp| scale(&bmp)));
+        }
+        // Elsewhere (shares, shards): FFmpeg reads simple files from a pipe, but tiled HEIF
+        // (phone photos) and the OS decoder need a file. Contents of encrypted shards are
+        // never written out in the clear.
+        if let Some(ff) = &ff
+            && let Ok(bmp) = ff.image(Input::Stream(Box::new(ReaderStream::new(driver.open(&loc.rel_path)?))))
+        {
+            return Ok(scale(&bmp));
+        }
+        if self.shard_for(loc.source_id)?.is_some_and(|s| s.is_encrypted()) {
+            return Ok(None);
+        }
+        let dir = self.bundle.root.join(CONVERTED_DIR);
+        std::fs::create_dir_all(&dir)?;
+        let ext = loc.rel_path.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+        let temp = TempFile(dir.join(format!(".decode-{id}-{}.{ext}", now_ms())));
+        match bytes {
+            Some(b) => std::fs::write(&temp.0, b)?,
+            None => {
+                let b = crate::workspace::read_tracked(self.open_media(drivers, loc)?.as_ref(), &loc.rel_path, Some(id))?;
+                std::fs::write(&temp.0, b)?;
+            }
+        }
+        if let Some(s) = crate::platform::scaled_image(&temp.0, max_edge, quality) {
+            let mime = if s.png { "image/png" } else { "image/jpeg" };
+            return Ok(Some(vp_thumb::Thumb { data: s.data, width: s.width, height: s.height, mime }));
+        }
+        let Some(ff) = ff else { return Ok(None) };
+        Ok(ff.image(Input::File(temp.0.clone())).ok().and_then(|bmp| scale(&bmp)))
     }
 
     /// The converted copy of `id`: a file in the bundle, or kept by the item's shard.
@@ -325,4 +384,13 @@ pub fn spawn_probe_backfill<R: Runtime>(app: &AppHandle<R>, ws: Arc<Workspace>) 
         ws.probing.store(false, Ordering::Release);
         let _ = app.emit("probe-progress", ());
     });
+}
+
+/// A temporary file removed when dropped.
+struct TempFile(PathBuf);
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }

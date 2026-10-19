@@ -108,6 +108,7 @@
   .dropdown {
     position: fixed;
     z-index: 1000;
+    max-width: calc(100vw - 16px);
     margin: 0;
     padding: 4px;
     list-style: none;

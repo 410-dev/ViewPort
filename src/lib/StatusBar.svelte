@@ -230,6 +230,8 @@
   }
   li {
     display: grid;
+    /* minmax(0, 1fr): an auto track would grow to a long task name's unwrapped width. */
+    grid-template-columns: minmax(0, 1fr);
     gap: 6px;
     padding: 10px;
     border-radius: var(--radius-md);

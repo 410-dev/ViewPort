@@ -293,6 +293,10 @@
   .compact .right {
     order: 4;
     gap: 2px;
+    /* Many view controls on a narrow phone wrap instead of running off-screen. */
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    min-width: 0;
   }
   .tile {
     width: 96px;

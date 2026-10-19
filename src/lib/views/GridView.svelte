@@ -4,10 +4,11 @@
   import { fmtDuration } from "../format";
   import Icon from "../ui/Icon.svelte";
   import { briefs, want } from "./briefs.svelte";
+  import { folderSamples, sampleKey, wantFolders } from "./folders.svelte";
   import { arrowStep } from "./selection.svelte";
   import type { ViewProps } from "./types";
 
-  let { ids, folders, selection, resetKey, tile, showNames, overscan, onopenwindow, onopen, onfolder }: ViewProps = $props();
+  let { ids, folders, selection, resetKey, tile, showNames, folderPreview, overscan, onopenwindow, onopen, onfolder }: ViewProps = $props();
 
   const GAP = 10;
   const LABEL = 22;
@@ -44,6 +45,11 @@
 
   $effect(() => {
     want(visible.filter((v) => v.id !== undefined).map((v) => v.id!));
+  });
+
+  const sampleCount = $derived(Math.max(0, Math.min(4, folderPreview)) ** 2);
+  $effect(() => {
+    wantFolders(visible.flatMap((v) => (v.folder ? [v.folder] : [])), sampleCount);
   });
 
   function scrollToIndex(index: number) {
@@ -90,18 +96,38 @@
       {@const col = v.slot % cols}
       {#if v.folder}
         {@const f = v.folder}
+        {@const samples = sampleCount ? folderSamples.get(sampleKey(f.sourceId, f.path, sampleCount)) : undefined}
         <button
           class="tile folder"
+          class:selected={selection.isFolder(f.sourceId, f.path)}
           style:width="{tileW}px"
           style:transform="translate({PAD + col * (tileW + GAP)}px, {PAD + row * rowH}px)"
           title={f.name}
           onpointerdown={(e) => selection.pointer(e)}
-          onclick={() => selection.touch && onfolder(f.path)}
+          onclick={() => (selection.touch ? onfolder(f.path) : selection.selectFolder(f))}
+          oncontextmenu={(e) => selection.holdFolder(e, f)}
           ondblclick={() => onfolder(f.path)}
           onkeydown={(e) => e.key === "Enter" && onfolder(f.path)}
         >
           <div class="frame" style:height="{tileW}px">
-            <span class="folder-icon"><Icon name="folder" size={Math.max(28, tileW * 0.32)} stroke={1.4} /></span>
+            {#if samples?.length}
+              <!-- A folder drawn as its tab and pocket, holding thumbnails from inside. -->
+              <span class="art">
+                <span class="tab"></span>
+                <span class="pocket" style:--n={Math.sqrt(sampleCount)}>
+                  {#each { length: sampleCount } as _, i (i)}
+                    {@const sid = samples[i]}
+                    <span class="cell">
+                      {#if sid !== undefined && !broken.has(sid)}
+                        <img src={thumbUrl(sid)} alt="" decoding="async" loading="lazy" draggable="false" onerror={() => broken.add(sid)} />
+                      {/if}
+                    </span>
+                  {/each}
+                </span>
+              </span>
+            {:else}
+              <span class="folder-icon"><Icon name="folder" size={Math.max(28, tileW * 0.32)} stroke={1.4} /></span>
+            {/if}
             <span class="count tabular">{f.count.toLocaleString()}</span>
           </div>
           {#if showNames}<div class="name">{f.name}</div>{/if}
@@ -240,6 +266,48 @@
     bottom: 7px;
     font-size: 11px;
     color: var(--muted);
+  }
+  .art {
+    position: absolute;
+    inset: 12% 9% 15%;
+  }
+  .tab {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 42%;
+    height: 14%;
+    border-radius: 7px 7px 0 0;
+    background: color-mix(in srgb, var(--accent) 55%, var(--surface-2));
+  }
+  .pocket {
+    position: absolute;
+    inset: 8% 0 0;
+    display: grid;
+    grid-template-columns: repeat(var(--n), minmax(0, 1fr));
+    grid-template-rows: repeat(var(--n), minmax(0, 1fr));
+    gap: 4%;
+    padding: 5%;
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--accent) 38%, var(--surface-2));
+    box-shadow: 0 1px 3px rgb(0 0 0 / 0.25);
+  }
+  .cell {
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--surface-2) 70%, transparent);
+  }
+  .cell img {
+    object-fit: cover;
+  }
+  .folder:has(.art) .count {
+    right: 6px;
+    bottom: 5px;
+    padding: 0 6px;
+    border-radius: var(--radius-pill);
+    background: var(--surface-2);
   }
   .badge {
     position: absolute;

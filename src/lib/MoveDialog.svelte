@@ -12,9 +12,18 @@
     sourceId,
     sourceName,
     start,
+    exclude = null,
     onpick,
     onclose,
-  }: { sourceId: number; sourceName: string; start: string; onpick: (folder: string) => void; onclose: () => void } = $props();
+  }: {
+    sourceId: number;
+    sourceName: string;
+    start: string;
+    /** A folder being moved: neither it nor anything inside it can be the target. */
+    exclude?: string | null;
+    onpick: (folder: string) => void;
+    onclose: () => void;
+  } = $props();
 
   // svelte-ignore state_referenced_locally
   let folder = $state(start);
@@ -32,6 +41,7 @@
   const join = (a: string, b: string) => (a ? `${a}/${b}` : b);
   const cleanNew = $derived(newName.trim().replace(/[\\/]/g, ""));
   const target = $derived(cleanNew ? join(folder, cleanNew) : folder);
+  const inside = (p: string) => exclude != null && (p === exclude || p.startsWith(`${exclude}/`));
 </script>
 
 <div class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
@@ -53,7 +63,7 @@
       </div>
     </div>
     <div class="body list">
-      {#each children as c (c.name)}
+      {#each children.filter((c) => !inside(join(folder, c.name))) as c (c.name)}
         <button class="entry" onclick={() => (folder = join(folder, c.name))}>
           <span class="ico"><Icon name="folder" size={18} /></span>
           <span class="ename">{c.name}</span>
@@ -66,7 +76,7 @@
     </div>
     <footer>
       <input class="input grow" placeholder={t("move.newFolder")} bind:value={newName} />
-      <button class="btn primary" onclick={() => onpick(target)}><Icon name="check" size={14} />{t("move.here")}</button>
+      <button class="btn primary" disabled={inside(target)} onclick={() => onpick(target)}><Icon name="check" size={14} />{t("move.here")}</button>
     </footer>
   </div>
 </div>

@@ -317,12 +317,15 @@
 </div>
 
 <style>
+  /* minmax(0, 1fr): an auto track would grow to an input's intrinsic width plus its button. */
   .body {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 18px;
   }
   section {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 8px;
   }
   h3 {
@@ -351,6 +354,8 @@
   }
   .seg {
     justify-self: start;
+    max-width: 100%;
+    overflow-x: auto;
   }
   .badges {
     display: flex;

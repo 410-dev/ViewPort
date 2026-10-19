@@ -150,6 +150,7 @@ export const SECTIONS: Section[] = [
         title: "set.grid",
         fields: [
           { kind: "toggle", ...bundle({ path: "grid.show_names", label: "set.showNames" }) },
+          { kind: "number", ...bundle({ path: "grid.folder_preview", label: "set.folderPreview", help: "set.folderPreview.help" }), min: 0, max: 4, step: 1 },
           { kind: "number", ...bundle({ path: "grid.min_tile_px", label: "set.minTile" }), min: 48, max: 400, step: 8, unit: "px" },
           { kind: "number", ...bundle({ path: "grid.max_tile_px", label: "set.maxTile" }), min: 96, max: 1024, step: 8, unit: "px" },
           { kind: "number", ...bundle({ path: "grid.overscan_rows", label: "set.overscan", help: "set.overscan.help" }), min: 0, max: 20, step: 1 },
@@ -299,6 +300,7 @@ export const SECTIONS: Section[] = [
           { kind: "number", ...app({ path: "viewer.swipe_ms", label: "set.swipeMs" }), min: 0, max: 1000, step: 20, unit: "ms" },
           { kind: "number", ...app({ path: "viewer.display_max_px", label: "set.displayMax", help: "set.displayMax.help" }), min: 0, max: 16384, step: 256, unit: "px" },
           { kind: "number", ...app({ path: "viewer.display_quality", label: "set.displayQuality" }), min: 1, max: 100, step: 1 },
+          { kind: "list", ...app({ path: "viewer.convert_image_extensions", label: "set.convertImageExt", help: "set.convertImageExt.help" }) },
         ],
       },
     ],

@@ -38,7 +38,7 @@
   import { briefs, invalidate } from "./views/briefs.svelte";
   import { columnsFor, type SortSpec } from "./views/columns";
   import { VIEWS } from "./views";
-  import { Selection } from "./views/selection.svelte";
+  import { Selection, type FolderRef } from "./views/selection.svelte";
   import type { FolderItem } from "./views/types";
 
   let {
@@ -161,7 +161,9 @@
   });
 
   const folders = $derived<FolderItem[]>(
-    selected !== null && !query.trim() ? subfolders.map((s) => ({ ...s, path: folder ? `${folder}/${s.name}` : s.name })) : [],
+    selected !== null && !query.trim()
+      ? subfolders.map((s) => ({ ...s, sourceId: selected!, path: folder ? `${folder}/${s.name}` : s.name }))
+      : [],
   );
 
   // While scanning, refresh at most every 1.5 s so new files show up.
@@ -366,8 +368,9 @@
   ]);
 
   // ---- rename / move (within the item's own source; shards included)
-  let renaming = $state<{ id: number; name: string; error: string } | null>(null);
-  let moving = $state<{ ids: number[]; sourceId: number; start: string } | null>(null);
+  /** Renaming an item (`id`) or a folder (`folder`). */
+  let renaming = $state<{ id?: number; folder?: FolderRef; name: string; error: string } | null>(null);
+  let moving = $state<{ ids: number[]; folder?: FolderRef; sourceId: number; start: string } | null>(null);
   $effect(() => {
     if (renaming) return onBack(() => (renaming = null));
   });
@@ -390,8 +393,16 @@
 
   async function commitRename() {
     if (!renaming) return;
-    const { id, name } = renaming;
+    const { id, folder: f, name } = renaming;
     try {
+      if (f) {
+        const r = await api.renameFolder(f.sourceId, f.path, name);
+        renaming = null;
+        afterFolderChange();
+        if (r.failed.length) alert(`${t("move.failed", { n: r.failed.length })}\n\n${r.failed.slice(0, 5).join("\n")}`);
+        return;
+      }
+      if (id === undefined) return;
       await api.renameMedia(id, name);
       renaming = null;
       afterRelocate([id]);
@@ -409,8 +420,18 @@
 
   async function commitMove(target: string) {
     if (!moving) return;
-    const list = moving.ids;
+    const { ids: list, folder: f } = moving;
     moving = null;
+    if (f) {
+      try {
+        const r = await api.moveFolder(f.sourceId, f.path, target);
+        afterFolderChange();
+        if (r.failed.length) alert(`${t("move.failed", { n: r.failed.length })}\n\n${r.failed.slice(0, 5).join("\n")}`);
+      } catch (e) {
+        alert(relocateError(e));
+      }
+      return;
+    }
     try {
       const r = await api.moveMediaTo(list, target);
       afterRelocate(list);
@@ -425,6 +446,75 @@
     broadcast("media", list);
     runSearch(false);
     if (selected !== null) api.childFolders(selected, folder).then((l) => (subfolders = l)).catch(() => {});
+  }
+
+  // ---- folder actions (a folder's context menu)
+  const parentOf = (path: string) => path.split("/").slice(0, -1).join("/");
+  const baseName = (path: string) => path.split("/").at(-1) ?? path;
+
+  /** Shows a folder of any source (the tree lists every source). */
+  function openFolder(f: FolderRef) {
+    if (selected !== f.sourceId) {
+      selected = f.sourceId;
+      lastSource = f.sourceId;
+    }
+    folder = f.path;
+    selection.clear();
+  }
+
+  function folderAction(run: (f: FolderRef) => void) {
+    return () => {
+      if (selection.folder) run(selection.folder);
+    };
+  }
+
+  const folderMenuItems = $derived<MenuItem[]>([
+    { label: t("folder.open"), icon: "folder", action: folderAction(openFolder) },
+    ...(isMobile
+      ? []
+      : [
+          {
+            label: t("folder.openWindow"),
+            icon: "external" as const,
+            action: folderAction((f) =>
+              api.openWindow({ kind: "library", sourceId: f.sourceId, folder: f.path, query: "" }).catch((e) => alert(asCmdError(e).message)),
+            ),
+          },
+        ]),
+    { label: t("sel.rename"), icon: "pencil", action: folderAction((f) => (renaming = { folder: f, name: baseName(f.path), error: "" })) },
+    { label: t("sel.move"), icon: "folder", action: folderAction((f) => (moving = { ids: [], folder: f, sourceId: f.sourceId, start: parentOf(f.path) })) },
+    { label: t("sel.delete"), icon: "trash", danger: true, action: folderAction((f) => (confirmFolderDelete = f)) },
+  ]);
+
+  let confirmFolderDelete = $state<FolderRef | null>(null);
+  $effect(() => {
+    if (confirmFolderDelete) return onBack(() => (confirmFolderDelete = null));
+  });
+
+  async function deleteFolderConfirmed() {
+    const f = confirmFolderDelete;
+    if (!f) return;
+    deleting = true;
+    try {
+      const r = await api.deleteFolder(f.sourceId, f.path);
+      afterFolderChange();
+      if (r.failed.length) alert(`${t("del.failed", { n: r.failed.length })}\n\n${r.failed.slice(0, 5).join("\n")}`);
+    } catch (e) {
+      alert(asCmdError(e).message);
+    } finally {
+      deleting = false;
+      confirmFolderDelete = null;
+    }
+  }
+
+  /** Paths changed under a folder: everything cached about paths is stale. */
+  function afterFolderChange() {
+    selection.clear();
+    invalidate();
+    broadcast("media");
+    runSearch(false);
+    if (selected !== null) api.childFolders(selected, folder).then((l) => (subfolders = l)).catch(() => {});
+    resetKey++;
   }
 
   async function exportSelected(list: number[]) {
@@ -567,6 +657,7 @@
             {resetKey}
             tile={settings.grid.tile_px}
             showNames={settings.grid.show_names}
+            folderPreview={settings.grid.folder_preview ?? 2}
             overscan={settings.grid.overscan_rows}
             {columns}
             rowPx={ui().row_px}
@@ -619,6 +710,10 @@
   />
 {/if}
 
+{#if selection.folderMenu && selection.folder}
+  <ContextMenu x={selection.folderMenu.x} y={selection.folderMenu.y} items={folderMenuItems} onclose={() => (selection.folderMenu = null)} />
+{/if}
+
 {#if selection.menu && selection.set.size > 0}
   <ContextMenu x={selection.menu.x} y={selection.menu.y} items={menuItems} onclose={() => (selection.menu = null)} />
 {/if}
@@ -634,7 +729,7 @@
           bind:value={renaming.name}
           autofocus
           onfocus={(e) => {
-            const dot = e.currentTarget.value.lastIndexOf(".");
+            const dot = renaming?.folder ? -1 : e.currentTarget.value.lastIndexOf(".");
             e.currentTarget.setSelectionRange(0, dot > 0 ? dot : e.currentTarget.value.length);
           }}
           onkeydown={(e) => e.key === "Enter" && renaming?.name.trim() && commitRename()}
@@ -655,6 +750,7 @@
     sourceId={moving.sourceId}
     sourceName={sources.find((s) => s.id === moving!.sourceId)?.name ?? ""}
     start={moving.start}
+    exclude={moving.folder?.path ?? null}
     onpick={commitMove}
     onclose={() => (moving = null)}
   />
@@ -669,6 +765,23 @@
         <span class="grow"></span>
         <button class="btn ghost" disabled={deleting} onclick={() => (confirmDelete = null)}>{t("common.cancel")}</button>
         <button class="btn danger" disabled={deleting} onclick={deleteConfirmed}>
+          {#if deleting}<span class="spinner"></span>{:else}<Icon name="trash" size={14} />{/if}{t("del.confirm")}
+        </button>
+      </footer>
+    </div>
+  </div>
+{/if}
+
+{#if confirmFolderDelete}
+  {@const f = confirmFolderDelete}
+  <div class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && !deleting && (confirmFolderDelete = null)}>
+    <div class="dialog confirm" role="alertdialog" aria-modal="true" aria-labelledby="fdel-title">
+      <header><h2 id="fdel-title">{t("folder.delTitle")}</h2></header>
+      <div class="body"><p class="text">{t("folder.delBody", { name: baseName(f.path), n: f.count.toLocaleString() })}</p></div>
+      <footer>
+        <span class="grow"></span>
+        <button class="btn ghost" disabled={deleting} onclick={() => (confirmFolderDelete = null)}>{t("common.cancel")}</button>
+        <button class="btn danger" disabled={deleting} onclick={deleteFolderConfirmed}>
           {#if deleting}<span class="spinner"></span>{:else}<Icon name="trash" size={14} />{/if}{t("del.confirm")}
         </button>
       </footer>

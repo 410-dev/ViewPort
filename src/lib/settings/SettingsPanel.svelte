@@ -589,6 +589,7 @@
   }
   .swatches {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 6px;
   }
@@ -676,7 +677,7 @@
   }
   .kv {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 8px;
     font-variant-numeric: tabular-nums;
   }
@@ -696,6 +697,11 @@
     font-size: 12px;
     color: var(--fg-2);
   }
+  /* FFmpeg path or version can be one long unbreakable string. */
+  .status > span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
   .status.ok :global(svg) {
     color: var(--ok);
   }
@@ -710,6 +716,7 @@
   }
   .lockform {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 8px;
     max-width: 420px;
   }
@@ -784,6 +791,13 @@
     }
     .ctl {
       max-width: 100%;
+      min-width: 0;
+    }
+    .input.wide {
+      min-width: 0;
+    }
+    .kv {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
     }
   }
 </style>

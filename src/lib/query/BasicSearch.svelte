@@ -150,6 +150,7 @@
   label,
   .field {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 5px;
     min-width: 0;
   }

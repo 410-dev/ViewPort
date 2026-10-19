@@ -162,12 +162,15 @@
 </div>
 
 <style>
+  /* minmax(0, 1fr): an auto track would grow to an input's intrinsic width plus its button. */
   .form {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 12px;
   }
   label {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 5px;
   }
   label > span:first-child {

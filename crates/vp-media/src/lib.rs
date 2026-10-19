@@ -224,6 +224,31 @@ impl Ffmpeg {
         Ok(out)
     }
 
+    /// Decodes a still image (HEIF/HEIC, AVIF, ...: whatever FFmpeg reads) at full size, as
+    /// an uncompressed BMP for the caller to scale. Tiled HEIF grids (phone photos) are
+    /// assembled by FFmpeg's own filtergraph, which rules out adding `-vf` here; rotation
+    /// and mirroring are applied.
+    pub fn image(&self, input: Input) -> Result<Vec<u8>> {
+        let args: Vec<String> = vec![
+            "-v".into(),
+            "error".into(),
+            "-i".into(),
+            input.arg(),
+            "-frames:v".into(),
+            "1".into(),
+            "-f".into(),
+            "image2pipe".into(),
+            "-c:v".into(),
+            "bmp".into(),
+            "pipe:1".into(),
+        ];
+        let out = self.run(&self.ffmpeg.clone(), args, input)?;
+        if out.is_empty() {
+            return Err(MediaError::Failed("no image produced".into()));
+        }
+        Ok(out)
+    }
+
     /// Converts to a high-compatibility MP4 (H.264/AAC, fast start) at `output`.
     /// `progress` receives 0.0..=1.0. `hw_encoders` are tried in order first and libx264
     /// is used if none works. `make_input` is called once per attempt.
@@ -538,6 +563,19 @@ mod tests {
         assert!(!p("avi", "mpeg4", Some("mp3")).webview_compatible("avi"));
         let plan = p("matroska,webm", "h264", Some("ac3")).plan();
         assert!(plan.copy_video && !plan.copy_audio && !plan.is_remux());
+    }
+
+    /// A phone-style HEIC (2x2 grid of 256 px HEVC tiles, rotated) decodes whole.
+    /// `testdata/mkheic.py` made the file.
+    #[test]
+    fn real_ffmpeg_heic_grid() {
+        let Ok(dir) = std::env::var("VP_TEST_FFMPEG") else { return };
+        let ff = Ffmpeg::locate(&dir, &[]).expect("ffmpeg in VP_TEST_FFMPEG");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/grid.heic");
+        let bmp = ff.image(Input::File(path)).unwrap();
+        assert_eq!(&bmp[..2], b"BM");
+        let dims = |b: &[u8]| (i32::from_le_bytes(b[18..22].try_into().unwrap()), i32::from_le_bytes(b[22..26].try_into().unwrap()).abs());
+        assert_eq!(dims(&bmp), (512, 512), "all four tiles");
     }
 
     /// Runs against a real FFmpeg when `VP_TEST_FFMPEG` points at its folder.

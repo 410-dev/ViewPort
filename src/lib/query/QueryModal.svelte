@@ -505,7 +505,7 @@
   .labels,
   .cols {
     display: grid;
-    grid-template-columns: 1fr 1.1fr 1.1fr 1fr;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr) minmax(0, 1.1fr) minmax(0, 1fr);
     gap: 12px;
   }
   .labels {
@@ -533,6 +533,7 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
+    min-width: 0;
     border-radius: var(--radius-lg);
     background: var(--surface-2);
     overflow: hidden;
@@ -632,6 +633,8 @@
   }
   .param .seg button {
     flex: 1;
+    min-width: 0;
+    overflow: hidden;
   }
   .divider {
     height: 1px;
@@ -653,25 +656,30 @@
   }
   footer {
     display: grid !important;
-    grid-template-columns: 1fr 1.1fr 0.62fr 0.48fr;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr) minmax(0, 0.62fr) minmax(0, 0.48fr);
     gap: 12px !important;
     padding: 0 20px 18px !important;
     border-top: 0 !important;
   }
+  /* Labels wrap instead of pushing past narrow columns. */
   footer .btn {
-    height: 40px;
+    min-width: 0;
+    min-height: 40px;
+    height: auto;
+    white-space: normal;
+    line-height: 1.2;
   }
   @media (max-width: 860px) {
     .labels {
       display: none;
     }
     .cols {
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       grid-auto-rows: minmax(200px, 1fr);
       overflow-y: auto;
     }
     footer {
-      grid-template-columns: 1fr 1fr !important;
+      grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
     }
   }
   /* Phones: a shorter editor, and the status message gets its own line above saving. */

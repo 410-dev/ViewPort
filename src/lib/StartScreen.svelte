@@ -272,9 +272,12 @@
 {/if}
 
 <style>
+  /* minmax(0, 1fr) tracks throughout: auto tracks would grow to the min-content width of
+     a long recent path (or an input plus its button) and push the card off-screen. */
   .start {
     height: 100vh;
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     place-items: center;
     align-content: center;
     gap: 18px;
@@ -284,6 +287,7 @@
   .card {
     width: min(560px, 100%);
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 22px;
     padding: 28px;
     border-radius: 18px;
@@ -322,6 +326,7 @@
   }
   section {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 8px;
   }
   ul {
@@ -329,6 +334,7 @@
     margin: 0;
     padding: 0;
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 2px;
     max-height: 320px;
     overflow-y: auto;
@@ -439,9 +445,13 @@
     color: var(--danger);
     margin: 0;
     font-size: 12px;
+    overflow-wrap: anywhere;
   }
   .prefs {
     display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    max-width: 100%;
     align-items: center;
     gap: 8px;
     color: var(--faint);
@@ -452,6 +462,7 @@
   }
   .form {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 10px;
   }
   .form .path {

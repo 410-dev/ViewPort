@@ -366,6 +366,23 @@ fn folder_browsing() {
     assert_eq!(lib.db.search_in(&all, &lib.reg, &ctx, &direct).unwrap().len(), 3);
     let deep = Scope { recursive: true, ..direct };
     assert_eq!(lib.db.search_in(&all, &lib.reg, &ctx, &deep).unwrap().len(), 6, "tripx is not inside trip");
+
+    // Folder operations work on everything inside, not on look-alike siblings.
+    assert_eq!(lib.db.folder_media(1, "trip/day1").unwrap().len(), 2);
+    assert_eq!(lib.db.folder_media(1, "trip").unwrap().len(), 6);
+    // Samples: images and videos, files directly in the folder first.
+    let samples = lib.db.folder_samples(1, "trip", 4).unwrap();
+    assert_eq!(samples.len(), 4);
+    let first = lib.db.media_brief(&samples[..1]).unwrap();
+    assert_eq!(first[0].folder, "trip");
+    let mut lib = lib;
+    assert_eq!(lib.db.move_folder(1, "trip/day1", "archive/first").unwrap(), 2);
+    assert_eq!(lib.db.child_folders(1, "").unwrap(), [("archive".to_string(), 2), ("trip".to_string(), 4), ("tripx".to_string(), 1)]);
+    assert_eq!(lib.db.child_folders(1, "archive").unwrap(), [("first".to_string(), 2)]);
+    let moved = lib.db.folder_media(1, "archive/first").unwrap();
+    let b = lib.db.media_brief(&moved).unwrap();
+    assert!(b.iter().all(|b| b.folder == "archive/first"));
+    assert!(lib.db.media_location(moved[0]).unwrap().unwrap().rel_path.starts_with("archive/first/"));
 }
 
 #[test]

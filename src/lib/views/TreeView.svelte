@@ -152,11 +152,18 @@
     {#each visible as { r, slot } (r.kind === "file" ? r.id : r.key)}
       {#if r.kind === "node"}
         {@const open = expanded.has(r.key)}
+        {@const ref = { sourceId: r.src, path: r.path, count: r.count ?? 0 }}
         <button
           class="row"
+          class:selected={!r.source && selection.isFolder(r.src, r.path)}
           style:height="{rowPx}px"
           style:transform="translateY({slot * rowPx}px)"
-          onclick={() => toggle(r.src, r.path)}
+          onpointerdown={(e) => selection.pointer(e)}
+          onclick={() => {
+            if (!r.source && !selection.touch) selection.selectFolder(ref);
+            toggle(r.src, r.path);
+          }}
+          oncontextmenu={(e) => !r.source && selection.holdFolder(e, ref)}
           aria-expanded={open}
           tabindex="-1"
         >

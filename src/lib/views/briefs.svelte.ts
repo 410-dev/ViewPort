@@ -1,5 +1,6 @@
 import { SvelteMap } from "svelte/reactivity";
 import { api, type MediaBrief } from "../api";
+import { invalidateFolders } from "./folders.svelte";
 
 /**
  * Metadata for visible items, fetched in small batches as views scroll. Shared by the
@@ -39,6 +40,7 @@ async function flush() {
 
 /** Forgets cached metadata (after edits, rescans or conversions). */
 export function invalidate(ids?: number[]) {
+  invalidateFolders();
   if (!ids) briefs.clear();
   else for (const id of ids) briefs.delete(id);
 }

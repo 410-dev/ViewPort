@@ -91,4 +91,10 @@
   button.danger {
     color: var(--danger);
   }
+  /* Long labels (file names) are cut, not pushed past the menu edge. */
+  button span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 </style>

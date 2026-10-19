@@ -149,8 +149,9 @@ impl Workspace {
         };
         let ffmpeg = crate::video::locate(&settings.playback.ffmpeg_path);
         if (ffmpeg.is_some() || crate::platform::media_available()) && !manual {
-            // Retry video thumbnails that failed while no video decoder was available.
+            // Retry thumbnails that failed while no video (or HEIF) decoder was available.
             write_db.lock().unwrap().reset_video_thumbnails()?;
+            write_db.lock().unwrap().reset_unsupported_image_thumbnails()?;
         }
         let saved_changes = AtomicU64::new(write_db.lock().unwrap().total_changes());
         let c = &settings.cache;
@@ -605,7 +606,19 @@ impl Workspace {
             None => {
                 let reader = self.open_media(registry, &loc)?;
                 let bytes = read_tracked(reader.as_ref(), &loc.rel_path, Some(media_id))?;
-                vp_thumb::generate(&bytes, &settings)
+                match vp_thumb::generate(&bytes, &settings) {
+                    // HEIF/HEIC, AVIF and other formats the built-in decoder lacks. A file
+                    // no decoder reads counts as failed, not unsupported (those are retried).
+                    Err(e @ (vp_thumb::ThumbError::Unsupported | vp_thumb::ThumbError::Decode(_))) => {
+                        let decodable = self.ffmpeg().is_some() || crate::platform::media_available();
+                        match self.foreign_image(registry, media_id, &loc, Some(&bytes), settings.max_edge_px, settings.quality)? {
+                            Some(t) => Ok(t),
+                            None if decodable => Err(vp_thumb::ThumbError::Decode(e.to_string())),
+                            None => Err(e),
+                        }
+                    }
+                    r => r,
+                }
             }
         };
 

@@ -114,6 +114,8 @@ export interface GridSettings {
   max_tile_px: number;
   overscan_rows: number;
   show_names: boolean;
+  /** Folder tiles show an N x N grid of thumbnails (0 = icon only). */
+  folder_preview: number;
 }
 
 export interface CacheSettings {
@@ -228,6 +230,7 @@ export interface AppSettings {
     swipe_ms: number;
     display_max_px: number;
     display_quality: number;
+    convert_image_extensions: string[];
   };
 }
 
@@ -349,6 +352,14 @@ export const api = {
     invoke<SearchResult>("search", { query, sourceId, folder, recursive, tzOffsetMinutes: -new Date().getTimezoneOffset() }),
   childFolders: (sourceId: number, parent: string) =>
     invoke<{ name: string; count: number }[]>("child_folders", { sourceId, parent }),
+  /** Thumbnail ids standing for each folder (same order as `folders`). */
+  folderSamples: (sourceId: number, folders: string[], limit: number) =>
+    invoke<number[][]>("folder_samples", { sourceId, folders, limit }),
+  renameFolder: (sourceId: number, path: string, name: string) =>
+    invoke<{ moved: number; failed: string[]; path: string }>("rename_folder", { sourceId, path, name }),
+  moveFolder: (sourceId: number, path: string, target: string) =>
+    invoke<{ moved: number; failed: string[]; path: string }>("move_folder", { sourceId, path, target }),
+  deleteFolder: (sourceId: number, path: string) => invoke<{ deleted: number; failed: string[] }>("delete_folder", { sourceId, path }),
   mediaBrief: (ids: number[]) => invoke<MediaBrief[]>("media_brief", { ids }),
   saveBundle: () => invoke<void>("save_bundle"),
   prefetch: (ids: number[]) => invoke<void>("prefetch", { ids }),

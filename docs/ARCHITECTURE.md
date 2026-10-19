@@ -232,6 +232,12 @@ UI에 전달되며 작업별로 `progress.emit_interval_ms` 간격으로 제한�
   (`inSampleSize`)을, 그 밖에는 원본을 디코딩해 줄인다. 뷰어는 사본이 로드되는 동안 썸네일을 보여 주고, 확대해 사본의
   화소가 모자라면 두 배 크기 사본 → … → 원본 순으로 바꾼다. 미리보기 패널·이웃 미리 읽기도 사본을 쓴다.
   Android 썸네일 생성도 같은 OS 축소 디코딩을 쓴다(못 읽는 형식만 Rust 디코더).
+- **HEIF/HEIC**: WebView(WebView2·Android WebView)가 직접 그리지 못하는 형식(`viewer.convert_image_extensions`,
+  기본 heic/heif/hif)은 크기와 무관하게 항상 표시용 JPEG 사본으로 제공한다(`fit`이 없으면 원본 크기). Rust 디코더가 못 읽는
+  이미지(HEIF, AVIF 등)는 `Workspace::foreign_image`가 Android OS 디코더나 FFmpeg(`Ffmpeg::image`, 원본 크기 BMP → Rust로 축소)로
+  푼다. 폰 사진처럼 타일 격자로 된 HEIF는 FFmpeg가 자체 필터 그래프로 이어 붙이므로 `-vf`를 함께 쓸 수 없고, 파이프 입력으로는
+  열리지 않아 로컬이 아닌 소스는 `converted/`에 임시 파일을 만들었다 지운다(암호화된 샤드는 평문을 쓰지 않으므로 건너뜀).
+  디코더가 생기면 열 때 `unsupported`로 기록된 이미지 썸네일을 다시 시도한다.
 
 ## 영상
 
@@ -271,6 +277,12 @@ UI에 전달되며 작업별로 `progress.emit_interval_ms` 간격으로 제한�
   항목 기록을 없앤다(확인 대화 상자 필수).
   이름 변경(`rename_media`)·이동(`move_media_to`)은 항목이 속한 소스 안에서 드라이버 `rename`으로 처리하고(샤드 포함)
   `Db::move_media`로 경로를 고쳐 id·태그·통계를 유지한다. 대상에 파일이 있으면 거부한다.
+- 폴더: 클릭(터치는 길게 누름)으로 폴더 하나를 선택하고(`Selection.folder`, 항목 선택과 배타), 우클릭/길게 누름은 폴더 메뉴
+  (열기·새 창·이름 변경·이동·삭제). 로컬 폴더는 디렉터리째 옮기고(`Db::move_folder`로 경로 접두어 일괄 수정, 목록에 없는
+  파일도 함께), 공유·샤드는 파일 단위 `rename`. 자기 안으로의 이동과 기존 폴더 덮어쓰기는 거부한다. 폴더 삭제는 목록의 파일만
+  드라이버로 지우고 비게 된 로컬 폴더를 정리한다(목록에 없는 파일은 남김).
+- 그리드의 폴더 타일은 폴더 모양 안에 `grid.folder_preview`×`grid.folder_preview` 대표 썸네일(폴더 바로 안의 파일 우선,
+  `Db::folder_samples`)을 보여 준다. 보이는 폴더만 묶어서 요청한다(`views/folders.svelte.ts`).
 - 원본 미디어: Android WebView는 가로챈 응답(`vpmedia://`)에 요청의 Range를 다시 적용해(본문 앞부분을 건너뜀) `bytes=0-` 외의
   범위 요청이 모두 실패하고, 응답 본문을 통째로 Java 배열로 복사한다. 그래서 Android는 `media_server.rs`의 루프백 HTTP 서버
   (`127.0.0.1`, 무작위 포트, 경로의 무작위 토큰)로 원본을 제공하고 응답 코드는 `media::answer`를 공유한다. 영상 응답은
