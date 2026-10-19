@@ -79,6 +79,7 @@ export const SECTIONS: Section[] = [
         title: "set.startup",
         fields: [
           { kind: "toggle", ...app({ path: "reopen_last_bundle", label: "set.reopen", help: "set.reopen.help" }) },
+          { kind: "toggle", ...app({ path: "hide_missing_recent", label: "start.hideMissing" }) },
           { kind: "number", ...bundle({ path: "general.autosave_debounce_ms", label: "set.autosaveDelay" }), min: 0, step: 100, unit: "ms" },
         ],
       },

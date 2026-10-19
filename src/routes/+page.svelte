@@ -34,8 +34,8 @@
         // Only on a real app start, not when the user closed the bundle and the page reloaded.
         sessionStorage.setItem("vp-started", "1");
         const recent = await api.recentBundles();
-        if (prefs.app?.reopen_last_bundle && recent[0]) {
-          bundle = await api.openBundle(recent[0]).catch(() => null);
+        if (prefs.app?.reopen_last_bundle && recent[0]?.exists) {
+          bundle = await api.openBundle(recent[0].path).catch(() => null);
         }
       }
       ready = true;

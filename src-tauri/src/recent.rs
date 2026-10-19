@@ -51,15 +51,26 @@ pub fn list(app: &AppHandle) -> Vec<String> {
 }
 
 pub fn push(app: &AppHandle, bundle: &str) {
-    let Some(p) = path(app) else { return };
     let mut items = list(app);
     items.retain(|b| b != bundle);
     items.insert(0, bundle.to_string());
     items.truncate(MAX);
+    write(app, &items);
+}
+
+/// Drops one bundle from the list.
+pub fn remove(app: &AppHandle, bundle: &str) {
+    let mut items = list(app);
+    items.retain(|b| b != bundle);
+    write(app, &items);
+}
+
+fn write(app: &AppHandle, items: &[String]) {
+    let Some(p) = path(app) else { return };
     if let Some(dir) = p.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    if let Ok(json) = serde_json::to_vec_pretty(&items) {
+    if let Ok(json) = serde_json::to_vec_pretty(items) {
         let _ = std::fs::write(p, json);
     }
 }

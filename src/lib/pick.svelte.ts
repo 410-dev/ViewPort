@@ -33,11 +33,19 @@ function inApp(req: Omit<PickRequest, "resolve" | "extensions" | "name" | "ext" 
   });
 }
 
-/** Shared storage access (Android "all files access"). Asks once if missing. */
-export async function ensureStorage(): Promise<boolean> {
+let asked = false;
+
+/**
+ * Shared storage access (Android "all files access", else photo and video access). Asked
+ * once per run: where it cannot be granted (Samsung Secure Folder) the picker still opens,
+ * with the app folder and the system picker as the way out.
+ */
+export async function ensureStorage(): Promise<void> {
+  if (asked) return;
   const info = await platformApi.info().catch(() => null);
-  if (!info || info.storage_granted) return true;
-  return platformApi.requestStorageAccess().catch(() => false);
+  if (!info || info.storage_granted) return;
+  asked = true;
+  await platformApi.requestStorageAccess().catch(() => false);
 }
 
 export async function pickFolder(title: string, opts: { pickSuffix?: string } = {}): Promise<string | null> {
@@ -45,7 +53,7 @@ export async function pickFolder(title: string, opts: { pickSuffix?: string } = 
     const p = await open({ title, directory: true });
     return typeof p === "string" ? p : null;
   }
-  if (!(await ensureStorage())) return null;
+  await ensureStorage();
   return inApp({ mode: "folder", title, pickSuffix: opts.pickSuffix ?? "" });
 }
 
@@ -54,7 +62,7 @@ export async function pickFile(title: string, filter?: { name: string; extension
     const p = await open({ title, filters: filter ? [filter] : undefined });
     return typeof p === "string" ? p : null;
   }
-  if (!(await ensureStorage())) return null;
+  await ensureStorage();
   return inApp({ mode: "file", title, extensions: filter?.extensions ?? [] });
 }
 
@@ -73,7 +81,7 @@ export async function pickSave(title: string, name: string, filter: { name: stri
   if (!isMobile) {
     return save({ title, defaultPath: name, filters: [filter] });
   }
-  if (!(await ensureStorage())) return null;
+  await ensureStorage();
   const ext = filter.extensions[0] ?? "";
   return inApp({ mode: "save", title, name: name.replace(new RegExp(`\\.${ext}$`, "i"), ""), ext });
 }

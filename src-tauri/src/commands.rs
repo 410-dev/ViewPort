@@ -1,6 +1,6 @@
 //! Tauri commands called by the UI.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -177,9 +177,27 @@ pub fn current_bundle(state: State<'_, AppState>) -> Option<BundleSummary> {
     state.workspace.read().unwrap().as_ref().map(|w| w.summary())
 }
 
+#[derive(Serialize)]
+pub struct RecentBundle {
+    pub path: String,
+    /// Whether the bundle folder (or archive) is still there.
+    pub exists: bool,
+}
+
+/// Recently opened bundles, newest first. Existence is checked off the UI thread because
+/// a path on a disconnected drive can take a while to answer.
 #[tauri::command]
-pub fn recent_bundles(app: AppHandle) -> Vec<String> {
-    recent::list(&app)
+pub async fn recent_bundles(app: AppHandle) -> Vec<RecentBundle> {
+    tauri::async_runtime::spawn_blocking(move || {
+        recent::list(&app).into_iter().map(|path| RecentBundle { exists: Path::new(&path).exists(), path }).collect()
+    })
+    .await
+    .unwrap_or_default()
+}
+
+#[tauri::command]
+pub fn forget_recent_bundle(app: AppHandle, path: String) {
+    recent::remove(&app, &path);
 }
 
 // ---------------------------------------------------------------- settings

@@ -1,10 +1,11 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { asCmdError, platformApi, type DirListing, type StorageRoot } from "../api";
+  import { asCmdError, platformApi, type DirListing, type StorageRoot, type SystemPick } from "../api";
   import { onBack } from "../back.svelte";
   import { fmtBytes } from "../format";
   import { t } from "../i18n.svelte";
   import { picker, type PickRequest } from "../pick.svelte";
+  import { isAndroid } from "../platform";
   import Icon from "./Icon.svelte";
 
   /** In-app file / folder browser for platforms without usable native dialogs (see `pick.svelte.ts`). */
@@ -15,6 +16,8 @@
   let roots = $state<StorageRoot[]>([]);
   let listing = $state<DirListing | null>(null);
   let error = $state("");
+  /** Shown under the error while the device's storage cannot be read (no storage access). */
+  let hint = $state("");
   let loading = $state(false);
   // `req` reads through to `picker.req`, so take what is needed before clearing it.
   // svelte-ignore state_referenced_locally
@@ -26,7 +29,13 @@
   const rootOf = (path: string) =>
     roots.filter((r) => path === r.path || path.startsWith(r.path + "/")).sort((a, b) => b.path.length - a.path.length)[0];
   const rootLabel = (r: StorageRoot) =>
-    r.kind === "internal" ? t("pick.internal") : r.kind === "home" ? t("pick.home") : t("pick.external", { name: r.name });
+    r.kind === "internal"
+      ? t("pick.internal")
+      : r.kind === "home"
+        ? t("pick.home")
+        : r.kind === "app"
+          ? t("pick.app")
+          : t("pick.external", { name: r.name });
 
   /** The current path shown from its storage root: "Internal storage / DCIM / Camera". */
   const crumbs = $derived.by(() => {
@@ -55,6 +64,7 @@
     } catch (e) {
       const err = asCmdError(e);
       error = err.code === "permission" ? t("pick.denied") : err.message;
+      if (err.code === "permission" && isAndroid) hint = t("pick.deniedHint");
       return false;
     } finally {
       loading = false;
@@ -68,8 +78,36 @@
       last = localStorage.getItem(LAST);
     } catch {}
     if (last && (await go(last))) return;
-    await go(roots[0]?.path ?? "/");
+    // Without storage access only the app folder opens; land there, keeping the explanation.
+    for (const r of roots) {
+      if (await go(r.path)) {
+        if (hint) error = t("pick.denied");
+        return;
+      }
+    }
+    if (!roots.length) await go("/");
   });
+
+  /** Last resort: the OS document picker, for folders the in-app browser cannot read. */
+  async function systemPick() {
+    let res: SystemPick;
+    try {
+      res = await platformApi.systemPick(mode === "file" ? "file" : "folder");
+    } catch (e) {
+      error = asCmdError(e).message;
+      return;
+    }
+    if (res.cancelled) return;
+    if (!res.path || !res.readable) {
+      error = t("pick.systemDenied");
+      hint = "";
+      return;
+    }
+    // A copied file (`res.copied`) shows its app-folder path wherever the pick is displayed.
+    if (mode === "save") await go(res.path);
+    else done(res.path);
+  }
+
 
 
   function done(path: string | null) {
@@ -134,6 +172,7 @@
     <div class="body list">
       {#if error}
         <p class="msg err">{error}</p>
+        {#if hint}<p class="msg">{hint}</p>{/if}
       {/if}
       {#if listing}
         {#each listing.entries as e (e.name)}
@@ -149,8 +188,15 @@
       {/if}
     </div>
 
+    {#if mode === "file" && isAndroid}
+      <footer>
+        <span class="grow"></span>
+        <button class="btn" onclick={systemPick}>{t("pick.system")}</button>
+      </footer>
+    {/if}
     {#if mode !== "file"}
       <footer>
+        {#if isAndroid}<button class="btn" onclick={systemPick}>{t("pick.system")}</button>{/if}
         {#if mode === "save"}
           <input class="input grow" placeholder={t("pick.name")} bind:value={name} onkeydown={(e) => e.key === "Enter" && saveName && listing && done(join(listing.path, saveName))} />
           <button class="btn primary" disabled={!saveName || !listing} onclick={() => listing && done(join(listing.path, saveName))}>

@@ -84,7 +84,7 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
 - 뷰어 확대·패닝은 `zoom.svelte.ts`(`ZoomPan`, 배율 1 = 화면 맞춤). 확대 중에는 드래그가 넘기기가 아니라 패닝이다.
 - 모바일(Android): 파일·폴더 선택은 항상 `pick.svelte.ts`를 쓴다(`@tauri-apps/plugin-dialog`의 `open`/`save` 직접 호출 금지).
   새 오버레이·대화 상자는 열려 있는 동안 `back.svelte.ts`의 `onBack`으로 닫기를 등록한다. 호버로만 보이는 컨트롤은
-  `@media (hover: none)`에서 항상 보이게 한다. 네이티브 기능은 `platform.rs` ↔ `gen/android/.../ViewPortPlugin.kt`.
+  `@media (hover: none)`에서 항상 보이게 한다. 저장소 경로를 하드코딩하지 않는다(`/storage/emulated/0`은 보안 폴더·작업 프로필에서 다름 → `storage_roots`). 네이티브 기능은 `platform.rs` ↔ `gen/android/.../ViewPortPlugin.kt`.
   APK: `npm run tauri android build -- --apk --debug --target aarch64` (`ANDROID_HOME`, `NDK_HOME`, Android Studio JBR).
 - 미디어 종류는 `image`/`video`/`nonmedia`. `nonmedia`(기타 파일)는 미리보기·뷰어에 넣지 않고 내보내기만 한다.
 - 이미지를 화면에 그릴 때는 원본 `mediaUrl` 대신 `displayUrl(brief, viewer.display_max_px)`를 쓴다(큰 이미지는 축소 사본).

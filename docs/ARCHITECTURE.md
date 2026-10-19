@@ -251,6 +251,10 @@ UI에 전달되며 작업별로 `progress.emit_interval_ms` 간격으로 제한�
 - 프로젝트는 `src-tauri/gen/android`(`tauri android init`으로 생성 후 수정). 빌드: `npm run tauri android build -- --apk`
   (`ANDROID_HOME`, `NDK_HOME` 필요).
 - 저장소: 미디어를 경로로 읽기 위해 "모든 파일 접근"(`MANAGE_EXTERNAL_STORAGE`, API 29 이하는 읽기/쓰기 권한)을 쓴다.
+  그 권한을 줄 수 없는 환경(삼성 보안 폴더 등 작업 프로필)에서는 사진·영상 권한(`READ_MEDIA_IMAGES/VIDEO`)으로 미디어만
+  경로로 읽는다. 기본 저장소 경로는 사용자별이라(보안 폴더 = `/storage/emulated/150`) OS에서 받는다(`storageRoots`).
+  앱 전용 폴더(`Android/data/<패키지>/files`, 권한 불필요·앱 삭제 시 함께 삭제)를 선택기 루트로 항상 제공하고, 최후 수단으로
+  시스템 문서 선택기(SAF, `system_pick`)로 고른 항목을 경로로 되돌린다(읽을 수 없는 파일은 앱 폴더로 복사).
   Android 대화 상자 플러그인은 폴더 선택을 지원하지 않으므로 `browse_dir`/`storage_roots` 커맨드로 앱 내부 경로 선택기를 쓴다.
 - 네이티브 기능은 `ViewPortPlugin.kt` ↔ `src-tauri/src/platform.rs`: 저장소 권한, 시스템 바 숨김(전체 화면), 시스템 바 색,
   FFmpeg 대신 OS 미디어 프레임워크(`MediaMetadataRetriever`/`MediaExtractor`)로 영상 분석·프레임 썸네일(로컬 경로만, 변환 없음).

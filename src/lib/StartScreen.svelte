@@ -1,6 +1,6 @@
 <script lang="ts">
   import Select from "./ui/Select.svelte";
-  import { api, asCmdError, platformApi, type BundleSummary, type CmdError } from "./api";
+  import { api, asCmdError, platformApi, type BundleSummary, type CmdError, type RecentBundle } from "./api";
   import { onBack } from "./back.svelte";
   import { pickFile, pickFolder, pickSave } from "./pick.svelte";
   import { isAndroid } from "./platform";
@@ -12,7 +12,9 @@
 
   let { onopened }: { onopened: (b: BundleSummary) => void } = $props();
 
-  let recent = $state<string[]>([]);
+  let recent = $state<RecentBundle[]>([]);
+  const hideMissing = $derived(!!prefs.app?.hide_missing_recent);
+  const shown = $derived(hideMissing ? recent.filter((r) => r.exists) : recent);
   let error = $state<CmdError | null>(null);
   let pendingNewer = $state<{ path: string; found: number; supported: number } | null>(null);
   let pendingLock = $state<{ path: string; requiresKeyfile: boolean; allowNewer: boolean } | null>(null);
@@ -40,6 +42,17 @@
   $effect(() => {
     if (pendingNewer) return onBack(() => (pendingNewer = null));
   });
+
+  function toggleHideMissing() {
+    if (!prefs.app) return;
+    prefs.app.hide_missing_recent = !prefs.app.hide_missing_recent;
+    savePrefs(0);
+  }
+
+  async function forget(path: string) {
+    await api.forgetRecentBundle(path).catch(() => {});
+    recent = recent.filter((r) => r.path !== path);
+  }
 
   async function run(f: () => Promise<BundleSummary>) {
     busy = true;
@@ -145,20 +158,30 @@
     {/if}
 
     <section>
-      <div class="eyebrow">{t("start.recent")}</div>
-      {#if recent.length === 0}
+      <div class="recent-head">
+        <div class="eyebrow grow">{t("start.recent")}</div>
+        {#if prefs.app}
+          <label class="hide-missing">
+            <span>{t("start.hideMissing")}</span>
+            <button type="button" class="switch" class:on={hideMissing} aria-label={t("start.hideMissing")} onclick={toggleHideMissing}></button>
+          </label>
+        {/if}
+      </div>
+      {#if shown.length === 0}
         <p class="muted">{t("start.none")}</p>
       {:else}
         <ul>
-          {#each recent as path (path)}
-            <li>
-              <button class="recent" disabled={busy} onclick={() => openPath(path)}>
+          {#each shown as r (r.path)}
+            <li class:missing={!r.exists}>
+              <button class="recent" disabled={busy} onclick={() => openPath(r.path)}>
                 <span class="ico"><Icon name="layers" size={15} /></span>
                 <span class="txt">
-                  <span class="name">{path.split(/[\\/]/).pop()}</span>
-                  <span class="path">{path}</span>
+                  <span class="name">{r.path.split(/[\\/]/).pop()}</span>
+                  <span class="path">{r.exists ? r.path : `${t("start.missing")} · ${r.path}`}</span>
                 </span>
-                <Icon name="chevronRight" size={14} />
+              </button>
+              <button class="icon-btn forget" aria-label={t("start.forget")} title={t("start.forget")} onclick={() => forget(r.path)}>
+                <Icon name="x" size={14} />
               </button>
             </li>
           {/each}
@@ -310,8 +333,44 @@
     max-height: 320px;
     overflow-y: auto;
   }
+  .recent-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .hide-missing {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--faint);
+    cursor: pointer;
+  }
+  li {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+  li.missing .recent {
+    opacity: 0.55;
+  }
+  .forget {
+    flex-shrink: 0;
+    opacity: 0;
+    transition: opacity var(--t-fast) var(--ease);
+  }
+  li:hover .forget,
+  .forget:focus-visible {
+    opacity: 1;
+  }
+  @media (hover: none) {
+    .forget {
+      opacity: 1;
+    }
+  }
   .recent {
-    width: 100%;
+    flex: 1;
+    min-width: 0;
     display: flex;
     align-items: center;
     gap: 12px;

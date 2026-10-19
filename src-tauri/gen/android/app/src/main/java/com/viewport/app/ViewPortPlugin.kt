@@ -17,6 +17,9 @@ import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.storage.StorageManager
+import android.provider.DocumentsContract
+import android.provider.OpenableColumns
 import android.provider.Settings
 import android.view.View
 import androidx.activity.result.ActivityResult
@@ -31,6 +34,7 @@ import app.tauri.annotation.Permission
 import app.tauri.annotation.PermissionCallback
 import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
+import app.tauri.plugin.JSArray
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
 import java.io.File
@@ -47,6 +51,11 @@ class FrameArgs {
   var atMs: Long = 0
   var maxEdge: Int = 320
   var quality: Int = 85
+}
+
+@InvokeArg
+class SystemPickArgs {
+  var mode: String = "folder"
 }
 
 @InvokeArg
@@ -70,7 +79,8 @@ class SystemBarsArgs {
     Permission(
       strings = [Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE],
       alias = "storage"
-    )
+    ),
+    Permission(strings = [Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO], alias = "media")
   ]
 )
 class ViewPortPlugin(private val activity: Activity) : Plugin(activity) {
@@ -85,33 +95,168 @@ class ViewPortPlugin(private val activity: Activity) : Plugin(activity) {
         PackageManager.PERMISSION_GRANTED
     }
 
+  /** Photos and videos only (Android 13+ media permissions, or the legacy storage permission). */
+  private fun mediaGranted(): Boolean {
+    val perms = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      listOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO)
+    } else {
+      listOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+    }
+    return perms.all { ContextCompat.checkSelfPermission(activity, it) == PackageManager.PERMISSION_GRANTED }
+  }
+
   private fun resolveGranted(invoke: Invoke) {
-    invoke.resolve(JSObject().put("granted", storageGranted()))
+    invoke.resolve(JSObject().put("granted", storageGranted()).put("media", mediaGranted()))
   }
 
   @Command
   fun storageStatus(invoke: Invoke) = resolveGranted(invoke)
 
+  /**
+   * All-files access first. Where that screen is missing or offers no switch (Samsung Secure
+   * Folder and other work profiles), falls back to the photo and video permissions, which let
+   * the app read media by path but not other files.
+   */
   @Command
   fun requestStorage(invoke: Invoke) {
     if (storageGranted()) return resolveGranted(invoke)
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
       val own = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:${activity.packageName}"))
-      try {
-        startActivityForResult(invoke, own, "storageResult")
-      } catch (_: ActivityNotFoundException) {
-        startActivityForResult(invoke, Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION), "storageResult")
+      for (intent in listOf(own, Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))) {
+        try {
+          startActivityForResult(invoke, intent, "storageResult")
+          return
+        } catch (_: ActivityNotFoundException) {
+        } catch (_: SecurityException) {
+        }
       }
+      requestMedia(invoke)
     } else {
       requestPermissionForAlias("storage", invoke, "storagePermissionResult")
     }
   }
 
+  private fun requestMedia(invoke: Invoke) {
+    when {
+      mediaGranted() -> resolveGranted(invoke)
+      Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> requestPermissionForAlias("media", invoke, "storagePermissionResult")
+      else -> requestPermissionForAlias("storage", invoke, "storagePermissionResult")
+    }
+  }
+
   @ActivityCallback
-  fun storageResult(invoke: Invoke, @Suppress("UNUSED_PARAMETER") result: ActivityResult) = resolveGranted(invoke)
+  fun storageResult(invoke: Invoke, @Suppress("UNUSED_PARAMETER") result: ActivityResult) {
+    if (storageGranted()) resolveGranted(invoke) else requestMedia(invoke)
+  }
 
   @PermissionCallback
   fun storagePermissionResult(invoke: Invoke) = resolveGranted(invoke)
+
+  /**
+   * Where the in-app file browser starts. The primary volume comes from the OS because it is
+   * per user (`/storage/emulated/150` in Samsung Secure Folder, not `/0`). The app's own folder
+   * on shared storage is always readable and writable, with or without storage access.
+   */
+  @Command
+  fun storageRoots(invoke: Invoke) {
+    val roots = JSArray()
+    val seen = mutableSetOf<String>()
+    fun add(kind: String, dir: File?) {
+      val path = dir?.absolutePath ?: return
+      if (!seen.add(path)) return
+      roots.put(JSObject().put("kind", kind).put("name", if (kind == "external") dir.name else "").put("path", path))
+    }
+    add("internal", Environment.getExternalStorageDirectory())
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+      activity.getSystemService(StorageManager::class.java)?.storageVolumes?.forEach { v ->
+        if (!v.isPrimary && v.state == Environment.MEDIA_MOUNTED) add("external", v.directory)
+      }
+    } else {
+      // Removable volumes: their app folder is <volume>/Android/data/<package>/files.
+      activity.getExternalFilesDirs(null).drop(1).filterNotNull().forEach { add("external", File(it.absolutePath.substringBefore("/Android/data/"))) }
+    }
+    add("app", activity.getExternalFilesDir(null)?.also { it.mkdirs() })
+    invoke.resolve(JSObject().put("roots", roots))
+  }
+
+  private var pickMode = "folder"
+
+  /**
+   * The system document picker, a last resort when the app cannot list a folder itself.
+   * The app reads media by path, so the picked document is turned back into one; a file
+   * whose path stays unreadable is copied into the app folder.
+   */
+  @Command
+  fun systemPick(invoke: Invoke) {
+    pickMode = invoke.parseArgs(SystemPickArgs::class.java).mode
+    val intent = if (pickMode == "file") {
+      Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*")
+    } else {
+      Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+    }
+    try {
+      startActivityForResult(invoke, intent, "systemPickResult")
+    } catch (e: ActivityNotFoundException) {
+      invoke.reject("no system picker", "unavailable")
+    }
+  }
+
+  @ActivityCallback
+  fun systemPickResult(invoke: Invoke, result: ActivityResult) {
+    val uri = result.data?.data
+    if (result.resultCode != Activity.RESULT_OK || uri == null) return invoke.resolve(JSObject().put("cancelled", true))
+    val tree = pickMode != "file"
+    val path = documentPath(uri, tree)
+    if (tree) {
+      val readable = path != null && File(path).list() != null
+      return invoke.resolve(JSObject().put("path", path).put("readable", readable))
+    }
+    if (path != null && File(path).canRead()) return invoke.resolve(JSObject().put("path", path).put("readable", true))
+    pool.execute {
+      try {
+        val dir = File(activity.getExternalFilesDir(null) ?: activity.filesDir, "picked").apply { mkdirs() }
+        val out = File(dir, displayName(uri))
+        activity.contentResolver.openInputStream(uri)!!.use { input -> out.outputStream().use { input.copyTo(it, 1 shl 20) } }
+        invoke.resolve(JSObject().put("path", out.absolutePath).put("readable", true).put("copied", true))
+      } catch (e: Exception) {
+        invoke.reject(e.message ?: "copy failed")
+      }
+    }
+  }
+
+  private fun displayName(uri: Uri): String {
+    val name = try {
+      activity.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+        if (it.moveToFirst()) it.getString(0) else null
+      }
+    } catch (_: Exception) {
+      null
+    }
+    return (name ?: "picked").replace(Regex("[/\\\\]"), "_")
+  }
+
+  /** The file system path behind a document from the external storage or downloads provider. */
+  private fun documentPath(uri: Uri, tree: Boolean): String? {
+    val id = try {
+      if (tree) DocumentsContract.getTreeDocumentId(uri) else DocumentsContract.getDocumentId(uri)
+    } catch (_: Exception) {
+      return null
+    }
+    return when (uri.authority) {
+      "com.android.externalstorage.documents" -> {
+        val volume = id.substringBefore(':')
+        val rel = id.substringAfter(':', "")
+        val base = when (volume) {
+          "primary" -> Environment.getExternalStorageDirectory()
+          "home" -> Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)
+          else -> File("/storage/$volume")
+        }
+        if (rel.isEmpty()) base.absolutePath else File(base, rel).absolutePath
+      }
+      "com.android.providers.downloads.documents" -> id.removePrefix("raw:").takeIf { it.startsWith("/") }
+      else -> null
+    }
+  }
 
   @Command
   fun setFullscreen(invoke: Invoke) {

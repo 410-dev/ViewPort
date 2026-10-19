@@ -75,6 +75,11 @@ mod imp {
     }
 
     #[derive(Deserialize)]
+    struct Roots {
+        roots: Vec<super::StorageRoot>,
+    }
+
+    #[derive(Deserialize)]
     struct FramePath {
         path: PathBuf,
     }
@@ -89,6 +94,15 @@ mod imp {
 
     pub fn request_storage() -> bool {
         HANDLE.get().and_then(|h| h.run_mobile_plugin::<Granted>("requestStorage", ()).ok()).is_some_and(|g| g.granted)
+    }
+
+    pub fn storage_roots() -> Option<Vec<super::StorageRoot>> {
+        HANDLE.get()?.run_mobile_plugin::<Roots>("storageRoots", ()).ok().map(|r| r.roots)
+    }
+
+    pub fn system_pick(mode: &str) -> Result<super::SystemPick, String> {
+        let Some(h) = HANDLE.get() else { return Ok(super::SystemPick { cancelled: true, ..Default::default() }) };
+        h.run_mobile_plugin("systemPick", json!({ "mode": mode })).map_err(|e| e.to_string())
     }
 
     pub fn set_fullscreen(on: bool) {
@@ -149,6 +163,14 @@ mod imp {
 
     pub fn request_storage() -> bool {
         true
+    }
+
+    pub fn storage_roots() -> Option<Vec<super::StorageRoot>> {
+        None
+    }
+
+    pub fn system_pick(_mode: &str) -> Result<super::SystemPick, String> {
+        Ok(super::SystemPick { cancelled: true, ..Default::default() })
     }
 
     pub fn set_fullscreen(_on: bool) {}
@@ -225,22 +247,29 @@ pub async fn set_system_bars(dark: bool, background: String) {
     let _ = tauri::async_runtime::spawn_blocking(move || imp::system_bars(dark, &background)).await;
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct StorageRoot {
-    /// "internal", "external" or "home"; the UI names it.
-    pub kind: &'static str,
+    /// "internal", "external", "app" (the app's own folder) or "home"; the UI names it.
+    pub kind: String,
     pub name: String,
     pub path: String,
 }
 
-/// Where the in-app file browser starts: the device's shared storage volumes.
+/// Where the in-app file browser starts: the device's shared storage volumes and, on
+/// Android, the app's own folder, which needs no storage access.
 #[tauri::command]
-pub fn storage_roots() -> Vec<StorageRoot> {
+pub async fn storage_roots() -> Vec<StorageRoot> {
+    tauri::async_runtime::spawn_blocking(|| imp::storage_roots().unwrap_or_else(fallback_roots)).await.unwrap_or_default()
+}
+
+fn fallback_roots() -> Vec<StorageRoot> {
     let mut roots = Vec::new();
     if cfg!(target_os = "android") {
-        let internal = Path::new("/storage/emulated/0");
+        // The primary volume is per user (`/storage/emulated/150` in a work profile or Samsung
+        // Secure Folder); `/storage/self/primary` links to this user's one.
+        let internal = std::fs::canonicalize("/storage/self/primary").unwrap_or_else(|_| PathBuf::from("/storage/emulated/0"));
         if internal.is_dir() {
-            roots.push(StorageRoot { kind: "internal", name: String::new(), path: internal.display().to_string() });
+            roots.push(StorageRoot { kind: "internal".into(), name: String::new(), path: internal.display().to_string() });
         }
         // Memory cards and USB drives mount as /storage/XXXX-XXXX.
         if let Ok(rd) = std::fs::read_dir("/storage") {
@@ -253,14 +282,40 @@ pub fn storage_roots() -> Vec<StorageRoot> {
             for name in ext {
                 let path = format!("/storage/{name}");
                 if std::fs::read_dir(&path).is_ok() {
-                    roots.push(StorageRoot { kind: "external", name, path });
+                    roots.push(StorageRoot { kind: "external".into(), name, path });
                 }
             }
         }
     } else if let Some(home) = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }) {
-        roots.push(StorageRoot { kind: "home", name: String::new(), path: PathBuf::from(home).display().to_string() });
+        roots.push(StorageRoot { kind: "home".into(), name: String::new(), path: PathBuf::from(home).display().to_string() });
     }
     roots
+}
+
+/// A document picked with the OS picker (`system_pick`).
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct SystemPick {
+    #[serde(default)]
+    pub cancelled: bool,
+    /// The file system path of the pick, when the OS could name one.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Whether the app can read that path (a folder: list it).
+    #[serde(default)]
+    pub readable: bool,
+    /// A file the app could not read in place, copied into the app folder.
+    #[serde(default)]
+    pub copied: bool,
+}
+
+/// The OS document picker (Android: the Storage Access Framework), the last resort when
+/// the in-app browser cannot read a folder. `mode` is "file" or "folder".
+#[tauri::command]
+pub async fn system_pick(mode: String) -> CmdResult<SystemPick> {
+    tauri::async_runtime::spawn_blocking(move || imp::system_pick(&mode))
+        .await
+        .map_err(|e| CmdError::new("io", e))?
+        .map_err(|e| CmdError::new("io", e))
 }
 
 #[derive(Serialize)]

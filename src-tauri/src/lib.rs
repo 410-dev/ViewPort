@@ -63,6 +63,7 @@ pub fn run() {
             commands::close_bundle,
             commands::current_bundle,
             commands::recent_bundles,
+            commands::forget_recent_bundle,
             commands::get_settings,
             commands::save_settings,
             commands::list_sources,
@@ -139,6 +140,7 @@ pub fn run() {
             platform::set_system_fullscreen,
             platform::set_system_bars,
             platform::storage_roots,
+            platform::system_pick,
             platform::browse_dir,
             media_base_url,
         ])

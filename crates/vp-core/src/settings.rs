@@ -322,6 +322,8 @@ pub struct AppSettings {
     pub hardware: HardwareSettings,
     /// Open the most recent bundle when the app starts (so its cache warms up right away).
     pub reopen_last_bundle: bool,
+    /// Leave bundles that no longer exist out of the start screen's recent list.
+    pub hide_missing_recent: bool,
     pub ui: UiSettings,
     pub progress: ProgressSettings,
     pub audio: AudioSettings,
@@ -335,6 +337,7 @@ impl Default for AppSettings {
         Self {
             hardware: HardwareSettings::default(),
             reopen_last_bundle: true,
+            hide_missing_recent: false,
             ui: UiSettings::default(),
             progress: ProgressSettings::default(),
             audio: AudioSettings::default(),

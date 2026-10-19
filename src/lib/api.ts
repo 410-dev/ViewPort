@@ -208,6 +208,7 @@ export interface AppSettings {
     cache_limit_bytes: number;
   };
   reopen_last_bundle: boolean;
+  hide_missing_recent: boolean;
   ui: UiSettings;
   progress: { emit_interval_ms: number; slow_read_ms: number; read_piece_bytes: number; keep_finished_secs: number };
   audio: { volume: number; muted: boolean; start_muted: boolean; focus_only: boolean };
@@ -333,7 +334,8 @@ export const api = {
   openBundle: (path: string, allowNewer = false) => invoke<BundleSummary>("open_bundle", { path, allowNewer }),
   closeBundle: () => invoke<void>("close_bundle"),
   currentBundle: () => invoke<BundleSummary | null>("current_bundle"),
-  recentBundles: () => invoke<string[]>("recent_bundles"),
+  recentBundles: () => invoke<RecentBundle[]>("recent_bundles"),
+  forgetRecentBundle: (path: string) => invoke<void>("forget_recent_bundle", { path }),
   getSettings: () => invoke<Settings>("get_settings"),
   saveSettings: (settings: Settings) => invoke<void>("save_settings", { settings }),
   listSources: () => invoke<SourceRow[]>("list_sources"),
@@ -515,9 +517,24 @@ export interface PlatformInfo {
 }
 
 export interface StorageRoot {
-  kind: "internal" | "external" | "home";
+  kind: "internal" | "external" | "app" | "home";
   name: string;
   path: string;
+}
+
+/** A pick from the OS document picker (`system_pick`). */
+export interface SystemPick {
+  cancelled: boolean;
+  path: string | null;
+  readable: boolean;
+  /** A file the app could not read in place, copied into the app folder. */
+  copied: boolean;
+}
+
+export interface RecentBundle {
+  path: string;
+  /** Whether the bundle is still there. */
+  exists: boolean;
 }
 
 export interface DirListing {
@@ -533,6 +550,7 @@ export const platformApi = {
   setSystemFullscreen: (on: boolean) => invoke<void>("set_system_fullscreen", { on }),
   setSystemBars: (dark: boolean, background: string) => invoke<void>("set_system_bars", { dark, background }),
   storageRoots: () => invoke<StorageRoot[]>("storage_roots"),
+  systemPick: (mode: "file" | "folder") => invoke<SystemPick>("system_pick", { mode }),
   browseDir: (path: string, files: boolean, extensions: string[] = []) => invoke<DirListing>("browse_dir", { path, files, extensions }),
 };
 
