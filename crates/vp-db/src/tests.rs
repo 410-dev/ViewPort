@@ -407,6 +407,11 @@ fn metadata_follows_files_into_another_source() {
     let loc = lib.db.media_location(1).unwrap().unwrap();
     assert_eq!((loc.source_id, loc.rel_path.as_str()), (shard, "b10.jpg"));
     assert_eq!(lib.db.child_folders(shard, "").unwrap(), [("in".to_string(), 1)]);
+    // Rename within the source: name and extension follow the path.
+    lib.db.move_media(1, shard, "sub/renamed.PNG").unwrap();
+    let b = &lib.db.media_brief(&[1]).unwrap()[0];
+    assert_eq!((b.name.as_str(), b.ext.as_str(), b.folder.as_str()), ("renamed.PNG", "png", "sub"));
+    lib.db.move_media(1, shard, "b10.jpg").unwrap();
     lib.reg = lib.db.field_registry().unwrap();
     assert_eq!(lib.ids("점수(5)"), [1, 4]);
 

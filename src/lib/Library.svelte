@@ -8,6 +8,7 @@
     asCmdError,
     onScan,
     type BundleSummary,
+    type MediaBrief,
     type SavedQuery,
     type ScanEvent,
     type Settings,
@@ -26,6 +27,7 @@
   import Sidebar from "./shell/Sidebar.svelte";
   import Toolbar from "./shell/Toolbar.svelte";
   import SourceDialog from "./SourceDialog.svelte";
+  import MoveDialog from "./MoveDialog.svelte";
   import StatusBar from "./StatusBar.svelte";
   import ContextMenu, { type MenuItem } from "./ui/ContextMenu.svelte";
   import Icon from "./ui/Icon.svelte";
@@ -355,11 +357,75 @@
 
   const menuItems = $derived<MenuItem[]>([
     { label: t("sel.info"), icon: "info", action: () => setPanel(true) },
+    ...(selection.set.size === 1 ? [{ label: t("sel.rename"), icon: "pencil" as const, action: () => startRename([...selection.set][0]) }] : []),
+    { label: t("sel.move"), icon: "folder", action: () => startMove([...selection.set]) },
     { label: t("sel.export"), icon: "download", action: () => exportSelected([...selection.set]) },
     { label: t("sel.all"), icon: "checkSquare", action: () => selection.selectAll(ids) },
     { label: t("sel.clear"), icon: "x", action: () => selection.clear() },
     { label: t("sel.delete"), icon: "trash", danger: true, action: () => (confirmDelete = [...selection.set]) },
   ]);
+
+  // ---- rename / move (within the item's own source; shards included)
+  let renaming = $state<{ id: number; name: string; error: string } | null>(null);
+  let moving = $state<{ ids: number[]; sourceId: number; start: string } | null>(null);
+  $effect(() => {
+    if (renaming) return onBack(() => (renaming = null));
+  });
+
+  async function briefsOf(list: number[]): Promise<MediaBrief[]> {
+    const missing = list.filter((id) => !briefs.has(id));
+    if (missing.length) for (const b of await api.mediaBrief(missing)) briefs.set(b.id, b);
+    return list.map((id) => briefs.get(id)).filter((b): b is MediaBrief => !!b);
+  }
+
+  function relocateError(e: unknown): string {
+    const err = asCmdError(e);
+    return err.code === "exists" ? t("rename.exists") : err.code === "unsupported" ? t("rename.unsupported") : err.message;
+  }
+
+  async function startRename(id: number) {
+    const [b] = await briefsOf([id]);
+    if (b) renaming = { id, name: b.name, error: "" };
+  }
+
+  async function commitRename() {
+    if (!renaming) return;
+    const { id, name } = renaming;
+    try {
+      await api.renameMedia(id, name);
+      renaming = null;
+      afterRelocate([id]);
+    } catch (e) {
+      if (renaming) renaming.error = relocateError(e);
+    }
+  }
+
+  async function startMove(list: number[]) {
+    const bs = await briefsOf(list);
+    const src = new Set(bs.map((b) => b.source_id));
+    if (src.size !== 1) return alert(t("move.mixed"));
+    moving = { ids: list, sourceId: bs[0].source_id, start: bs[0].folder };
+  }
+
+  async function commitMove(target: string) {
+    if (!moving) return;
+    const list = moving.ids;
+    moving = null;
+    try {
+      const r = await api.moveMediaTo(list, target);
+      afterRelocate(list);
+      if (r.failed.length) alert(`${t("move.failed", { n: r.failed.length })}\n\n${r.failed.slice(0, 5).join("\n")}`);
+    } catch (e) {
+      alert(relocateError(e));
+    }
+  }
+
+  function afterRelocate(list: number[]) {
+    invalidate(list);
+    broadcast("media", list);
+    runSearch(false);
+    if (selected !== null) api.childFolders(selected, folder).then((l) => (subfolders = l)).catch(() => {});
+  }
 
   async function exportSelected(list: number[]) {
     const dest = await pickFolder(t("panel.exportTo"));
@@ -557,6 +623,43 @@
   <ContextMenu x={selection.menu.x} y={selection.menu.y} items={menuItems} onclose={() => (selection.menu = null)} />
 {/if}
 
+{#if renaming}
+  <div class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && (renaming = null)}>
+    <div class="dialog confirm" role="dialog" aria-modal="true" aria-labelledby="ren-title">
+      <header><h2 id="ren-title">{t("rename.title")}</h2></header>
+      <div class="body form">
+        <!-- svelte-ignore a11y_autofocus -->
+        <input
+          class="input"
+          bind:value={renaming.name}
+          autofocus
+          onfocus={(e) => {
+            const dot = e.currentTarget.value.lastIndexOf(".");
+            e.currentTarget.setSelectionRange(0, dot > 0 ? dot : e.currentTarget.value.length);
+          }}
+          onkeydown={(e) => e.key === "Enter" && renaming?.name.trim() && commitRename()}
+        />
+        {#if renaming.error}<p class="err">{renaming.error}</p>{/if}
+      </div>
+      <footer>
+        <span class="grow"></span>
+        <button class="btn ghost" onclick={() => (renaming = null)}>{t("common.cancel")}</button>
+        <button class="btn primary" disabled={!renaming.name.trim()} onclick={commitRename}>{t("common.save")}</button>
+      </footer>
+    </div>
+  </div>
+{/if}
+
+{#if moving}
+  <MoveDialog
+    sourceId={moving.sourceId}
+    sourceName={sources.find((s) => s.id === moving!.sourceId)?.name ?? ""}
+    start={moving.start}
+    onpick={commitMove}
+    onclose={() => (moving = null)}
+  />
+{/if}
+
 {#if confirmDelete}
   <div class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && !deleting && (confirmDelete = null)}>
     <div class="dialog confirm" role="alertdialog" aria-modal="true" aria-labelledby="del-title">
@@ -719,6 +822,11 @@
   }
   .confirm {
     width: min(420px, 100%);
+  }
+  .confirm .err {
+    margin: 0;
+    color: var(--danger);
+    font-size: 13px;
   }
   .confirm .text {
     margin: 0;

@@ -148,6 +148,7 @@ pub struct MediaBrief {
     /// Folder relative to the source root ("" = root).
     pub folder: String,
     pub ext: String,
+    pub source_id: i64,
 }
 
 /// Flag set by "add this file to the ignore list" on the playback banner.
@@ -595,7 +596,7 @@ impl Db {
                 "SELECT m.id, m.name, m.kind, m.width, m.height, m.duration_ms, t.status,
                         p.compatible, v.media_id IS NOT NULL,
                         EXISTS (SELECT 1 FROM media_flag f WHERE f.media_id = m.id AND f.flag = '{FLAG_IGNORE_PLAYBACK_WARNING}'),
-                        m.size, m.created_ms, m.modified_ms, m.parent_path, m.ext
+                        m.size, m.created_ms, m.modified_ms, m.parent_path, m.ext, m.source_id
                  FROM media m LEFT JOIN thumbnail t ON t.media_id = m.id
                  LEFT JOIN media_probe p ON p.media_id = m.id AND p.ok
                  LEFT JOIN media_variant v ON v.media_id = m.id
@@ -619,6 +620,7 @@ impl Db {
                     modified_ms: r.get(12)?,
                     folder: r.get::<_, Option<String>>(13)?.unwrap_or_default(),
                     ext: r.get::<_, Option<String>>(14)?.unwrap_or_default(),
+                    source_id: r.get(15)?,
                 })
             })?;
             for row in rows {
@@ -1183,11 +1185,12 @@ impl Db {
     /// about it (used when its file moved into another source). An item already at the
     /// destination is replaced.
     pub fn move_media(&self, id: i64, to: i64, rel_path: &str) -> Result<()> {
-        let parent = rel_path.rsplit_once('/').map(|(p, _)| p).unwrap_or("");
+        let (parent, name) = rel_path.rsplit_once('/').unwrap_or(("", rel_path));
+        let ext = name.rsplit_once('.').map(|(_, e)| e.to_lowercase()).unwrap_or_default();
         self.conn.execute("DELETE FROM media WHERE source_id = ?1 AND rel_path = ?2 AND id <> ?3", params![to, rel_path, id])?;
         self.conn.execute(
-            "UPDATE media SET source_id = ?2, rel_path = ?3, parent_path = ?4, missing = 0 WHERE id = ?1",
-            params![id, to, rel_path, parent],
+            "UPDATE media SET source_id = ?2, rel_path = ?3, parent_path = ?4, name = ?5, ext = ?6, missing = 0 WHERE id = ?1",
+            params![id, to, rel_path, parent, name, ext],
         )?;
         Ok(())
     }

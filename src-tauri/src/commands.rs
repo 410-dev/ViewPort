@@ -895,6 +895,89 @@ pub fn cancel_task(id: u64) -> bool {
 
 // ---------------------------------------------------------------- export
 
+/// Moves the file of item `id` to `new_rel` within its source and records the new path
+/// (the item keeps its id, tags and stats). Refuses to replace an existing file.
+fn relocate(ws: &Workspace, registry: &vp_driver::DriverRegistry, id: i64, new_rel: &str) -> CmdResult<()> {
+    let loc = ws.read_db.lock().unwrap().media_location(id)?.ok_or_else(|| CmdError::new("not_found", "item"))?;
+    if loc.rel_path == new_rel {
+        return Ok(());
+    }
+    let source = ws.read_db.lock().unwrap().source(loc.source_id)?.ok_or_else(|| CmdError::new("not_found", "source"))?;
+    let driver = ws.driver(registry, &source)?;
+    // Case-only renames on case-insensitive file systems stat as the same file.
+    if !loc.rel_path.eq_ignore_ascii_case(new_rel) && driver.stat(new_rel).is_ok() {
+        return Err(CmdError::new("exists", new_rel));
+    }
+    driver.rename(&loc.rel_path, new_rel).map_err(|e| match e {
+        vp_driver::DriverError::Unsupported(_) => CmdError::new("unsupported", e),
+        e => CmdError::from(e),
+    })?;
+    ws.write_db.lock().unwrap().move_media(id, loc.source_id, new_rel)?;
+    Ok(())
+}
+
+/// Renames the file of one item, in place. `name` is a file name, not a path.
+#[tauri::command]
+pub async fn rename_media(app: AppHandle, state: State<'_, AppState>, id: i64, name: String) -> CmdResult<()> {
+    let ws = workspace(&state)?;
+    let registry = app.state::<AppState>().drivers.clone();
+    let name = name.trim().to_string();
+    if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\']) {
+        return Err(CmdError::new("invalid_name", name));
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let loc = ws.read_db.lock().unwrap().media_location(id)?.ok_or_else(|| CmdError::new("not_found", "item"))?;
+        let new_rel = match loc.rel_path.rsplit_once('/') {
+            Some((dir, _)) => format!("{dir}/{name}"),
+            None => name,
+        };
+        relocate(&ws, &registry, id, &new_rel)
+    })
+    .await
+    .map_err(|e| CmdError::new("io", e))?
+}
+
+#[derive(Serialize)]
+pub struct MoveReport {
+    pub moved: usize,
+    /// Items that could not be moved, as "name: reason".
+    pub failed: Vec<String>,
+}
+
+/// Moves items into `folder` (relative to the source root, `""` = root) of their own
+/// source: a folder of a local source, a share, or a shard. Names are kept.
+#[tauri::command]
+pub async fn move_media_to(app: AppHandle, state: State<'_, AppState>, ids: Vec<i64>, folder: String) -> CmdResult<MoveReport> {
+    let ws = workspace(&state)?;
+    let registry = app.state::<AppState>().drivers.clone();
+    let folder = vp_driver::checked_components(&folder)?.join("/");
+    tauri::async_runtime::spawn_blocking(move || {
+        let task = crate::tasks::begin("move", "", crate::tasks::Unit::Items, Some(ids.len() as u64));
+        let mut report = MoveReport { moved: 0, failed: Vec::new() };
+        for id in ids {
+            if ws.closed.load(Ordering::Relaxed) {
+                break;
+            }
+            let one = (|| -> CmdResult<()> {
+                let loc = ws.read_db.lock().unwrap().media_location(id)?.ok_or_else(|| CmdError::new("not_found", "item"))?;
+                let name = crate::workspace::file_name(&loc.rel_path);
+                task.detail(&name);
+                let new_rel = if folder.is_empty() { name.clone() } else { format!("{folder}/{name}") };
+                relocate(&ws, &registry, id, &new_rel).map_err(|e| CmdError::new(e.code, format!("{name}: {}", e.message)))
+            })();
+            match one {
+                Ok(()) => report.moved += 1,
+                Err(e) => report.failed.push(e.message),
+            }
+            task.add(1);
+        }
+        if report.failed.is_empty() { task.finish() } else { task.fail(format!("{} files failed", report.failed.len())) }
+        report
+    })
+    .await
+    .map_err(|e| CmdError::new("io", e))
+}
+
 #[derive(Serialize)]
 pub struct DeleteReport {
     pub deleted: usize,

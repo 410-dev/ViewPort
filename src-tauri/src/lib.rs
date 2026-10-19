@@ -115,6 +115,8 @@ pub fn run() {
             commands::cancel_task,
             commands::export_media,
             commands::delete_media,
+            commands::rename_media,
+            commands::move_media_to,
             shards::shard_status,
             shards::inspect_shard,
             shards::create_shard,

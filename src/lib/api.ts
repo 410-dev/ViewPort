@@ -44,6 +44,7 @@ export interface MediaBrief {
   modified_ms: number | null;
   folder: string;
   ext: string;
+  source_id: number;
 }
 
 export interface LoopSegment {
@@ -401,6 +402,9 @@ export const api = {
   cancelTask: (id: number) => invoke<boolean>("cancel_task", { id }),
   exportMedia: (ids: number[], dest: string) => invoke<void>("export_media", { ids, dest }),
   /** Deletes the files of `ids` from their sources and forgets the items. */
+  renameMedia: (id: number, name: string) => invoke<void>("rename_media", { id, name }),
+  /** Moves items into `folder` of their own source (names kept). */
+  moveMediaTo: (ids: number[], folder: string) => invoke<{ moved: number; failed: string[] }>("move_media_to", { ids, folder }),
   deleteMedia: (ids: number[]) => invoke<{ deleted: number; failed: string[] }>("delete_media", { ids }),
 
   // Shard sources (src-tauri/src/shards.rs)

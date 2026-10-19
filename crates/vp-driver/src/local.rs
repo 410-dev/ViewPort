@@ -119,7 +119,11 @@ impl MediaDriver for LocalDriver {
     }
 
     fn rename(&self, from: &str, to: &str) -> Result<()> {
-        fs::rename(self.resolve(from)?, self.resolve(to)?).map_err(|e| not_found(e, from))
+        let target = self.resolve(to)?;
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::rename(self.resolve(from)?, target).map_err(|e| not_found(e, from))
     }
 
     fn delete(&self, path: &str) -> Result<()> {
@@ -192,6 +196,11 @@ mod tests {
 
         assert!(matches!(d.open("../x"), Err(DriverError::PathEscapesRoot(_))));
         assert!(matches!(d.stat("nope.jpg"), Err(DriverError::NotFound(_))));
+
+        // Moving into a folder that does not exist yet creates it.
+        d.rename("sub/a.jpg", "new/deep/b.jpg").unwrap();
+        assert_eq!(d.stat("new/deep/b.jpg").unwrap().size, 10);
+        assert!(matches!(d.stat("sub/a.jpg"), Err(DriverError::NotFound(_))));
 
         d.write("new/b.txt", b"hi").unwrap();
         assert_eq!(fs::read(dir.path().join("new/b.txt")).unwrap(), b"hi");
