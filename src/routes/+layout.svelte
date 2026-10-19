@@ -4,16 +4,19 @@
   import { api } from "$lib/api";
   import { matches } from "$lib/keys";
   import { prefs } from "$lib/prefs.svelte";
+  import { exitImmersive } from "$lib/immersive.svelte";
 
   let { children } = $props();
 
   // The panic key works in every window and takes precedence over everything else
-  // (captured before any component sees the key).
+  // (captured before any component sees the key). The one exception: in immersive mode the
+  // first press only leaves immersive mode, so a double press is the panic key there.
   onMount(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.repeat || !matches(e, prefs.app?.privacy.panic_keys)) return;
       e.preventDefault();
       e.stopImmediatePropagation();
+      if (exitImmersive()) return;
       document.querySelectorAll("video").forEach((v) => (v.muted = true));
       api.panic().catch(() => {});
     };

@@ -288,6 +288,7 @@ pub struct AppSettings {
     pub audio: AudioSettings,
     pub privacy: PrivacySettings,
     pub windows: WindowSettings,
+    pub viewer: ViewerSettings,
 }
 
 impl Default for AppSettings {
@@ -300,6 +301,39 @@ impl Default for AppSettings {
             audio: AudioSettings::default(),
             privacy: PrivacySettings::default(),
             windows: WindowSettings::default(),
+            viewer: ViewerSettings::default(),
+        }
+    }
+}
+
+/// Viewer input and immersive mode on this device.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ViewerSettings {
+    /// Entering fullscreen also hides every viewer control (immersive mode). Escape leaves
+    /// immersive mode; a second Escape is then the panic key.
+    pub immersive_on_fullscreen: bool,
+    /// Zoom factor per key press or wheel notch.
+    pub zoom_step: f32,
+    /// Largest zoom, relative to fit-to-screen.
+    pub max_zoom: f32,
+    /// Zoom a double click (or double tap) jumps to.
+    pub double_click_zoom: f32,
+    /// The mouse wheel zooms images at the cursor.
+    pub wheel_zoom: bool,
+    /// Touch screens: tapping the image goes to the next item.
+    pub tap_to_advance: bool,
+}
+
+impl Default for ViewerSettings {
+    fn default() -> Self {
+        Self {
+            immersive_on_fullscreen: true,
+            zoom_step: 1.25,
+            max_zoom: 8.0,
+            double_click_zoom: 2.5,
+            wheel_zoom: true,
+            tap_to_advance: true,
         }
     }
 }
@@ -549,6 +583,11 @@ pub struct KeyBindings {
     pub toggle_mute: Vec<String>,
     pub split_view: Vec<String>,
     pub next_pane: Vec<String>,
+    /// Viewer: zoom images, and toggle immersive mode (all controls hidden).
+    pub zoom_in: Vec<String>,
+    pub zoom_out: Vec<String>,
+    pub zoom_reset: Vec<String>,
+    pub toggle_immersive: Vec<String>,
 }
 
 impl Default for KeyBindings {
@@ -576,6 +615,10 @@ impl Default for KeyBindings {
             toggle_mute: v(&["m"]),
             split_view: v(&["v"]),
             next_pane: v(&["Tab"]),
+            zoom_in: v(&["=", "+"]),
+            zoom_out: v(&["-"]),
+            zoom_reset: v(&["0"]),
+            toggle_immersive: v(&["h"]),
         }
     }
 }

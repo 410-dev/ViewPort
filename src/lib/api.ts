@@ -144,6 +144,10 @@ export interface KeyBindings {
   toggle_mute: string[];
   split_view: string[];
   next_pane: string[];
+  zoom_in: string[];
+  zoom_out: string[];
+  zoom_reset: string[];
+  toggle_immersive: string[];
 }
 
 export interface Settings {
@@ -202,6 +206,14 @@ export interface AppSettings {
   audio: { volume: number; muted: boolean; start_muted: boolean; focus_only: boolean };
   privacy: { panic_keys: string[]; panic_mute: boolean; panic_hide: boolean; restore_shortcut: string; tray_icon: boolean };
   windows: { max_viewer_panes: number; split_layout: "auto" | "columns" | "rows"; new_width: number; new_height: number };
+  viewer: {
+    immersive_on_fullscreen: boolean;
+    zoom_step: number;
+    max_zoom: number;
+    double_click_zoom: number;
+    wheel_zoom: boolean;
+    tap_to_advance: boolean;
+  };
 }
 
 export interface AudioState {

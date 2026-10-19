@@ -258,6 +258,28 @@ export const SECTIONS: Section[] = [
     ],
   },
   {
+    id: "viewer",
+    icon: "eye",
+    title: "set.viewer",
+    groups: [
+      {
+        title: "set.immersive",
+        note: "set.immersive.note",
+        fields: [{ kind: "toggle", ...app({ path: "viewer.immersive_on_fullscreen", label: "set.immersiveOnFullscreen" }) }],
+      },
+      {
+        title: "set.zoom",
+        fields: [
+          { kind: "number", ...app({ path: "viewer.zoom_step", label: "set.zoomStep" }), min: 1.05, max: 3, step: 0.05, unit: "×" },
+          { kind: "number", ...app({ path: "viewer.max_zoom", label: "set.maxZoom" }), min: 1.5, max: 32, step: 0.5, unit: "×" },
+          { kind: "number", ...app({ path: "viewer.double_click_zoom", label: "set.doubleClickZoom" }), min: 1.25, max: 16, step: 0.25, unit: "×" },
+          { kind: "toggle", ...app({ path: "viewer.wheel_zoom", label: "set.wheelZoom" }) },
+          { kind: "toggle", ...app({ path: "viewer.tap_to_advance", label: "set.tapAdvance", help: "set.tapAdvance.help" }) },
+        ],
+      },
+    ],
+  },
+  {
     id: "slideshow",
     icon: "film",
     title: "set.slideshow",
@@ -438,6 +460,10 @@ export const SECTIONS: Section[] = [
           key("toggle_mute", "key.toggle_mute"),
           key("split_view", "key.split_view"),
           key("next_pane", "key.next_pane"),
+          key("zoom_in", "key.zoom_in"),
+          key("zoom_out", "key.zoom_out"),
+          key("zoom_reset", "key.zoom_reset"),
+          key("toggle_immersive", "key.toggle_immersive"),
         ],
       },
     ],

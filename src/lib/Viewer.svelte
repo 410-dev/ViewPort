@@ -11,6 +11,8 @@
   import { audible, audio, claimFocus, setMuted, setVolume } from "./audio.svelte";
   import VolumeControl from "./ui/VolumeControl.svelte";
   import { prefs } from "./prefs.svelte";
+  import { fullscreenChanged, immersive } from "./immersive.svelte";
+  import { ZoomPan } from "./zoom.svelte";
 
   /**
    * One viewer pane. `ViewerShell` lays out up to `windows.max_viewer_panes` of them;
@@ -334,6 +336,7 @@
     const next = force ?? !(await win.isFullscreen());
     await win.setFullscreen(next);
     fullscreen = next;
+    fullscreenChanged(next);
   }
 
   async function close() {
@@ -367,6 +370,10 @@
     else if (matches(e, k.toggle_slideshow)) toggleSlideshow();
     else if (matches(e, k.toggle_loops) && isVideo) showLoops = !showLoops;
     else if (matches(e, closeKeys)) close();
+    else if (matches(e, k.toggle_immersive)) immersive.on = !immersive.on;
+    else if (matches(e, k.zoom_in) && zoomable) zoom.zoomBy(step());
+    else if (matches(e, k.zoom_out) && zoomable) zoom.zoomBy(1 / step());
+    else if (matches(e, k.zoom_reset) && zoomable) zoom.reset();
     else handled = false;
     if (handled) {
       e.preventDefault();
@@ -374,20 +381,104 @@
     }
   }
 
-  // ---- touch / mouse swipe
-  let down: { x: number; y: number; t: number } | null = null;
-  function onPointerDown(e: PointerEvent) {
-    down = { x: e.clientX, y: e.clientY, t: performance.now() };
+  // ---- zoom, pan and gestures (images)
+  // Fit-to-screen is scale 1. Zoomed: dragging pans. Not zoomed: a fast horizontal swipe
+  // changes item, and on touch screens a tap goes to the next one. Two fingers pinch.
+  const zoom = new ZoomPan(() => prefs.app?.viewer.max_zoom ?? 8);
+  const step = () => Math.max(1.01, prefs.app?.viewer.zoom_step ?? 1.25);
+  const zoomable = $derived(brief?.kind === "image" && !error);
+  let stageEl = $state<HTMLDivElement | null>(null);
+  let stageW = $state(0);
+  let stageH = $state(0);
+  $effect(() => {
+    zoom.stage = { w: stageW, h: stageH };
+  });
+  $effect(() => {
+    id;
+    zoom.reset();
+    zoom.natural = { w: 0, h: 0 };
+  });
+
+  /** Event position relative to the stage center. */
+  function local(x: number, y: number) {
+    const r = stageEl!.getBoundingClientRect();
+    return { x: x - r.left - r.width / 2, y: y - r.top - r.height / 2 };
   }
+
+  const pointers = new Map<number, { x: number; y: number }>();
+  let gesture: { x: number; y: number; t: number; type: string; moved: boolean; pinched: boolean } | null = null;
+  let pinch: { dist: number; scale: number } | null = null;
+  const distance = () => {
+    const [a, b] = [...pointers.values()];
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  };
+
+  function onPointerDown(e: PointerEvent) {
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    // Capturing over a video would take drags away from its native seek bar.
+    if (zoomable) (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    if (pointers.size === 1) {
+      gesture = { x: e.clientX, y: e.clientY, t: performance.now(), type: e.pointerType, moved: false, pinched: false };
+    } else if (pointers.size === 2 && zoomable) {
+      pinch = { dist: distance(), scale: zoom.scale };
+      if (gesture) gesture.pinched = true;
+    }
+  }
+
+  function onPointerMove(e: PointerEvent) {
+    poke();
+    const prev = pointers.get(e.pointerId);
+    if (!prev) return;
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (gesture && Math.hypot(e.clientX - gesture.x, e.clientY - gesture.y) > 8) gesture.moved = true;
+    if (pinch && pointers.size === 2) {
+      const [a, b] = [...pointers.values()];
+      const mid = local((a.x + b.x) / 2, (a.y + b.y) / 2);
+      zoom.zoomTo((pinch.scale * distance()) / Math.max(1, pinch.dist), mid.x, mid.y);
+    } else if (pointers.size === 1 && zoom.zoomed) {
+      zoom.panBy(e.clientX - prev.x, e.clientY - prev.y);
+    }
+  }
+
   function onPointerUp(e: PointerEvent) {
-    if (!down) return;
-    const dx = e.clientX - down.x;
-    const dy = e.clientY - down.y;
-    const fast = performance.now() - down.t < 600;
-    down = null;
+    pointers.delete(e.pointerId);
+    if (pointers.size < 2) pinch = null;
+    if (pointers.size > 0 || !gesture) return;
+    const g = gesture;
+    gesture = null;
+    if (g.pinched || zoom.zoomed) return; // pinching or panning, never navigation
+    const dx = e.clientX - g.x;
+    const dy = e.clientY - g.y;
+    const fast = performance.now() - g.t < 600;
     if (fast && Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) go(dx < 0 ? 1 : -1);
+    else if (g.type === "touch" && zoomable && !g.moved && fast && (prefs.app?.viewer.tap_to_advance ?? true)) go(1);
     else poke();
   }
+
+  function onDoubleClick(e: MouseEvent) {
+    if (!zoomable) return;
+    if (zoom.zoomed) return zoom.reset();
+    const p = local(e.clientX, e.clientY);
+    zoom.zoomTo(prefs.app?.viewer.double_click_zoom ?? 2.5, p.x, p.y);
+  }
+
+  function onWheel(e: WheelEvent) {
+    if (!zoomable || !(prefs.app?.viewer.wheel_zoom ?? true)) return;
+    e.preventDefault();
+    const p = local(e.clientX, e.clientY);
+    zoom.zoomBy(Math.pow(step(), -e.deltaY / 100), p.x, p.y);
+  }
+
+  // Non-passive, so zooming does not also scroll anything.
+  $effect(() => {
+    const el = stageEl;
+    if (!el) return;
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  });
+
+  // Immersive mode hides every control.
+  const showHud = $derived(hud && !immersive.on);
 
   // ---- HUD auto-hide
   let hudTimer: ReturnType<typeof setTimeout> | undefined;
@@ -411,18 +502,27 @@
 
 <div
   class="viewer"
-  class:hide-cursor={!hud}
+  class:hide-cursor={!showHud}
   class:active={active && panes > 1}
   role="dialog"
   aria-modal="true"
   tabindex="-1"
-  onpointerdown={(e) => {
-    onactivate?.();
-    onPointerDown(e);
-  }}
-  onpointerup={onPointerUp}
+  onpointerdown={() => onactivate?.()}
   onpointermove={poke}
 >
+  <div
+    class="stage"
+    class:zoomed={zoom.zoomed}
+    bind:this={stageEl}
+    bind:clientWidth={stageW}
+    bind:clientHeight={stageH}
+    role="presentation"
+    onpointerdown={onPointerDown}
+    onpointermove={onPointerMove}
+    onpointerup={onPointerUp}
+    onpointercancel={onPointerUp}
+    ondblclick={onDoubleClick}
+  >
   {#key id}
     {#if brief?.kind === "video"}
       <!-- svelte-ignore a11y_media_has_caption -->
@@ -432,22 +532,35 @@
         autoplay
         loop
         playsinline
-        controls={hud}
+        controls={showHud}
         onloadedmetadata={onLoaded}
         onvolumechange={onVolumeChange}
         ontimeupdate={onTime}
         onerror={() => (error = true)}
       ></video>
     {:else if brief}
-      <img src={mediaUrl(id)} alt={brief.name} draggable="false" onerror={() => (error = true)} />
+      <img
+        src={mediaUrl(id)}
+        alt={brief.name}
+        draggable="false"
+        style:transform={zoom.transform}
+        onload={(e) => {
+          const img = e.currentTarget as HTMLImageElement;
+          zoom.natural = { w: img.naturalWidth, h: img.naturalHeight };
+        }}
+        onerror={() => (error = true)}
+      />
     {/if}
   {/key}
+  </div>
 
   {#if error && !(brief?.kind === "video")}
     <div class="error">{brief?.name}: {t("viewer.cannotDisplay")}</div>
   {/if}
 
-  {#if brief && converting[brief.id]}
+  {#if immersive.on}
+    <!-- Immersive: no banners. -->
+  {:else if brief && converting[brief.id]}
     <div class="banner" role="status">
       <span class="spinner"></span>
       <span>{t("viewer.converting")}</span>
@@ -467,14 +580,14 @@
       <button class="icon-btn sm" aria-label={t("common.close")} onclick={() => (dismissed = new Set([...dismissed, brief!.id]))}><Icon name="x" size={13} /></button>
     </div>
   {/if}
-  {#if convertError}
+  {#if convertError && !immersive.on}
     <div class="banner err" role="alert">
       <span>{t("viewer.convertFailed")}: {convertError}</span>
       <button class="icon-btn sm" aria-label={t("common.close")} onclick={() => (convertError = null)}><Icon name="x" size={13} /></button>
     </div>
   {/if}
 
-  {#if showLoops && brief?.kind === "video"}
+  {#if showLoops && brief?.kind === "video" && !immersive.on}
     <div class="loops" role="presentation" onpointerdown={(e) => e.stopPropagation()} onpointerup={(e) => e.stopPropagation()}>
       <div class="loops-head">
         <strong>{t("viewer.loops")}</strong>
@@ -508,13 +621,13 @@
     </div>
   {/if}
 
-  {#if showInfo && id !== undefined}
+  {#if showInfo && id !== undefined && !immersive.on}
     <div class="side" role="presentation" onpointerdown={(e) => e.stopPropagation()} onpointerup={(e) => e.stopPropagation()}>
       <InfoPanel ids={[id]} {onchanged} />
     </div>
   {/if}
 
-  <div class="hud" class:visible={hud}>
+  <div class="hud" class:visible={showHud}>
     <span class="name">{brief?.name ?? ""}</span>
     <span class="pos">{index + 1} / {ids.length}</span>
     {#if slideshow}
@@ -540,12 +653,13 @@
       {#if onpop}
         <button class="hb" onclick={onpop} title={t("viewer.popOut")}><Icon name="external" size={15} /></button>
       {/if}
+      <button class="hb" onclick={() => (immersive.on = true)} title={t("viewer.immersive")}><Icon name="eyeOff" size={15} /></button>
       <button class="hb" onclick={() => toggleFullscreen()} title={t("viewer.fullscreen")}><Icon name="maximize" size={15} /></button>
       <button class="hb" onclick={close} title={t("common.close")}><Icon name="x" size={15} /></button>
     </span>
   </div>
-  <button class="nav prev" class:visible={hud} onclick={() => go(-1)} aria-label={t("viewer.prev")}><Icon name="chevronLeft" size={26} /></button>
-  <button class="nav next" class:visible={hud} onclick={() => go(1)} aria-label={t("viewer.next")}><Icon name="chevronRight" size={26} /></button>
+  <button class="nav prev" class:visible={showHud} onclick={() => go(-1)} aria-label={t("viewer.prev")}><Icon name="chevronLeft" size={26} /></button>
+  <button class="nav next" class:visible={showHud} onclick={() => go(1)} aria-label={t("viewer.next")}><Icon name="chevronRight" size={26} /></button>
 </div>
 
 <style>
@@ -584,13 +698,30 @@
   .hide-cursor {
     cursor: none;
   }
+  /* The media always fits the pane (long images included); zoom is a transform on top. */
+  .stage {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    touch-action: none;
+  }
+  .stage.zoomed {
+    cursor: grab;
+  }
+  .stage.zoomed:active {
+    cursor: grabbing;
+  }
   img,
   video {
+    position: absolute;
+    inset: 0;
     width: 100%;
     height: 100%;
-    max-width: 100%;
-    max-height: 100%;
     object-fit: contain;
+  }
+  img {
+    transform-origin: center;
+    will-change: transform;
   }
   .error {
     position: absolute;

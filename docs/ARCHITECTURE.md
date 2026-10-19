@@ -130,6 +130,12 @@ UI에 전달되며 작업별로 `progress.emit_interval_ms` 간격으로 제한�
   모바일(Android/iOS)은 보조 창이 없고 분할 보기만 쓴다.
 - **소리**(`src-tauri/src/audio.rs`): 마스터 음량·음소거 하나를 모든 창이 공유하고 `audio` 이벤트로 동기화한다.
   `audio.focus_only`면 포커스된 창의 활성 패널만 소리를 낸다. `audio.start_muted`면 종료 시 상태와 관계없이 음소거로 시작한다.
+- **몰입 모드**: 뷰어의 모든 컨트롤(HUD, 넘기기 버튼, 영상 기본 컨트롤, 배너, 패널, 커서)을 숨긴다. 전체 화면에 들어가면
+  자동으로 켜지고(`viewer.immersive_on_fullscreen`), `H` 키나 HUD 버튼으로도 켠다. 몰입 모드에서는 첫 Esc가 몰입 모드를
+  나가는 데 쓰이고, 그 다음 Esc가 화면 가리기다.
+- **확대·패닝**: 이미지는 항상 화면에 맞춰 표시(긴 이미지 포함)하고, 확대는 그 위의 transform이다(`ZoomPan`).
+  PC: 더블클릭(`viewer.double_click_zoom`), `=`/`-`/`0` 키, 휠(커서 위치 기준), 확대 중 드래그 = 패닝.
+  터치: 탭 = 다음 항목(`viewer.tap_to_advance`), 핀치 = 확대·축소, 확대 중 드래그 = 패닝. 확대하지 않았을 때만 스와이프로 넘긴다.
 - **화면 가리기**(`src-tauri/src/windows.rs`): `privacy.panic_keys`(기본 Esc)를 모든 창이 캡처 단계에서 가장 먼저 처리해
   `panic`을 부른다: 음소거 + 보이는 창 모두 숨김. 복원은 트레이 아이콘, 전역 단축키(`privacy.restore_shortcut`),
   macOS Dock 클릭(`RunEvent::Reopen`). 모바일은 음소거만 한다.

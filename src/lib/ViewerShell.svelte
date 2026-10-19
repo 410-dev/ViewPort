@@ -6,6 +6,8 @@
   import { isMobile } from "./platform";
   import { prefs } from "./prefs.svelte";
   import Viewer from "./Viewer.svelte";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { fullscreenChanged, resetImmersive } from "./immersive.svelte";
 
   /**
    * Viewer split view: up to `windows.max_viewer_panes` panes side by side, each browsing
@@ -69,8 +71,24 @@
     e.preventDefault();
   }
 
-  onMount(() => window.addEventListener("keydown", onKey));
-  onDestroy(() => window.removeEventListener("keydown", onKey));
+  // Fullscreen entered any way (viewer button, OS control) turns immersive mode on.
+  let unlistenResize: (() => void) | undefined;
+  onMount(() => {
+    window.addEventListener("keydown", onKey);
+    try {
+      const win = getCurrentWindow();
+      const check = () => win.isFullscreen().then(fullscreenChanged).catch(() => {});
+      check();
+      win.onResized(check).then((f) => (unlistenResize = f));
+    } catch {
+      // Not running in Tauri.
+    }
+  });
+  onDestroy(() => {
+    window.removeEventListener("keydown", onKey);
+    unlistenResize?.();
+    resetImmersive();
+  });
 </script>
 
 <div

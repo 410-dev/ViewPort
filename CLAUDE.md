@@ -72,7 +72,9 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
 - 창: `routes/+page.svelte`가 창 라벨(`main`/`viewer-N`/`library-N`)로 화면을 고른다. 뷰어는 `ViewerShell`(분할, 최대 3)이
   `Viewer` 패널들을 감싼다. 창 사이 데이터 변경은 `sync.ts`의 `broadcast`/`onSync`로 알린다 — 공유 데이터를 바꾸는 코드는 꼭 호출한다.
 - 소리는 `audio.svelte.ts`(백엔드 `audio.rs` 미러)만 쓴다. 미디어 요소의 음량·음소거를 직접 정하지 말고 `audible()`을 따른다.
-- 화면 가리기 키는 `routes/+layout.svelte`가 캡처 단계에서 처리한다. Esc에 다른 기능을 붙이지 않는다.
+- 화면 가리기 키는 `routes/+layout.svelte`가 캡처 단계에서 처리한다. Esc에 다른 기능을 붙이지 않는다. 유일한 예외는
+  몰입 모드(`immersive.svelte.ts`, 전체 화면에서 자동): 첫 Esc는 몰입 모드만 나가고, 다음 Esc가 화면 가리기다.
+- 뷰어 확대·패닝은 `zoom.svelte.ts`(`ZoomPan`, 배율 1 = 화면 맞춤). 확대 중에는 드래그가 넘기기가 아니라 패닝이다.
 - 글꼴: 한국어 고정폭 글꼴을 쓰지 않는다. 기본은 시스템 고딕, 사용자가 설정에서 바꾼다(`ui.font_ui`, `ui.font_editor`).
 
 ## 핵심 규칙과 불변식
@@ -125,7 +127,7 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
 
 ## 작업 방식
 
-- `main` 브랜치에 직접 커밋한다. push는 하지 않는다(GitHub는 사용자가 관리).
+- `main` 브랜치에 직접 커밋하고, 작업이 끝나면 기본으로 `origin main`에 push한다.
 - 변경 후 `cargo test --workspace`와 `npm run check`가 통과해야 한다. 쿼리 언어를 바꾸면 `vp-query` 단위 테스트와
   `vp-db/src/tests.rs`(실제 SQLite 검색) 양쪽에 케이스를 추가한다.
 - 코드 주석·식별자는 영어, 문서(README, ARCHITECTURE)와 UI 기본 로케일은 한국어.
