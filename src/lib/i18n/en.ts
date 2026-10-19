@@ -522,6 +522,11 @@ const en: Record<Key, string> = {
   "sel.clear": "Clear selection",
   "sel.info": "Info",
   "viewer.unplayableHere": "This device may not be able to play this format",
+  "set.doubleTap": "Double-tap interval",
+  "set.doubleTap.help": "Two taps within this time zoom in or out; a single tap goes to the next item once it has passed.",
+  "set.swipeThreshold": "Swipe distance",
+  "set.swipeThreshold.help": "Dragging this fraction of the screen width, or flicking, goes to the next item; shorter drags spring back.",
+  "set.swipeMs": "Swipe animation",
 };
 
 export default en;

@@ -325,6 +325,14 @@ pub struct ViewerSettings {
     pub wheel_zoom: bool,
     /// Touch screens: tapping the image goes to the next item.
     pub tap_to_advance: bool,
+    /// Two taps within this time are a double tap (zoom), not two single taps; a single
+    /// tap acts only after it has passed.
+    pub double_tap_ms: u32,
+    /// A swipe moves to the neighbouring item when it travels this fraction of the width
+    /// (or is flicked); shorter ones spring back.
+    pub swipe_threshold: f32,
+    /// Duration of the slide to the next item or back after a swipe.
+    pub swipe_ms: u32,
 }
 
 impl Default for ViewerSettings {
@@ -336,6 +344,9 @@ impl Default for ViewerSettings {
             double_click_zoom: 2.5,
             wheel_zoom: true,
             tap_to_advance: true,
+            double_tap_ms: 280,
+            swipe_threshold: 0.2,
+            swipe_ms: 220,
         }
     }
 }

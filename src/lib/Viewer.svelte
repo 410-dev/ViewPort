@@ -1,7 +1,8 @@
 <script lang="ts">
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { onDestroy, onMount } from "svelte";
-  import { api, mediaUrl, platformApi, onConvert, type ConvertEvent, type LoopSegment, type MediaBrief, type Settings } from "./api";
+  import { SvelteMap } from "svelte/reactivity";
+  import { api, mediaUrl, thumbUrl, platformApi, onConvert, type ConvertEvent, type LoopSegment, type MediaBrief, type Settings } from "./api";
   import { t } from "./i18n.svelte";
   import { fraction, tasks } from "./tasks.svelte";
   import { fmtBytes } from "./format";
@@ -136,6 +137,8 @@
 
   // ---- brief + look-ahead whenever the current item changes
   const preloaded = new Map<number, HTMLImageElement>();
+  /** Briefs of the current item and its neighbours, so the swipe strip can draw them. */
+  const known = new SvelteMap<number, MediaBrief>();
   let shownAt = performance.now();
   let lastId: number | undefined;
 
@@ -152,9 +155,12 @@
     const c = settings.cache;
     const ahead = Array.from({ length: c.prefetch_ahead }, (_, i) => ids[(index + i + 1) % ids.length]);
     const behind = Array.from({ length: c.prefetch_behind }, (_, i) => ids[(index - i - 1 + ids.length) % ids.length]);
-    const around = [...new Set([...ahead, ...behind])].filter((x) => x !== current);
+    // The direct neighbours always: the swipe strip draws them.
+    const n = ids.length;
+    const around = [...new Set([ids[(index + 1) % n], ids[(index - 1 + n) % n], ...ahead, ...behind])].filter((x) => x !== current);
 
     api.mediaBrief([current, ...around]).then((bs) => {
+      for (const b of bs) known.set(b.id, b);
       if (ids[index] !== current) return;
       brief = bs.find((b) => b.id === current) ?? null;
       // Decode neighbouring images in the webview too, so switching is instant.
@@ -402,17 +408,20 @@
   // changes item, and on touch screens a tap goes to the next one. Two fingers pinch.
   const zoom = new ZoomPan(() => prefs.app?.viewer.max_zoom ?? 8);
   const step = () => Math.max(1.01, prefs.app?.viewer.zoom_step ?? 1.25);
-  const zoomable = $derived(brief?.kind === "image" && !error);
+  // `brief` lags behind `id` until it loads; a slid-in neighbour is already known.
+  const zoomable = $derived((known.get(id)?.kind ?? (brief?.id === id ? brief.kind : null)) === "image" && !error);
   let stageEl = $state<HTMLDivElement | null>(null);
   let stageW = $state(0);
   let stageH = $state(0);
   $effect(() => {
     zoom.stage = { w: stageW, h: stageH };
   });
+  // Natural image sizes by id: a neighbour's image is already loaded when it slides in.
+  const naturals = new Map<number, { w: number; h: number }>();
   $effect(() => {
-    id;
+    const current = id;
     zoom.reset();
-    zoom.natural = { w: 0, h: 0 };
+    zoom.natural = naturals.get(current) ?? { w: 0, h: 0 };
   });
 
   /** Event position relative to the stage center. */
@@ -422,7 +431,7 @@
   }
 
   const pointers = new Map<number, { x: number; y: number }>();
-  let gesture: { x: number; y: number; t: number; type: string; moved: boolean; pinched: boolean } | null = null;
+  let gesture: { x: number; y: number; t: number; type: string; moved: boolean; pinched: boolean; swipe: boolean } | null = null;
   let pinch: { dist: number; scale: number } | null = null;
   const distance = () => {
     const [a, b] = [...pointers.values()];
@@ -438,16 +447,106 @@
       });
   });
 
+  // ---- swipe strip: the previous and next items sit beside the current one and the strip
+  // follows the finger; on release it slides to the neighbour or springs back.
+  let swipe = $state(0);
+  let sliding = $state(false);
+  let slideTimer: ReturnType<typeof setTimeout> | undefined;
+  let slideDone: (() => void) | null = null;
+  let lock: "h" | "v" | null = null;
+
+  const strip = $derived.by(() => {
+    const n = ids.length;
+    if (n === 0 || id === undefined) return [];
+    const out = [{ id, pos: 0 }];
+    if (n === 1) return out;
+    const next = ids[(index + 1) % n];
+    const prev = ids[(index - 1 + n) % n];
+    // Two items: the other one is on whichever side the finger pulls it from.
+    if (next === prev) out.push({ id: next, pos: swipe > 0 ? -1 : 1 });
+    else out.push({ id: prev, pos: -1 }, { id: next, pos: 1 });
+    return out;
+  });
+
+  const slideMs = () => (prefs.app?.ui.reduce_motion ? 0 : (prefs.app?.viewer.swipe_ms ?? 220));
+
+  /** Slides to the neighbour in `dir` (1 next, -1 previous) or back to the current one (0). */
+  function settle(dir: number) {
+    finishSlide();
+    if (ids.length < 2) dir = 0;
+    const ms = slideMs();
+    if (ms <= 0 || stageW === 0) {
+      swipe = 0;
+      if (dir) go(dir);
+      return;
+    }
+    sliding = true;
+    swipe = -dir * stageW;
+    slideDone = () => {
+      sliding = false;
+      swipe = 0;
+      if (dir) go(dir);
+    };
+    slideTimer = setTimeout(finishSlide, ms);
+  }
+
+  /** Ends a running slide at once (on a new touch, or when its time is up). */
+  function finishSlide() {
+    clearTimeout(slideTimer);
+    const done = slideDone;
+    slideDone = null;
+    done?.();
+  }
+
+  // A tap waits out the double-tap interval, so a double tap zooms without first moving on.
+  let tapTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastPointerType = "mouse";
+
+  function onTap(e: PointerEvent) {
+    if (tapTimer !== undefined) {
+      clearTimeout(tapTimer);
+      tapTimer = undefined;
+      toggleZoomAt(e.clientX, e.clientY);
+      return;
+    }
+    tapTimer = setTimeout(() => {
+      tapTimer = undefined;
+      if (!zoom.zoomed && (prefs.app?.viewer.tap_to_advance ?? true)) settle(1);
+    }, prefs.app?.viewer.double_tap_ms ?? 280);
+  }
+
+  function toggleZoomAt(x: number, y: number) {
+    if (!zoomable) return;
+    if (zoom.zoomed) return zoom.reset();
+    const p = local(x, y);
+    zoom.zoomTo(prefs.app?.viewer.double_click_zoom ?? 2.5, p.x, p.y);
+  }
+
   function onPointerDown(e: PointerEvent) {
+    lastPointerType = e.pointerType;
     if (e.pointerType === "touch") poke();
+    finishSlide();
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     // Capturing over a video would take drags away from its native seek bar.
     if (zoomable) (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     if (pointers.size === 1) {
-      gesture = { x: e.clientX, y: e.clientY, t: performance.now(), type: e.pointerType, moved: false, pinched: false };
+      lock = null;
+      // A drag starting on a video's control bar belongs to the controls, not to swiping.
+      const bottom = stageEl!.getBoundingClientRect().bottom;
+      const onControls = brief?.kind === "video" && showHud && e.clientY > bottom - 80;
+      gesture = {
+        x: e.clientX,
+        y: e.clientY,
+        t: performance.now(),
+        type: e.pointerType,
+        moved: false,
+        pinched: false,
+        swipe: !onControls,
+      };
     } else if (pointers.size === 2 && zoomable) {
       pinch = { dist: distance(), scale: zoom.scale };
       if (gesture) gesture.pinched = true;
+      swipe = 0;
     }
   }
 
@@ -463,6 +562,16 @@
       zoom.zoomTo((pinch.scale * distance()) / Math.max(1, pinch.dist), mid.x, mid.y);
     } else if (pointers.size === 1 && zoom.zoomed) {
       zoom.panBy(e.clientX - prev.x, e.clientY - prev.y);
+    } else if (pointers.size === 1 && gesture?.swipe && !gesture.pinched && ids.length > 1) {
+      const dx = e.clientX - gesture.x;
+      const dy = e.clientY - gesture.y;
+      if (!lock && gesture.moved) lock = Math.abs(dx) > Math.abs(dy) ? "h" : "v";
+      if (lock === "h") {
+        // Videos are not captured on pointerdown (their seek bar needs drags); capture now.
+        const el = e.currentTarget as HTMLElement;
+        if (!el.hasPointerCapture(e.pointerId)) el.setPointerCapture(e.pointerId);
+        swipe = dx;
+      }
     }
   }
 
@@ -472,20 +581,25 @@
     if (pointers.size > 0 || !gesture) return;
     const g = gesture;
     gesture = null;
-    if (g.pinched || zoom.zoomed) return; // pinching or panning, never navigation
     const dx = e.clientX - g.x;
-    const dy = e.clientY - g.y;
-    const fast = performance.now() - g.t < 600;
-    if (fast && Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) go(dx < 0 ? 1 : -1);
-    else if (g.type === "touch" && zoomable && !g.moved && fast && (prefs.app?.viewer.tap_to_advance ?? true)) go(1);
+    const dt = Math.max(1, performance.now() - g.t);
+    if (lock === "h" && e.type !== "pointercancel") {
+      // Far enough, or flicked: slide on; otherwise spring back.
+      const far = Math.abs(dx) > (prefs.app?.viewer.swipe_threshold ?? 0.2) * stageW;
+      const flick = Math.abs(dx) > 30 && Math.abs(dx) / dt > 0.5;
+      return settle(far || flick ? (dx < 0 ? 1 : -1) : 0);
+    }
+    if (swipe !== 0) return settle(0);
+    if (g.pinched) return;
+    // Taps: touch only (a mouse double click comes as `dblclick`). Zoomed, a single tap
+    // does nothing and a double tap zooms back out.
+    if (g.type === "touch" && zoomable && !g.moved && dt < 600) onTap(e);
     else poke();
   }
 
   function onDoubleClick(e: MouseEvent) {
-    if (!zoomable) return;
-    if (zoom.zoomed) return zoom.reset();
-    const p = local(e.clientX, e.clientY);
-    zoom.zoomTo(prefs.app?.viewer.double_click_zoom ?? 2.5, p.x, p.y);
+    // Touch double taps are recognised in `onTap`.
+    if (lastPointerType !== "touch") toggleZoomAt(e.clientX, e.clientY);
   }
 
   function onWheel(e: WheelEvent) {
@@ -523,6 +637,8 @@
     unlistenConvert.then((f) => f());
     window.removeEventListener("keydown", onKey);
     clearTimeout(hudTimer);
+    clearTimeout(tapTimer);
+    clearTimeout(slideTimer);
   });
 </script>
 
@@ -549,35 +665,46 @@
     onpointercancel={onPointerUp}
     ondblclick={onDoubleClick}
   >
-  {#key id}
-    {#if brief?.kind === "video"}
-      <!-- svelte-ignore a11y_media_has_caption -->
-      <video
-        bind:this={video}
-        src={src(id)}
-        autoplay
-        loop
-        playsinline
-        controls={showHud}
-        onloadedmetadata={onLoaded}
-        onvolumechange={onVolumeChange}
-        ontimeupdate={onTime}
-        onerror={() => (error = true)}
-      ></video>
-    {:else if brief}
-      <img
-        src={mediaUrl(id)}
-        alt={brief.name}
-        draggable="false"
-        style:transform={zoom.transform}
-        onload={(e) => {
-          const img = e.currentTarget as HTMLImageElement;
-          zoom.natural = { w: img.naturalWidth, h: img.naturalHeight };
-        }}
-        onerror={() => (error = true)}
-      />
-    {/if}
-  {/key}
+    <!-- Keyed by id, so an image sliding in keeps its element: no reload, no flash. -->
+    <div class="strip" class:sliding style:transform="translateX({swipe}px)" style:--slide-ms="{slideMs()}ms">
+      {#each strip as s (s.id)}
+        {@const b = known.get(s.id) ?? (brief?.id === s.id ? brief : null)}
+        <div class="slot" style:transform="translateX({s.pos * 100}%)">
+          {#if s.pos === 0 && b?.kind === "video"}
+            <!-- svelte-ignore a11y_media_has_caption -->
+            <video
+              bind:this={video}
+              src={src(s.id)}
+              poster={thumbUrl(s.id)}
+              autoplay
+              loop
+              playsinline
+              controls={showHud && swipe === 0}
+              onloadedmetadata={onLoaded}
+              onvolumechange={onVolumeChange}
+              ontimeupdate={onTime}
+              onerror={() => (error = true)}
+            ></video>
+          {:else if b}
+            <!-- Neighbouring videos show their thumbnail until they become current. -->
+            <img
+              src={b.kind === "video" ? thumbUrl(s.id) : mediaUrl(s.id)}
+              alt={b.name}
+              draggable="false"
+              style:transform={s.pos === 0 ? zoom.transform : null}
+              onload={(e) => {
+                if (b.kind !== "image") return;
+                const img = e.currentTarget as HTMLImageElement;
+                const size = { w: img.naturalWidth, h: img.naturalHeight };
+                naturals.set(s.id, size);
+                if (s.id === id) zoom.natural = size;
+              }}
+              onerror={() => s.id === id && (error = true)}
+            />
+          {/if}
+        </div>
+      {/each}
+    </div>
   </div>
 
   {#if error && !(brief?.kind === "video")}
@@ -748,6 +875,20 @@
   img {
     transform-origin: center;
     will-change: transform;
+  }
+  .strip,
+  .slot {
+    position: absolute;
+    inset: 0;
+  }
+  .strip {
+    will-change: transform;
+  }
+  .strip.sliding {
+    transition: transform var(--slide-ms) cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  .slot {
+    overflow: hidden;
   }
   .error {
     position: absolute;

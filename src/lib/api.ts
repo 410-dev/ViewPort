@@ -217,6 +217,9 @@ export interface AppSettings {
     double_click_zoom: number;
     wheel_zoom: boolean;
     tap_to_advance: boolean;
+    double_tap_ms: number;
+    swipe_threshold: number;
+    swipe_ms: number;
   };
 }
 

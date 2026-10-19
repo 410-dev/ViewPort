@@ -521,6 +521,11 @@ const ko = {
   "sel.clear": "선택 해제",
   "sel.info": "정보",
   "viewer.unplayableHere": "이 기기에서 재생할 수 없는 형식일 수 있습니다",
+  "set.doubleTap": "두 번 탭 간격",
+  "set.doubleTap.help": "이 시간 안에 두 번 탭하면 확대·축소하고, 한 번 탭은 이 시간이 지난 뒤에 다음 항목으로 넘어갑니다.",
+  "set.swipeThreshold": "넘기기 거리",
+  "set.swipeThreshold.help": "화면 너비의 이 비율 이상 끌거나 빠르게 튕기면 다음 항목으로 넘어가고, 짧으면 제자리로 돌아갑니다.",
+  "set.swipeMs": "넘기기 애니메이션 시간",
 } as const;
 
 export type Key = keyof typeof ko;
