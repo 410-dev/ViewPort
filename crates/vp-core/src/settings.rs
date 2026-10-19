@@ -511,6 +511,8 @@ pub struct UiSettings {
     pub preview_max_bytes: u64,
     /// Turn off UI animations.
     pub reduce_motion: bool,
+    /// List only images and videos; other files stay in the library but are hidden.
+    pub media_only: bool,
     /// Pause after typing before the search runs.
     pub search_debounce_ms: u32,
 }
@@ -539,6 +541,7 @@ impl Default for UiSettings {
             preview_delay_ms: 150,
             preview_max_bytes: 0,
             reduce_motion: false,
+            media_only: false,
             search_debounce_ms: 200,
         }
     }

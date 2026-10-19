@@ -100,6 +100,8 @@ fn enum_and_negation() {
 fn base_fields_and_sources() {
     let lib = library();
     assert_eq!(lib.ids("소스(NAS)"), [3, 5]);
+    // "Media only" wraps the query and keeps its sorts (the app's own query text).
+    assert_eq!(lib.ids("(source(NAS) AND sort desc(name)) AND NOT type(nonmedia)"), lib.ids("소스(NAS) 그리고 내림차순(이름)"));
     let all = vp_query::Query::default();
     let scope = Scope { source_id: Some(2), ..Default::default() };
     assert_eq!(lib.db.search_in(&all, &lib.reg, &Db::compile_context(OCT18, 0), &scope).unwrap(), [3, 5]);
@@ -407,4 +409,9 @@ fn metadata_follows_files_into_another_source() {
     assert_eq!(lib.db.child_folders(shard, "").unwrap(), [("in".to_string(), 1)]);
     lib.reg = lib.db.field_registry().unwrap();
     assert_eq!(lib.ids("점수(5)"), [1, 4]);
+
+    // Delete: the item and its values are gone.
+    lib.db.delete_media(1).unwrap();
+    assert!(lib.db.media_location(1).unwrap().is_none());
+    assert_eq!(lib.ids("점수(5)"), [4]);
 }

@@ -12,6 +12,8 @@ import { SvelteSet } from "svelte/reactivity";
 export class Selection {
   readonly set = new SvelteSet<number>();
   focus = $state<number | null>(null);
+  /** Where the selection's context menu is open (the library draws it), or null. */
+  menu = $state<{ x: number; y: number } | null>(null);
   #anchor = -1;
   #pointer = "mouse";
 
@@ -31,12 +33,26 @@ export class Selection {
     else if (ids[index] !== undefined) open(ids[index], ids);
   }
 
-  /** Long press (`contextmenu` on touch screens): selects, or toggles within a selection. */
+  /**
+   * Long press (touch) or right click on item `index`. Touch: the first long press starts a
+   * selection; within one, it adds the item and opens the context menu. Mouse: the item
+   * joins the selection (or replaces it when not already selected) and the menu opens.
+   */
   hold(e: MouseEvent, index: number, ids: number[]) {
-    if (!this.touch) return;
+    const id = ids[index];
+    if (id === undefined) return;
     e.preventDefault();
-    this.toggle(index, ids);
-    navigator.vibrate?.(12);
+    if (this.touch) {
+      navigator.vibrate?.(12);
+      if (this.set.size === 0) return this.toggle(index, ids);
+      if (!this.set.has(id)) this.toggle(index, ids);
+    } else if (!this.set.has(id)) {
+      this.set.clear();
+      this.set.add(id);
+      this.#anchor = index;
+      this.focus = id;
+    }
+    this.menu = { x: e.clientX, y: e.clientY };
   }
 
   toggle(index: number, ids: number[]) {

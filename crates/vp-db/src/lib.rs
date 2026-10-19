@@ -1192,6 +1192,12 @@ impl Db {
         Ok(())
     }
 
+    /// Forgets an item and everything recorded about it (tags, stats, probe, variant).
+    pub fn delete_media(&self, id: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM media WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
     /// Forgets the converted copy of an item.
     pub fn remove_variant(&self, media_id: i64) -> Result<()> {
         self.conn.execute("DELETE FROM media_variant WHERE media_id = ?1", [media_id])?;

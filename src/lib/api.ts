@@ -192,6 +192,7 @@ export interface UiSettings {
   preview_delay_ms: number;
   preview_max_bytes: number;
   reduce_motion: boolean;
+  media_only: boolean;
   search_debounce_ms: number;
 }
 
@@ -399,6 +400,8 @@ export const api = {
   panic: () => invoke<void>("panic"),
   cancelTask: (id: number) => invoke<boolean>("cancel_task", { id }),
   exportMedia: (ids: number[], dest: string) => invoke<void>("export_media", { ids, dest }),
+  /** Deletes the files of `ids` from their sources and forgets the items. */
+  deleteMedia: (ids: number[]) => invoke<{ deleted: number; failed: string[] }>("delete_media", { ids }),
 
   // Shard sources (src-tauri/src/shards.rs)
   shardStatus: () => invoke<ShardStatus[]>("shard_status"),

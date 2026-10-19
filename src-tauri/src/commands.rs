@@ -895,6 +895,58 @@ pub fn cancel_task(id: u64) -> bool {
 
 // ---------------------------------------------------------------- export
 
+#[derive(Serialize)]
+pub struct DeleteReport {
+    pub deleted: usize,
+    /// Files that could not be deleted (their items stay), as "path: reason".
+    pub failed: Vec<String>,
+}
+
+/// Deletes the files of `ids` through their sources' drivers and forgets the items.
+/// A file that is already gone only drops its item. Converted copies in the bundle go too.
+#[tauri::command]
+pub async fn delete_media(app: AppHandle, state: State<'_, AppState>, ids: Vec<i64>) -> CmdResult<DeleteReport> {
+    let ws = workspace(&state)?;
+    let registry = app.state::<AppState>().drivers.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let task = crate::tasks::begin("delete", "", crate::tasks::Unit::Items, Some(ids.len() as u64));
+        let mut report = DeleteReport { deleted: 0, failed: Vec::new() };
+        for id in ids {
+            if ws.closed.load(Ordering::Relaxed) {
+                break;
+            }
+            let one = (|| -> CmdResult<()> {
+                let Some(loc) = ws.read_db.lock().unwrap().media_location(id)? else { return Ok(()) };
+                task.detail(&crate::workspace::file_name(&loc.rel_path));
+                let source = ws.read_db.lock().unwrap().source(loc.source_id)?.ok_or_else(|| CmdError::new("not_found", "source"))?;
+                match ws.driver(&registry, &source)?.delete(&loc.rel_path) {
+                    Ok(()) | Err(vp_driver::DriverError::NotFound(_)) => {}
+                    Err(e) => return Err(CmdError::new("driver", format!("{}: {e}", loc.rel_path))),
+                }
+                let variant = ws.read_db.lock().unwrap().variant(id)?;
+                if let Some(rel) = variant.filter(|r| r != crate::shards::VARIANT_IN_SHARD) {
+                    if let Ok(parts) = vp_driver::checked_components(&rel) {
+                        let mut p = ws.bundle.root.clone();
+                        p.extend(parts);
+                        let _ = std::fs::remove_file(p);
+                    }
+                }
+                ws.write_db.lock().unwrap().delete_media(id)?;
+                Ok(())
+            })();
+            match one {
+                Ok(()) => report.deleted += 1,
+                Err(e) => report.failed.push(e.message),
+            }
+            task.add(1);
+        }
+        if report.failed.is_empty() { task.finish() } else { task.fail(format!("{} files failed", report.failed.len())) }
+        report
+    })
+    .await
+    .map_err(|e| CmdError::new("io", e))
+}
+
 /// Copies items (any kind, from any source) into a folder in the background. A name that
 /// is already taken there gets a number.
 #[tauri::command]

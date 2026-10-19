@@ -141,6 +141,7 @@ export const SECTIONS: Section[] = [
             ],
           },
           { kind: "toggle", ...app({ path: "ui.recursive", label: "set.recursive", help: "set.recursive.help" }) },
+          { kind: "toggle", ...app({ path: "ui.media_only", label: "set.mediaOnly", help: "set.mediaOnly.help" }) },
           { kind: "number", ...app({ path: "ui.search_debounce_ms", label: "set.searchDelay" }), min: 0, max: 2000, step: 50, unit: "ms" },
           { kind: "text", ...bundle({ path: "grid.default_sort", label: "set.defaultSort", help: "set.defaultSort.help" }) },
         ],

@@ -114,6 +114,7 @@ pub fn run() {
             commands::list_tasks,
             commands::cancel_task,
             commands::export_media,
+            commands::delete_media,
             shards::shard_status,
             shards::inspect_shard,
             shards::create_shard,

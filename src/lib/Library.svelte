@@ -27,6 +27,7 @@
   import Toolbar from "./shell/Toolbar.svelte";
   import SourceDialog from "./SourceDialog.svelte";
   import StatusBar from "./StatusBar.svelte";
+  import ContextMenu, { type MenuItem } from "./ui/ContextMenu.svelte";
   import Icon from "./ui/Icon.svelte";
   import ViewerShell from "./ViewerShell.svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -111,6 +112,7 @@
   const effectiveQuery = $derived.by(() => {
     let q = query.trim();
     if (q && !/[()]/.test(q)) q = `name(contains:${quoteParam(q)})`;
+    if (ui().media_only) q = q ? `(${q}) AND NOT type(nonmedia)` : "NOT type(nonmedia)";
     if (sort) q = `${q ? q + " AND " : ""}${sort.desc ? "sort desc" : "sort asc"}(${sort.field})`;
     return q;
   });
@@ -344,6 +346,44 @@
   $effect(() => {
     if (!compact) drawer = false;
   });
+  // ---- selection actions (selection bar, context menu)
+  let confirmDelete = $state<number[] | null>(null);
+  let deleting = $state(false);
+  $effect(() => {
+    if (confirmDelete) return onBack(() => (confirmDelete = null));
+  });
+
+  const menuItems = $derived<MenuItem[]>([
+    { label: t("sel.info"), icon: "info", action: () => setPanel(true) },
+    { label: t("sel.export"), icon: "download", action: () => exportSelected([...selection.set]) },
+    { label: t("sel.all"), icon: "checkSquare", action: () => selection.selectAll(ids) },
+    { label: t("sel.clear"), icon: "x", action: () => selection.clear() },
+    { label: t("sel.delete"), icon: "trash", danger: true, action: () => (confirmDelete = [...selection.set]) },
+  ]);
+
+  async function exportSelected(list: number[]) {
+    const dest = await pickFolder(t("panel.exportTo"));
+    if (dest) api.exportMedia(list, dest).catch((e) => alert(asCmdError(e).message));
+  }
+
+  async function deleteConfirmed() {
+    if (!confirmDelete) return;
+    const list = confirmDelete;
+    deleting = true;
+    try {
+      const r = await api.deleteMedia(list);
+      selection.clear();
+      broadcast("media", list);
+      runSearch(false);
+      if (r.failed.length) alert(`${t("del.failed", { n: r.failed.length })}\n\n${r.failed.slice(0, 5).join("\n")}`);
+    } catch (e) {
+      alert(asCmdError(e).message);
+    } finally {
+      deleting = false;
+      confirmDelete = null;
+    }
+  }
+
   function setPanel(on: boolean) {
     ui().panel_visible = on;
     savePrefs();
@@ -437,6 +477,7 @@
         <span class="grow tabular">{t("sel.count", { n: selection.set.size })}</span>
         <button class="btn sm ghost" onclick={() => selection.selectAll(ids)}><Icon name="checkSquare" size={14} />{t("sel.all")}</button>
         <button class="btn sm primary" onclick={() => setPanel(true)}><Icon name="info" size={14} />{t("sel.info")}</button>
+        <button class="btn sm danger" onclick={() => (confirmDelete = [...selection.set])}><Icon name="trash" size={14} />{t("sel.delete")}</button>
       </div>
     {/if}
     {#if queryError}
@@ -510,6 +551,26 @@
       broadcast("saved");
     }}
   />
+{/if}
+
+{#if selection.menu && selection.set.size > 0}
+  <ContextMenu x={selection.menu.x} y={selection.menu.y} items={menuItems} onclose={() => (selection.menu = null)} />
+{/if}
+
+{#if confirmDelete}
+  <div class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && !deleting && (confirmDelete = null)}>
+    <div class="dialog confirm" role="alertdialog" aria-modal="true" aria-labelledby="del-title">
+      <header><h2 id="del-title">{t("del.title")}</h2></header>
+      <div class="body"><p class="text">{t("del.body", { n: confirmDelete.length.toLocaleString() })}</p></div>
+      <footer>
+        <span class="grow"></span>
+        <button class="btn ghost" disabled={deleting} onclick={() => (confirmDelete = null)}>{t("common.cancel")}</button>
+        <button class="btn danger" disabled={deleting} onclick={deleteConfirmed}>
+          {#if deleting}<span class="spinner"></span>{:else}<Icon name="trash" size={14} />{/if}{t("del.confirm")}
+        </button>
+      </footer>
+    </div>
+  </div>
 {/if}
 
 {#if sourceDialog}
@@ -655,6 +716,13 @@
   .empty p {
     margin: 0;
     color: var(--muted);
+  }
+  .confirm {
+    width: min(420px, 100%);
+  }
+  .confirm .text {
+    margin: 0;
+    line-height: 1.5;
   }
   .selbar {
     display: flex;
