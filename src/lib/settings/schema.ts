@@ -356,6 +356,14 @@ export const SECTIONS: Section[] = [
         note: "set.memory.note",
         fields: [
           { kind: "number", ...bundle({ path: "cache.memory_bytes", label: "set.cacheSize" }), min: 0.25, step: 0.25, scale: GB, unit: "GB" },
+          {
+            kind: "number",
+            ...app({ path: "hardware.cache_limit_bytes", label: "set.cacheLimit", help: "set.cacheLimit.help" }),
+            min: 0,
+            step: 64,
+            scale: 1024 ** 2,
+            unit: "MB",
+          },
           { kind: "toggle", ...bundle({ path: "cache.preallocate", label: "set.preallocate", help: "set.preallocate.help" }) },
           { kind: "number", ...bundle({ path: "cache.chunk_bytes", label: "set.chunk" }), min: 64, step: 64, scale: 1024, unit: "KB" },
           { kind: "number", ...bundle({ path: "cache.max_item_bytes", label: "set.maxItem" }), min: 1, step: 16, scale: MB, unit: "MB" },

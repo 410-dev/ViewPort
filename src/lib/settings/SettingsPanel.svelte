@@ -242,6 +242,8 @@
                                 >
                               </div>
                             {/if}
+                          {:else if ffmpeg?.os_media}
+                            <div class="status ok"><Icon name="check" size={14} /><span>{t("ffmpeg.osMedia")}</span></div>
                           {:else if ffmpeg}
                             <div class="status warn"><Icon name="alert" size={14} /><span>{t("ffmpeg.missing")}</span></div>
                           {/if}

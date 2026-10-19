@@ -500,6 +500,9 @@ const en: Record<Key, string> = {
   "key.toggle_immersive": "Immersive mode",
   "set.panicDouble": "Double-press window",
   "set.panicDouble.help": "The second press must come within this time.",
+  "set.cacheLimit": "Cache limit on this device",
+  "set.cacheLimit.help": "Bundles asking for a larger cache use at most this much here. 0 means no limit (mobile default 512 MB).",
+  "ffmpeg.osMedia": "Videos are analyzed and thumbnailed by the OS media framework. Conversion needs FFmpeg.",
   "set.security": "Security",
 };
 

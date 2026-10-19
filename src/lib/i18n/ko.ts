@@ -499,6 +499,9 @@ const ko = {
   "key.toggle_immersive": "몰입 모드",
   "set.panicDouble": "두 번 누름 간격",
   "set.panicDouble.help": "두 번째 누름이 이 시간 안에 와야 가리기가 실행됩니다.",
+  "set.cacheLimit": "이 기기의 캐시 상한",
+  "set.cacheLimit.help": "번들 설정의 캐시 용량이 이보다 커도 이 기기에서는 여기까지만 씁니다. 0이면 제한 없음(모바일 기본 512MB).",
+  "ffmpeg.osMedia": "OS 미디어 프레임워크로 영상 분석·썸네일을 처리합니다. 고호환 변환은 FFmpeg가 있어야 합니다.",
   "set.security": "보안",
 } as const;
 

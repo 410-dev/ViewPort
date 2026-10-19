@@ -74,6 +74,8 @@ export interface ConvertEvent {
 
 export interface FfmpegStatus {
   available: boolean;
+  /** The OS media framework probes videos and grabs frames without FFmpeg (Android). */
+  os_media: boolean;
   path: string | null;
   version: string | null;
 }
@@ -199,6 +201,8 @@ export interface AppSettings {
     ffmpeg_hwaccel: string;
     video_encode: boolean;
     encoders: string[];
+    /** Upper bound for any bundle's memory cache on this device (0 = no limit). */
+    cache_limit_bytes: number;
   };
   reopen_last_bundle: boolean;
   ui: UiSettings;
