@@ -1,4 +1,6 @@
 <script lang="ts">
+  import Combobox from "../ui/Combobox.svelte";
+  import Select from "../ui/Select.svelte";
   import { ask } from "@tauri-apps/plugin-dialog";
   import { api, asCmdError, type ExtValue, type FieldInfo, type FieldType, type MediaDetail } from "../api";
   import { fmtBytes, fmtDate, fmtDuration } from "../format";
@@ -64,10 +66,6 @@
   const single = (key: string) => values(key)[0];
 
   let tagInput = $state<Record<string, string>>({});
-  let suggestions = $state<Record<string, string[]>>({});
-  async function suggest(key: string) {
-    suggestions[key] = await api.suggestValues(key, tagInput[key] ?? "").catch(() => []);
-  }
   function addTag(key: string) {
     const v = (tagInput[key] ?? "").trim();
     if (!v) return;
@@ -173,18 +171,13 @@
                 {/each}
               </div>
             {/if}
-            <input
-              class="input"
-              list="sugg-{f.key}"
+            <Combobox
               placeholder={ids.length > 1 ? t("info.addToAll") : t("info.add")}
               bind:value={tagInput[f.key]}
-              onfocus={() => suggest(f.key)}
-              oninput={() => suggest(f.key)}
-              onkeydown={(e) => e.key === "Enter" && addTag(f.key)}
+              suggest={(prefix) => api.suggestValues(f.key, prefix)}
+              onpick={() => addTag(f.key)}
+              onenter={() => addTag(f.key)}
             />
-            <datalist id="sugg-{f.key}">
-              {#each suggestions[f.key] ?? [] as s (s)}<option value={s}></option>{/each}
-            </datalist>
             {#if ids.length > 1 && (tagInput[f.key] ?? "").trim()}
               <button class="btn sm ghost" onclick={() => run(() => api.removeValue(ids, f.key, tagInput[f.key].trim()))}
                 >{t("info.removeFromAll")}</button
@@ -231,9 +224,11 @@
       {#if adding}
         <div class="new">
           <input class="input" placeholder={t("info.fieldName")} bind:value={newName} />
-          <select class="input" bind:value={newType}>
-            {#each Object.entries(typeLabels) as [v, l] (v)}<option value={v}>{t(l)}</option>{/each}
-          </select>
+          <Select
+            value={newType}
+            options={Object.entries(typeLabels).map(([v, l]) => ({ value: v, label: t(l) }))}
+            onchange={(v) => (newType = v as typeof newType)}
+          />
           {#if newType === "ranged_int"}
             <div class="range">
               <label>{t("info.min")} <input class="input" type="number" bind:value={newMin} /></label>

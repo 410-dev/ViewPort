@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Select from "../ui/Select.svelte";
   import { ask, open as openDialog } from "@tauri-apps/plugin-dialog";
   import { onDestroy, onMount, untrack } from "svelte";
   import { api, asCmdError, type AppSettings, type BundleSummary, type CacheStats, type FfmpegStatus, type Settings } from "../api";
@@ -306,9 +307,7 @@
                                 {/each}
                               </div>
                             {:else}
-                              <select class="input" value={get(obj, f.path)} onchange={(e) => set(obj, f.path, e.currentTarget.value)}>
-                                {#each opts as o (o.value)}<option value={o.value}>{o.label}</option>{/each}
-                              </select>
+                              <Select class="wide-select" value={get(obj, f.path)} options={opts} label={t(f.label)} onchange={(v) => set(obj, f.path, v)} />
                             {/if}
                           {:else if f.kind === "color"}
                             <div class="swatches">
@@ -548,7 +547,7 @@
     flex-shrink: 0;
     max-width: 60%;
   }
-  .ctl select.input {
+  .ctl :global(.wide-select) {
     min-width: 220px;
   }
   .num {

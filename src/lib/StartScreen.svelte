@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Select from "./ui/Select.svelte";
   import { open, save } from "@tauri-apps/plugin-dialog";
   import { api, asCmdError, type BundleSummary, type CmdError } from "./api";
   import { LOCALES, t } from "./i18n.svelte";
@@ -147,17 +148,15 @@
   {#if prefs.app}
     <div class="prefs">
       <Icon name="globe" size={14} />
-      <select
-        class="input"
+      <Select
+        class="sm"
         value={prefs.app.ui.locale}
-        onchange={(e) => {
-          prefs.app!.ui.locale = e.currentTarget.value;
+        options={[{ value: "auto", label: t("set.locale.auto") }, ...LOCALES.map((l) => ({ value: l.code, label: l.name }))]}
+        onchange={(v) => {
+          prefs.app!.ui.locale = v;
           savePrefs(0);
         }}
-      >
-        <option value="auto">{t("set.locale.auto")}</option>
-        {#each LOCALES as l (l.code)}<option value={l.code}>{l.name}</option>{/each}
-      </select>
+      />
       <div class="seg sm">
         {#each THEMES as th (th)}
           <button
@@ -349,7 +348,7 @@
     gap: 8px;
     color: var(--faint);
   }
-  .prefs .input {
+  .prefs :global(.select) {
     height: var(--h-control-sm);
     font-size: 12px;
   }

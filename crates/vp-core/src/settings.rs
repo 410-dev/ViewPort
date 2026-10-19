@@ -311,7 +311,7 @@ impl Default for AppSettings {
 #[serde(default)]
 pub struct ViewerSettings {
     /// Entering fullscreen also hides every viewer control (immersive mode). Escape leaves
-    /// immersive mode; a second Escape is then the panic key.
+    /// immersive mode.
     pub immersive_on_fullscreen: bool,
     /// Zoom factor per key press or wheel notch.
     pub zoom_step: f32,
@@ -362,8 +362,10 @@ impl Default for AudioSettings {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PrivacySettings {
-    /// Keys (`KeyboardEvent.key` style) that trigger it in any window.
+    /// Keys (`KeyboardEvent.key` style) that trigger it in any window when pressed twice
+    /// within `panic_double_ms`. A single press keeps its normal meaning.
     pub panic_keys: Vec<String>,
+    pub panic_double_ms: u32,
     pub panic_mute: bool,
     pub panic_hide: bool,
     /// System-wide shortcut that brings hidden windows back (Tauri accelerator syntax).
@@ -376,6 +378,7 @@ impl Default for PrivacySettings {
     fn default() -> Self {
         Self {
             panic_keys: vec!["Escape".into()],
+            panic_double_ms: 400,
             panic_mute: true,
             panic_hide: true,
             restore_shortcut: "CommandOrControl+Shift+Space".into(),
@@ -603,8 +606,8 @@ impl Default for KeyBindings {
             toggle_slideshow: v(&["s"]),
             toggle_info: v(&["i"]),
             toggle_loops: v(&["l"]),
-            // Escape is the panic key (see `PrivacySettings`).
-            close_viewer: v(&["Backspace", "q"]),
+            // A fast double Escape is the panic key (see `PrivacySettings`); one press closes.
+            close_viewer: v(&["Escape", "Backspace", "q"]),
             focus_search: v(&["Ctrl+f", "Meta+f"]),
             query_editor: v(&["Ctrl+e", "Meta+e"]),
             toggle_panel: v(&["Ctrl+p", "Meta+p"]),

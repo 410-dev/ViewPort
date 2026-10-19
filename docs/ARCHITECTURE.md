@@ -132,12 +132,12 @@ UI에 전달되며 작업별로 `progress.emit_interval_ms` 간격으로 제한�
   `audio.focus_only`면 포커스된 창의 활성 패널만 소리를 낸다. `audio.start_muted`면 종료 시 상태와 관계없이 음소거로 시작한다.
 - **몰입 모드**: 뷰어의 모든 컨트롤(HUD, 넘기기 버튼, 영상 기본 컨트롤, 배너, 패널, 커서)을 숨긴다. 전체 화면에 들어가면
   자동으로 켜지고(`viewer.immersive_on_fullscreen`), `H` 키나 HUD 버튼으로도 켠다. 몰입 모드에서는 첫 Esc가 몰입 모드를
-  나가는 데 쓰이고, 그 다음 Esc가 화면 가리기다.
+  나가는 데 쓰인다.
 - **확대·패닝**: 이미지는 항상 화면에 맞춰 표시(긴 이미지 포함)하고, 확대는 그 위의 transform이다(`ZoomPan`).
   PC: 더블클릭(`viewer.double_click_zoom`), `=`/`-`/`0` 키, 휠(커서 위치 기준), 확대 중 드래그 = 패닝.
   터치: 탭 = 다음 항목(`viewer.tap_to_advance`), 핀치 = 확대·축소, 확대 중 드래그 = 패닝. 확대하지 않았을 때만 스와이프로 넘긴다.
-- **화면 가리기**(`src-tauri/src/windows.rs`): `privacy.panic_keys`(기본 Esc)를 모든 창이 캡처 단계에서 가장 먼저 처리해
-  `panic`을 부른다: 음소거 + 보이는 창 모두 숨김. 복원은 트레이 아이콘, 전역 단축키(`privacy.restore_shortcut`),
+- **화면 가리기**(`src-tauri/src/windows.rs`): `privacy.panic_keys`(기본 Esc)를 `privacy.panic_double_ms`(기본 400ms) 안에
+  두 번 누르면, 모든 창이 캡처 단계에서 가장 먼저 처리해 `panic`을 부른다(뷰어·몰입 모드 포함). 한 번 누름은 원래 기능을 한다: 음소거 + 보이는 창 모두 숨김. 복원은 트레이 아이콘, 전역 단축키(`privacy.restore_shortcut`),
   macOS Dock 클릭(`RunEvent::Reopen`). 모바일은 음소거만 한다.
 
 ## UI 구조
@@ -148,6 +148,8 @@ UI에 전달되며 작업별로 `progress.emit_interval_ms` 간격으로 제한�
   목록·트리의 열은 `views/columns.ts` 레지스트리. 열 머리글 정렬은 쿼리 끝에 정렬 호출을 덧붙여 엔진에서 처리한다.
 - 쿼리 편집기 모달(`query/QueryModal.svelte`): 텍스트가 원본이고, 네 개의 열로 조건 하나를 만들어 텍스트에 쓴다.
   커서가 있는 조건을 열에 불러와 그 자리에서 고칠 수 있다.
+  열에서 고르거나 입력할 때마다 미완성 조건이 텍스트에 바로 쓰인다(초안). '조건 완료하기'는 초안을 확정하고, '다음 조건'은 연결어까지 미리 쓴다.
+- 드롭다운은 앱이 직접 그린다(`ui/Select`, `ui/Combobox`, `ui/Dropdown`). WebView 기본 `<select>`/`<datalist>` 팝업은 쓰지 않는다.
 - 문자열은 `i18n/<언어>.ts` 사전에 있고 키는 타입으로 검사된다.
 
 ## 그리드

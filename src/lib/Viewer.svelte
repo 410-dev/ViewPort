@@ -346,13 +346,11 @@
   }
 
   // ---- keyboard
-  // Bundles saved before the panic key existed bind Escape here; the panic key wins, so fall
-  // back to the current defaults when nothing else is left.
-  const closeKeys = $derived.by(() => {
-    const panic = prefs.app?.privacy.panic_keys ?? [];
-    const keys = settings.keys.close_viewer.filter((k) => !panic.includes(k));
-    return keys.length ? keys : ["Backspace", "q"];
-  });
+  // A single Escape closes the viewer (the panic key is a fast double press). Bundles saved
+  // while Escape was a single-press panic key still have that version's default; upgrade it.
+  const closeKeys = $derived(
+    settings.keys.close_viewer.join() === "Backspace,q" ? ["Escape", "Backspace", "q"] : settings.keys.close_viewer,
+  );
 
   function onKey(e: KeyboardEvent) {
     if (!active || isTyping(e)) return;

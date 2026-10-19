@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Select from "./ui/Select.svelte";
   import { open } from "@tauri-apps/plugin-dialog";
   import { untrack } from "svelte";
   import { api, asCmdError, type DriverKind, type SourceRow } from "./api";
@@ -93,9 +94,7 @@
       {#if !source}
         <label>
           <span>{t("src.type")}</span>
-          <select class="input" bind:value={driver}>
-            {#each kinds as k (k.kind)}<option value={k.kind}>{driverLabel(k.kind)}</option>{/each}
-          </select>
+          <Select value={driver} options={kinds.map((k) => ({ value: k.kind, label: driverLabel(k.kind) }))} onchange={(v) => (driver = v)} />
         </label>
       {/if}
 
