@@ -127,7 +127,7 @@
 
   let adding = $state(false);
   let newName = $state("");
-  let newType = $state<"text" | "integer" | "real" | "enum" | "ranged_int">("text");
+  let newType = $state<"text" | "integer" | "real" | "enum" | "ranged_int" | "toggle">("text");
   let newMin = $state(0);
   let newMax = $state(5);
   const typeLabels: Record<string, Key> = {
@@ -136,6 +136,7 @@
     real: "ftype.real",
     enum: "ftype.enum",
     ranged_int: "ftype.ranged_int",
+    toggle: "ftype.toggle",
   };
   async function createField() {
     const name = newName.trim();
@@ -248,6 +249,20 @@
                 >{t("info.removeFromAll")}</button
               >
             {/if}
+          {:else if f.ty.type === "toggle"}
+            {@const on = one && single(f.key) === 1}
+            <div class="toggles">
+              <button
+                class="fav"
+                class:on
+                aria-pressed={on}
+                title={fieldName(f)}
+                onclick={() => run(() => setVals(f.key, on ? [] : [1]))}><Icon name="heart" size={18} /></button
+              >
+              {#if many}
+                <button class="btn sm ghost" onclick={() => run(() => setVals(f.key, []))}>{t("info.clearAll")}</button>
+              {/if}
+            </div>
           {:else if f.ty.type === "ranged_int"}
             {@const ty = f.ty}
             {@const cur = single(f.key) as number | undefined}
@@ -451,6 +466,30 @@
   .stars {
     display: flex;
     gap: 2px;
+  }
+  .toggles {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .fav {
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--faint);
+  }
+  .fav:hover {
+    background: var(--hover);
+  }
+  .fav.on {
+    color: #ff4d6d;
+  }
+  .fav.on :global(path) {
+    fill: currentColor;
   }
   .star {
     display: grid;

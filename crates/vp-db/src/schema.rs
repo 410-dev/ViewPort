@@ -186,6 +186,18 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX folder_value_path ON folder_value(source_id, path, field_id);
     "#,
+    // v6: built-in favorite (on/off), listed first. Skipped when a field of the user's
+    // already goes by one of its names (names must stay unique).
+    r#"
+    UPDATE ext_field SET sort_index = sort_index + 1;
+    INSERT OR IGNORE INTO ext_field (key, names, aliases, ty, builtin, sort_index)
+        SELECT 'x.favorite', '[["ko","좋아요"],["en","favorite"]]', '["즐겨찾기"]', '{"type":"toggle"}', 1, 0
+        WHERE NOT EXISTS (
+            SELECT 1 FROM ext_field
+            WHERE lower(names) LIKE '%"좋아요"%' OR lower(names) LIKE '%"favorite"%' OR lower(names) LIKE '%"즐겨찾기"%'
+               OR lower(aliases) LIKE '%"좋아요"%' OR lower(aliases) LIKE '%"favorite"%' OR lower(aliases) LIKE '%"즐겨찾기"%'
+        );
+    "#,
 ];
 
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;

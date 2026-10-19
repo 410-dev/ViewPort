@@ -189,6 +189,7 @@ pub(crate) mod tests {
         r.add(FieldDef::ext("x.rating", FieldType::RangedInt { min: 0, max: 5 }, 2).name("ko", "점수").name("en", "rating"))
             .unwrap();
         r.add(FieldDef::ext("x.genre", FieldType::Text, 3).name("ko", "장르").name("en", "genre")).unwrap();
+        r.add(FieldDef::ext("x.favorite", FieldType::Toggle, 4).name("ko", "좋아요").name("en", "favorite")).unwrap();
         r
     }
 

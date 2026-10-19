@@ -45,7 +45,12 @@ export interface MediaBrief {
   folder: string;
   ext: string;
   source_id: number;
+  /** The built-in favorite is on. */
+  favorite: boolean;
 }
+
+/** Key of the built-in on/off favorite field. */
+export const FAVORITE_FIELD = "x.favorite";
 
 export interface LoopSegment {
   id: number;
@@ -227,6 +232,7 @@ export interface AppSettings {
     double_click_zoom: number;
     wheel_zoom: boolean;
     tap_to_advance: boolean;
+    swipe_favorite: boolean;
     double_tap_ms: number;
     swipe_threshold: number;
     swipe_ms: number;
@@ -277,7 +283,8 @@ export type FieldType =
   | { type: "duration" }
   | { type: "kind" }
   | { type: "enum" }
-  | { type: "ranged_int"; min: number; max: number };
+  | { type: "ranged_int"; min: number; max: number }
+  | { type: "toggle" };
 
 export interface FieldInfo {
   key: string;
@@ -317,6 +324,9 @@ export interface Vocabulary {
   sort_asc: string;
   sort_desc: string;
   kinds: string[];
+  /** Values of on/off fields. */
+  yes: string;
+  no: string;
 }
 
 export interface SavedQuery {

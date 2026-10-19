@@ -2,7 +2,21 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { onDestroy, onMount } from "svelte";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
-  import { api, displayUrl, mediaUrl, thumbUrl, platformApi, onConvert, type ConvertEvent, type LoopSegment, type MediaBrief, type Settings } from "./api";
+  import {
+    api,
+    displayUrl,
+    mediaUrl,
+    thumbUrl,
+    platformApi,
+    onConvert,
+    FAVORITE_FIELD,
+    type ConvertEvent,
+    type LoopSegment,
+    type MediaBrief,
+    type Settings,
+  } from "./api";
+  import { invalidate } from "./views/briefs.svelte";
+  import { broadcast } from "./sync";
   import { t } from "./i18n.svelte";
   import { fraction, tasks } from "./tasks.svelte";
   import { fmtBytes } from "./format";
@@ -139,6 +153,32 @@
   const preloaded = new Map<number, HTMLImageElement>();
   /** Briefs of the current item and its neighbours, so the swipe strip can draw them. */
   const known = new SvelteMap<number, MediaBrief>();
+
+  // ---- favorite: the toolbar heart, and on touch screens a swipe up (on) or down (off)
+  /** Favorites changed in this viewer, ahead of the briefs. */
+  const favs = new SvelteMap<number, boolean>();
+  const isFav = $derived(favs.get(id) ?? known.get(id)?.favorite ?? (brief?.id === id ? brief.favorite : false));
+  /** The heart shown briefly after a change (true = on). */
+  let favFlash = $state<boolean | null>(null);
+  let favTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function setFav(on: boolean) {
+    const target = id;
+    if (target === undefined) return;
+    favFlash = on;
+    clearTimeout(favTimer);
+    favTimer = setTimeout(() => (favFlash = null), 700);
+    if (isFav === on) return;
+    favs.set(target, on);
+    api
+      .setValues([target], FAVORITE_FIELD, on ? [1] : [])
+      .then(() => {
+        invalidate([target]);
+        broadcast("media", [target]);
+        onchanged?.();
+      })
+      .catch(() => favs.delete(target));
+  }
 
   // Huge images show a display copy. Zooming in past its pixels loads a copy twice as
   // large, and so on up to the original, so a 200-megapixel photo is never decoded whole
@@ -471,6 +511,9 @@
 
   const pointers = new Map<number, { x: number; y: number }>();
   let gesture: { x: number; y: number; t: number; type: string; moved: boolean; pinched: boolean; swipe: boolean } | null = null;
+  /** Vertical drag offset while swiping for favorite (touch). */
+  let pull = $state(0);
+  const favSwipe = (g: { type: string } | null) => g?.type === "touch" && (prefs.app?.viewer.swipe_favorite ?? true);
   let pinch: { dist: number; scale: number } | null = null;
   const distance = () => {
     const [a, b] = [...pointers.values()];
@@ -601,16 +644,19 @@
       zoom.zoomTo((pinch.scale * distance()) / Math.max(1, pinch.dist), mid.x, mid.y);
     } else if (pointers.size === 1 && zoom.zoomed) {
       zoom.panBy(e.clientX - prev.x, e.clientY - prev.y);
-    } else if (pointers.size === 1 && gesture?.swipe && !gesture.pinched && ids.length > 1) {
+    } else if (pointers.size === 1 && gesture?.swipe && !gesture.pinched) {
       const dx = e.clientX - gesture.x;
       const dy = e.clientY - gesture.y;
       if (!lock && gesture.moved) lock = Math.abs(dx) > Math.abs(dy) ? "h" : "v";
-      if (lock === "h") {
+      const vertical = lock === "v" && favSwipe(gesture);
+      if ((lock === "h" && ids.length > 1) || vertical) {
         // Videos are not captured on pointerdown (their seek bar needs drags); capture now.
         const el = e.currentTarget as HTMLElement;
         if (!el.hasPointerCapture(e.pointerId)) el.setPointerCapture(e.pointerId);
-        swipe = dx;
       }
+      if (lock === "h" && ids.length > 1) swipe = dx;
+      // The item follows a vertical drag at a third of the distance.
+      else if (vertical) pull = dy / 3;
     }
   }
 
@@ -622,6 +668,15 @@
     gesture = null;
     const dx = e.clientX - g.x;
     const dt = Math.max(1, performance.now() - g.t);
+    if (pull !== 0 || (lock === "v" && favSwipe(g))) {
+      pull = 0;
+      const dy = e.clientY - g.y;
+      // Far enough (the same fraction as sideways swipes), or flicked.
+      const far = Math.abs(dy) > (prefs.app?.viewer.swipe_threshold ?? 0.2) * stageH;
+      const flick = Math.abs(dy) > 30 && Math.abs(dy) / dt > 0.5;
+      if (lock === "v" && e.type !== "pointercancel" && (far || flick)) setFav(dy < 0);
+      return;
+    }
     if (lock === "h" && e.type !== "pointercancel") {
       // Far enough, or flicked: slide on; otherwise spring back.
       const far = Math.abs(dx) > (prefs.app?.viewer.swipe_threshold ?? 0.2) * stageW;
@@ -705,7 +760,7 @@
     ondblclick={onDoubleClick}
   >
     <!-- Keyed by id, so an image sliding in keeps its element: no reload, no flash. -->
-    <div class="strip" class:sliding style:transform="translateX({swipe}px)" style:--slide-ms="{slideMs()}ms">
+    <div class="strip" class:sliding style:transform="translate({swipe}px, {pull}px)" style:--slide-ms="{slideMs()}ms">
       {#each strip as s (s.id)}
         {@const b = known.get(s.id) ?? (brief?.id === s.id ? brief : null)}
         <div class="slot" style:transform="translateX({s.pos * 100}%)">
@@ -778,6 +833,13 @@
       <button class="icon-btn sm" aria-label={t("common.close")} onclick={() => (dismissed = new Set([...dismissed, brief!.id]))}><Icon name="x" size={13} /></button>
     </div>
   {/if}
+  {#if favFlash !== null}
+    {#key favFlash}
+      <div class="fav-flash" class:on={favFlash} aria-live="polite">
+        <Icon name="heart" size={52} stroke={1.6} /><span>{t(favFlash ? "viewer.favOn" : "viewer.favOff")}</span>
+      </div>
+    {/key}
+  {/if}
   {#if convertError && !immersive.on}
     <div class="banner err" role="alert">
       <span>{t("viewer.convertFailed")}: {convertError}</span>
@@ -844,6 +906,9 @@
       {#if brief?.kind === "video"}
         <button class="hb" class:on={showLoops} onclick={() => (showLoops = !showLoops)} title={t("viewer.loops")}><Icon name="loop" size={15} /></button>
       {/if}
+      <button class="hb fav" class:on={isFav} aria-pressed={isFav} onclick={() => setFav(!isFav)} title={t("viewer.favorite")}
+        ><Icon name="heart" size={15} /></button
+      >
       <button class="hb" class:on={showInfo} onclick={() => (showInfo = !showInfo)} title={t("viewer.info")}><Icon name="info" size={15} /></button>
       {#if onsplit}
         <button class="hb" onclick={onsplit} title={t("viewer.split")}><Icon name="columns" size={15} /></button>
@@ -1163,6 +1228,57 @@
   }
   .hb.on {
     color: var(--accent);
+  }
+  .hb.fav.on {
+    color: #ff4d6d;
+  }
+  .hb.fav.on :global(path),
+  .fav-flash.on :global(path) {
+    fill: currentColor;
+  }
+  /* Feedback for a favorite change: a heart that pops and fades in the middle. */
+  .fav-flash {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    z-index: 4;
+    display: grid;
+    place-items: center;
+    width: 96px;
+    height: 96px;
+    margin: -48px 0 0 -48px;
+    border-radius: 50%;
+    background: rgb(0 0 0 / 0.45);
+    color: #fff;
+    pointer-events: none;
+    animation: fav-pop 700ms var(--ease) forwards;
+  }
+  .fav-flash.on {
+    color: #ff4d6d;
+  }
+  .fav-flash span {
+    position: absolute;
+    bottom: -26px;
+    font-size: 12px;
+    color: #fff;
+    white-space: nowrap;
+  }
+  @keyframes fav-pop {
+    0% {
+      transform: scale(0.6);
+      opacity: 0;
+    }
+    20% {
+      transform: scale(1.05);
+      opacity: 1;
+    }
+    75% {
+      opacity: 1;
+    }
+    100% {
+      transform: scale(1);
+      opacity: 0;
+    }
   }
   .nav {
     position: absolute;

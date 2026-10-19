@@ -89,6 +89,7 @@
                 .map((o) => ({ label: o.name, insert: o.name + (ctx.params.length ? ")" : ":"), detail: t("query.operator") }));
           let values: Item[] = [];
           if (field.ty.type === "kind") values = vocab.kinds.map((k) => ({ label: k, insert: k }));
+          else if (field.ty.type === "toggle") values = [vocab.yes, vocab.no].map((k) => ({ label: k, insert: k }));
           else if (field.ext && (field.ty.type === "enum" || field.ty.type === "text")) {
             const s = await api.suggestValues(field.key, ctx.prefix).catch(() => [] as string[]);
             values = s.map((v) => ({ label: v, insert: quoteParam(v) }));

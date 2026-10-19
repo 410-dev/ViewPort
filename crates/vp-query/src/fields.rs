@@ -24,6 +24,8 @@ pub enum FieldType {
     Enum,
     /// Integer constrained to `min..=max` (ratings).
     RangedInt { min: i64, max: i64 },
+    /// On or off (favorite). Stored as 1 when on; off has no value.
+    Toggle,
 }
 
 impl FieldType {

@@ -129,10 +129,28 @@ impl<'a> Compiler<'a> {
 
     fn pred(&mut self, p: &Pred) -> Result<String, QueryError> {
         let def = self.field(&p.field)?;
+        if def.ty == FieldType::Toggle {
+            return Ok(self.toggle(def, p.op, &p.values));
+        }
         if let Some(positive) = p.op.negates() {
             return Ok(format!("NOT ({})", self.positive(def, positive, &p.values)));
         }
         Ok(self.positive(def, p.op, &p.values))
+    }
+
+    /// On/off fields store only "on", so "off" is the negation: `좋아요(아니오)` matches
+    /// items without a value, `좋아요(예:아니오)` matches everything.
+    fn toggle(&mut self, def: &FieldDef, op: Op, values: &[Value]) -> String {
+        let base = op.negates().unwrap_or(op);
+        let on = self.wrap(def, Op::Eq, &[Value::Int(1)]);
+        let wants_on = values.iter().any(|v| matches!(v, Value::Int(i) if *i != 0));
+        let wants_off = values.iter().any(|v| matches!(v, Value::Int(0)));
+        let cond = match base {
+            Op::Eq | Op::ContainsAny if wants_on && wants_off => "1".to_string(),
+            Op::Eq | Op::ContainsAny if wants_off => format!("NOT ({on})"),
+            _ => on,
+        };
+        if op.negates().is_some() { format!("NOT ({cond})") } else { cond }
     }
 
     /// Never-NULL SQL for a positive operator.
@@ -384,6 +402,23 @@ mod tests {
         let c = compile_src("점수(3:다름)");
         assert!(c.where_sql.starts_with("NOT (EXISTS"), "{}", c.where_sql);
         assert_eq!(c.params, [SqlValue::Int(2), SqlValue::Int(3)]);
+    }
+
+    #[test]
+    fn toggles_store_only_on() {
+        // "On" is a value of 1; "off" is its negation (items without a value).
+        let on = compile_src("좋아요(예)");
+        assert!(on.where_sql.starts_with("EXISTS"), "{}", on.where_sql);
+        assert_eq!(on.params, [SqlValue::Int(4), SqlValue::Int(1)]);
+        for off in ["좋아요(아니오)", "favorite(no)", "좋아요(0)", "좋아요(예:다름)"] {
+            let c = compile_src(off);
+            assert!(c.where_sql.starts_with("NOT (EXISTS"), "{off}: {}", c.where_sql);
+        }
+        assert_eq!(compile_src("좋아요(예:아니오)").where_sql, "1");
+        assert!(compile_src("좋아요(있음)").where_sql.starts_with("EXISTS"));
+        let reg = crate::analyze::tests::registry();
+        assert!(crate::parse_query("좋아요(아마도)", &reg).is_err());
+        assert!(crate::parse_query("좋아요(1:이상)", &reg).is_err(), "not numeric");
     }
 
     #[test]

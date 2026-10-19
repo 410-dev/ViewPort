@@ -368,6 +368,8 @@ pub struct ViewerSettings {
     pub wheel_zoom: bool,
     /// Touch screens: tapping the image goes to the next item.
     pub tap_to_advance: bool,
+    /// Touch screens: swiping an item up marks it as a favorite, down unmarks it.
+    pub swipe_favorite: bool,
     /// Two taps within this time are a double tap (zoom), not two single taps; a single
     /// tap acts only after it has passed.
     pub double_tap_ms: u32,
@@ -396,6 +398,7 @@ impl Default for ViewerSettings {
             double_click_zoom: 2.5,
             wheel_zoom: true,
             tap_to_advance: true,
+            swipe_favorite: true,
             double_tap_ms: 280,
             swipe_threshold: 0.2,
             swipe_ms: 220,

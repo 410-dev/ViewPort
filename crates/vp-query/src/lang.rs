@@ -237,6 +237,21 @@ pub fn kind(word: &str) -> Option<MediaKind> {
     MediaKind::ALL.into_iter().find(|k| kind_aliases(*k).matches(&n))
 }
 
+/// Values of on/off (toggle) fields: `좋아요(예)`, `favorite(no)`.
+pub const YES: Aliases = Aliases { ko: &["예", "네", "켜짐", "참"], en: &["yes", "true", "on"] };
+pub const NO: Aliases = Aliases { ko: &["아니오", "아니요", "꺼짐", "거짓"], en: &["no", "false", "off"] };
+
+pub fn toggle(word: &str) -> Option<bool> {
+    let n = normalize(word);
+    if YES.matches(&n) || n == "1" {
+        Some(true)
+    } else if NO.matches(&n) || n == "0" {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 /// Relative day words: `오늘` = 0, `어제` = -1.
 pub const TODAY: Aliases = Aliases { ko: &["오늘"], en: &["today"] };
 pub const YESTERDAY: Aliases = Aliases { ko: &["어제"], en: &["yesterday"] };

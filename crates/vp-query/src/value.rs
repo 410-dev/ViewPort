@@ -92,6 +92,7 @@ pub fn type_label(ty: FieldType) -> &'static str {
         FieldType::Size => "size",
         FieldType::Duration => "duration",
         FieldType::Kind => "media type",
+        FieldType::Toggle => "yes/no",
     }
 }
 
@@ -104,6 +105,7 @@ pub fn parse_value(ty: FieldType, text: &str) -> Option<Value> {
         FieldType::Size => parse_size(text).map(Value::Size),
         FieldType::Duration => parse_duration(text).map(Value::Duration),
         FieldType::Kind => lang::kind(text).map(Value::Kind),
+        FieldType::Toggle => lang::toggle(text).map(|on| Value::Int(on as i64)),
     }
 }
 

@@ -689,6 +689,13 @@ const ko = {
   "set.suggestLimit": "입력 중 제안 개수",
   "set.valueListLimit": "값 목록 최대 개수",
   "set.valueListLimit.help": "태그처럼 목록에서 고르는 필드의 드롭다운 버튼이 보여 주는 최대 값 개수입니다.",
+  "ftype.toggle": "켬/끔 (좋아요)",
+  "info.clearAll": "모두 해제",
+  "set.swipeFavorite": "위아래로 쓸어 좋아요",
+  "set.swipeFavorite.help": "터치 화면의 뷰어에서 위로 쓸어올리면 좋아요 표시, 아래로 쓸어내리면 좋아요 해제입니다.",
+  "viewer.favorite": "좋아요",
+  "viewer.favOn": "좋아요",
+  "viewer.favOff": "좋아요 해제",
 } as const;
 
 export type Key = keyof typeof ko;

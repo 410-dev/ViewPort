@@ -690,6 +690,13 @@ const en: Record<Key, string> = {
   "set.suggestLimit": "Suggestions while typing",
   "set.valueListLimit": "Values in the value list",
   "set.valueListLimit.help": "Most values the dropdown button of a list field (such as tags) shows.",
+  "ftype.toggle": "On/off (favorite)",
+  "info.clearAll": "Clear all",
+  "set.swipeFavorite": "Swipe up/down to favorite",
+  "set.swipeFavorite.help": "On touch screens, swiping an item up in the viewer marks it as a favorite; swiping down unmarks it.",
+  "viewer.favorite": "Favorite",
+  "viewer.favOn": "Favorite",
+  "viewer.favOff": "Not a favorite",
 };
 
 export default en;

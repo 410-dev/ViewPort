@@ -350,6 +350,12 @@
                         <button class:on={params[i] === k} onclick={() => setParam(i, params[i] === k ? "" : k)}>{k}</button>
                       {/each}
                     </div>
+                  {:else if ty === "toggle"}
+                    <div class="seg sm">
+                      {#each [vocab?.yes ?? "yes", vocab?.no ?? "no"] as k (k)}
+                        <button class:on={params[i] === k} onclick={() => setParam(i, params[i] === k ? "" : k)}>{k}</button>
+                      {/each}
+                    </div>
                   {:else if ty === "date"}
                     <input class="input" type="date" value={params[i] ?? ""} oninput={(e) => setParam(i, e.currentTarget.value)} />
                   {:else if ty && UNITS[ty]}

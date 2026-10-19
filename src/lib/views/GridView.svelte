@@ -160,6 +160,9 @@
             {#if selection.set.has(id)}
               <span class="check"><Icon name="check" size={13} stroke={3} /></span>
             {/if}
+            {#if b?.favorite}
+              <span class="fav-badge"><Icon name="heart" size={13} /></span>
+            {/if}
             {#if b?.kind === "video"}
               <span class="badge tabular">{fmtDuration(b.duration_ms) || "VIDEO"}</span>
             {/if}
@@ -308,6 +311,21 @@
     padding: 0 6px;
     border-radius: var(--radius-pill);
     background: var(--surface-2);
+  }
+  .fav-badge {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: rgb(0 0 0 / 0.5);
+    color: #ff4d6d;
+  }
+  .fav-badge :global(path) {
+    fill: currentColor;
   }
   .badge {
     position: absolute;

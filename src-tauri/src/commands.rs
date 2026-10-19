@@ -599,6 +599,9 @@ pub struct Vocabulary {
     pub sort_asc: String,
     pub sort_desc: String,
     pub kinds: Vec<String>,
+    /// Values of on/off fields.
+    pub yes: String,
+    pub no: String,
 }
 
 #[derive(Serialize)]
@@ -646,6 +649,8 @@ pub fn query_vocabulary(state: State<'_, AppState>, locale: String) -> CmdResult
         sort_asc: lang::SORT_ASC.display(&locale).into(),
         sort_desc: lang::SORT_DESC.display(&locale).into(),
         kinds: vp_core::MediaKind::ALL.into_iter().map(|k| lang::kind_aliases(k).display(&locale).to_string()).collect(),
+        yes: lang::YES.display(&locale).into(),
+        no: lang::NO.display(&locale).into(),
     })
 }
 

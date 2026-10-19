@@ -149,7 +149,12 @@ pub struct MediaBrief {
     pub folder: String,
     pub ext: String,
     pub source_id: i64,
+    /// The built-in favorite (`FAVORITE_FIELD`) is on.
+    pub favorite: bool,
 }
+
+/// Key of the built-in on/off favorite field.
+pub const FAVORITE_FIELD: &str = "x.favorite";
 
 /// Flag set by "add this file to the ignore list" on the playback banner.
 pub const FLAG_IGNORE_PLAYBACK_WARNING: &str = "ignore_playback_warning";
@@ -611,7 +616,9 @@ impl Db {
                 "SELECT m.id, m.name, m.kind, m.width, m.height, m.duration_ms, t.status,
                         p.compatible, v.media_id IS NOT NULL,
                         EXISTS (SELECT 1 FROM media_flag f WHERE f.media_id = m.id AND f.flag = '{FLAG_IGNORE_PLAYBACK_WARNING}'),
-                        m.size, m.created_ms, m.modified_ms, m.parent_path, m.ext, m.source_id
+                        m.size, m.created_ms, m.modified_ms, m.parent_path, m.ext, m.source_id,
+                        EXISTS (SELECT 1 FROM ext_value e JOIN ext_field xf ON xf.id = e.field_id
+                                WHERE e.media_id = m.id AND xf.key = '{FAVORITE_FIELD}' AND e.int_val = 1)
                  FROM media m LEFT JOIN thumbnail t ON t.media_id = m.id
                  LEFT JOIN media_probe p ON p.media_id = m.id AND p.ok
                  LEFT JOIN media_variant v ON v.media_id = m.id
@@ -636,6 +643,7 @@ impl Db {
                     folder: r.get::<_, Option<String>>(13)?.unwrap_or_default(),
                     ext: r.get::<_, Option<String>>(14)?.unwrap_or_default(),
                     source_id: r.get(15)?,
+                    favorite: r.get(16)?,
                 })
             })?;
             for row in rows {
@@ -1487,6 +1495,17 @@ fn coerce_values(ty: FieldType, values: &[ExtValue], key: &str) -> Result<Vec<Ex
     let single = !matches!(ty, FieldType::Enum);
     if single && values.len() > 1 {
         return Err(bad());
+    }
+    // On/off fields store only "on" (1); "off" clears the value.
+    if ty == FieldType::Toggle {
+        return values
+            .iter()
+            .filter_map(|v| match v {
+                ExtValue::Int(1) => Some(Ok(ExtValue::Int(1))),
+                ExtValue::Int(0) => None,
+                _ => Some(Err(bad())),
+            })
+            .collect();
     }
     values
         .iter()

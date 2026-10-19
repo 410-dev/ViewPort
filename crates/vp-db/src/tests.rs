@@ -507,3 +507,20 @@ fn folder_values_apply_recursively() {
     lib.db.delete_folder_values(1, "old/trip").unwrap();
     assert!(lib.db.folder_values(1, "old/trip/day").unwrap().is_empty());
 }
+
+#[test]
+fn favorite_toggle() {
+    let lib = library();
+    // Built in, listed first.
+    assert_eq!(lib.db.ext_fields().unwrap()[0].key, "x.favorite");
+    lib.db.set_values_many(&[1, 3], "x.favorite", &[ExtValue::Int(1)], "user").unwrap();
+    assert_eq!(lib.ids("좋아요(예)"), [1, 3]);
+    assert_eq!(lib.ids("즐겨찾기(아니오)"), [2, 4, 5]);
+    assert_eq!(lib.ids("favorite(yes) AND 태그(바다)"), [1]);
+    // "Off" clears the value; anything but on/off is refused.
+    lib.db.set_values_many(&[1], "x.favorite", &[ExtValue::Int(0)], "user").unwrap();
+    assert!(lib.db.media_detail(1).unwrap().unwrap().values.get("x.favorite").is_none());
+    assert_eq!(lib.ids("좋아요(예)"), [3]);
+    assert!(lib.db.set_values_many(&[1], "x.favorite", &[ExtValue::Int(2)], "user").is_err());
+    assert!(lib.db.set_values_many(&[1], "x.favorite", &[ExtValue::Text("예".into())], "user").is_err());
+}
