@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onBack } from "../back.svelte";
   import { untrack } from "svelte";
   import { api, asCmdError, type SavedQuery, type Vocabulary } from "../api";
   import { i18n, t, tx } from "../i18n.svelte";
@@ -27,6 +28,8 @@
     onclose: () => void;
     onsaved: () => void;
   } = $props();
+
+  $effect(() => onBack(onclose));
 
   /** Values a multi-value operator accepts in the builder. */
   const MULTI_MAX = 4;
@@ -669,6 +672,28 @@
     }
     footer {
       grid-template-columns: 1fr 1fr !important;
+    }
+  }
+  /* Phones: a shorter editor, and the status message gets its own line above saving. */
+  @media (max-width: 600px) {
+    .editor {
+      height: 112px;
+    }
+    .state {
+      flex-wrap: wrap;
+    }
+    .state > span:first-child {
+      flex-basis: 100%;
+    }
+    .state .grow {
+      display: none;
+    }
+    .save {
+      flex: 1;
+    }
+    .save .input {
+      flex: 1;
+      min-width: 0;
     }
   }
 </style>

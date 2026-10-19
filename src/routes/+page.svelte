@@ -1,6 +1,6 @@
 <script lang="ts">
   import { getCurrentWindow } from "@tauri-apps/api/window";
-  import { api, onAppSettings, type BundleSummary, type WindowPayload } from "$lib/api";
+  import { api, initMediaUrls, onAppSettings, type BundleSummary, type WindowPayload } from "$lib/api";
   import { startAudio } from "$lib/audio.svelte";
   import Library from "$lib/Library.svelte";
   import { windowLabel } from "$lib/platform";
@@ -20,6 +20,7 @@
   $effect(() => {
     (async () => {
       await loadPrefs().catch(() => {});
+      await initMediaUrls();
       startTaskTracking();
       startAudio();
       // Settings saved in another window apply here too.

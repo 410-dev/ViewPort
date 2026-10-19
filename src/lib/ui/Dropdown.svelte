@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onBack } from "../back.svelte";
   import { onDestroy, onMount } from "svelte";
   import { portal } from "./portal";
   import Icon from "./Icon.svelte";
@@ -27,6 +28,8 @@
     onclose: () => void;
     onhover?: (index: number) => void;
   } = $props();
+
+  $effect(() => onBack(onclose));
 
   const GAP = 4;
   const MAX_H = 280;

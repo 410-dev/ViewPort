@@ -1,7 +1,9 @@
 <script lang="ts">
   import Select from "./ui/Select.svelte";
-  import { open, save } from "@tauri-apps/plugin-dialog";
-  import { api, asCmdError, type BundleSummary, type CmdError } from "./api";
+  import { api, asCmdError, platformApi, type BundleSummary, type CmdError } from "./api";
+  import { onBack } from "./back.svelte";
+  import { pickFile, pickFolder, pickSave } from "./pick.svelte";
+  import { isAndroid } from "./platform";
   import { LOCALES, t } from "./i18n.svelte";
   import { prefs, savePrefs } from "./prefs.svelte";
   import Icon from "./ui/Icon.svelte";
@@ -23,6 +25,22 @@
     api.recentBundles().then((r) => (recent = r));
   });
 
+  // Android: media and bundles are read by path, which needs "all files access".
+  let storageOk = $state(true);
+  $effect(() => {
+    if (isAndroid) platformApi.info().then((i) => (storageOk = i.storage_granted)).catch(() => {});
+  });
+  async function grantStorage() {
+    storageOk = await platformApi.requestStorageAccess().catch(() => false);
+  }
+
+  $effect(() => {
+    if (pendingLock) return onBack(() => (pendingLock = null));
+  });
+  $effect(() => {
+    if (pendingNewer) return onBack(() => (pendingNewer = null));
+  });
+
   async function run(f: () => Promise<BundleSummary>) {
     busy = true;
     error = null;
@@ -36,19 +54,15 @@
   }
 
   async function create() {
-    const path = await save({
-      title: t("start.create"),
-      defaultPath: `${t("start.newName")}.vpbun`,
-      filters: [{ name: "ViewPort bundle", extensions: ["vpbun"] }],
-    });
+    const path = await pickSave(t("start.create"), `${t("start.newName")}.vpbun`, { name: "ViewPort bundle", extensions: ["vpbun"] });
     if (!path) return;
     const name = path.split(/[\\/]/).pop()!.replace(/\.vpbun$/i, "");
     await run(() => api.createBundle(path, name));
   }
 
   async function pickAndOpen() {
-    const path = await open({ title: t("start.open"), directory: true });
-    if (typeof path === "string") await openPath(path);
+    const path = await pickFolder(t("start.open"), { pickSuffix: ".vpbun" });
+    if (path) await openPath(path);
   }
 
   async function openPath(path: string, allowNewer = false) {
@@ -73,16 +87,13 @@
   }
 
   async function importArchive() {
-    const path = await open({
-      title: t("start.import"),
-      filters: [{ name: "ViewPort bundle archive", extensions: ["zip", "vpbun"] }],
-    });
-    if (typeof path === "string") await openPath(path);
+    const path = await pickFile(t("start.import"), { name: "ViewPort bundle archive", extensions: ["zip", "vpbun"] });
+    if (path) await openPath(path);
   }
 
   async function pickKeyfile() {
-    const p = await open({ title: t("start.keyfile") });
-    if (typeof p === "string") keyfile = p;
+    const p = await pickFile(t("start.keyfile"));
+    if (p) keyfile = p;
   }
 
   async function unlock() {
@@ -117,6 +128,17 @@
       <button class="btn" disabled={busy} onclick={pickAndOpen}><Icon name="folder" size={14} />{t("start.open")}</button>
       <button class="btn" disabled={busy} onclick={importArchive}><Icon name="archive" size={14} />{t("start.import")}</button>
     </div>
+
+    {#if !storageOk}
+      <div class="perm">
+        <Icon name="shield" size={18} />
+        <div class="grow">
+          <strong>{t("start.storage.title")}</strong>
+          <p>{t("start.storage.body")}</p>
+        </div>
+        <button class="btn primary sm" onclick={grantStorage}>{t("start.storage.grant")}</button>
+      </div>
+    {/if}
 
     {#if error}
       <p class="error">{error.message}</p>
@@ -336,6 +358,23 @@
   .muted {
     margin: 0;
     color: var(--faint);
+  }
+  .perm {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 14px;
+    border-radius: var(--radius-md);
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  .perm strong {
+    color: var(--fg);
+  }
+  .perm p {
+    margin: 2px 0 0;
+    font-size: 12px;
+    color: var(--fg-2);
   }
   .error {
     color: var(--danger);

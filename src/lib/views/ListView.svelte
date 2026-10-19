@@ -76,6 +76,8 @@
           class="row"
           style:height="{rowPx}px"
           style:transform="translateY({r.slot * rowPx}px)"
+          onpointerdown={(e) => selection.pointer(e)}
+          onclick={() => selection.touch && onfolder(f.path)}
           ondblclick={() => onfolder(f.path)}
           onkeydown={(e) => e.key === "Enter" && onfolder(f.path)}
           tabindex="-1"
@@ -90,7 +92,9 @@
           class:focus={selection.focus === id}
           style:height="{rowPx}px"
           style:transform="translateY({r.slot * rowPx}px)"
-          onclick={(e) => selection.click(e, r.index, ids)}
+          onpointerdown={(e) => selection.pointer(e)}
+          onclick={(e) => selection.activate(e, r.index, ids, onopen)}
+          oncontextmenu={(e) => selection.hold(e, r.index, ids)}
           ondblclick={() => onopen(id, ids)}
           onauxclick={(e) => e.button === 1 && onopenwindow?.(id, ids)}
           onmousedown={(e) => e.button === 1 && e.preventDefault()}

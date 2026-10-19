@@ -64,6 +64,13 @@ fn random<const N: usize>() -> Result<[u8; N]> {
     Ok(buf)
 }
 
+/// A random hex string of `bytes` bytes (e.g. an unguessable URL token).
+pub fn random_hex(bytes: usize) -> Result<String> {
+    let mut buf = vec![0u8; bytes];
+    getrandom::fill(&mut buf).map_err(|e| CryptoError::Random(e.to_string()))?;
+    Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
+}
+
 fn derive(password: &str, keyfile: Option<&[u8]>, salt: &[u8], m: u32, t: u32, p: u32) -> Result<BundleKey> {
     let mut input = Zeroizing::new(password.as_bytes().to_vec());
     if let Some(kf) = keyfile {

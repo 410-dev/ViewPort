@@ -60,4 +60,10 @@
     width: 76px;
     accent-color: var(--accent);
   }
+  /* Phones have volume keys; only the mute button stays. */
+  @media (max-width: 760px) {
+    input {
+      display: none;
+    }
+  }
 </style>

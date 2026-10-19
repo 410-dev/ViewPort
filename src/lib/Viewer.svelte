@@ -1,7 +1,7 @@
 <script lang="ts">
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { onDestroy, onMount } from "svelte";
-  import { api, mediaUrl, onConvert, type ConvertEvent, type LoopSegment, type MediaBrief, type Settings } from "./api";
+  import { api, mediaUrl, platformApi, onConvert, type ConvertEvent, type LoopSegment, type MediaBrief, type Settings } from "./api";
   import { t } from "./i18n.svelte";
   import { fraction, tasks } from "./tasks.svelte";
   import { fmtBytes } from "./format";
@@ -13,6 +13,8 @@
   import { prefs } from "./prefs.svelte";
   import { fullscreenChanged, immersive } from "./immersive.svelte";
   import { ZoomPan } from "./zoom.svelte";
+  import { onBack } from "./back.svelte";
+  import { isMobile } from "./platform";
 
   /**
    * One viewer pane. `ViewerShell` lays out up to `windows.max_viewer_panes` of them;
@@ -62,7 +64,15 @@
   let dismissed = $state<Set<number>>(new Set());
   let srcVersion = $state<Record<number, number>>({});
   let hasFfmpeg = $state(true);
-  api.ffmpegStatus().then((s) => (hasFfmpeg = s.available)).catch(() => {});
+  // Without FFmpeg the OS may still probe videos (Android), but nothing can convert.
+  let canProbe = $state(true);
+  api
+    .ffmpegStatus()
+    .then((s) => {
+      hasFfmpeg = s.available;
+      canProbe = s.available || s.os_media;
+    })
+    .catch(() => {});
 
   const unlistenConvert = onConvert((e) => {
     converting[e.id] = e;
@@ -104,7 +114,7 @@
   $effect(() => {
     const b = brief;
     if (!b || b.kind !== "video") return;
-    if (b.compatible === null && hasFfmpeg) {
+    if (b.compatible === null && canProbe) {
       api.probeMedia(b.id).then((nb) => {
         if (nb && brief?.id === nb.id) brief = nb;
       });
@@ -333,6 +343,14 @@
 
   // ---- fullscreen (the window, so it also hides the OS chrome)
   async function toggleFullscreen(force?: boolean) {
+    if (isMobile) {
+      // Mobile: the app always fills the screen; fullscreen hides the system bars.
+      const next = force ?? !fullscreen;
+      await platformApi.setSystemFullscreen(next).catch(() => {});
+      fullscreen = next;
+      fullscreenChanged(next);
+      return;
+    }
     const next = force ?? !(await win.isFullscreen());
     await win.setFullscreen(next);
     fullscreen = next;
@@ -411,7 +429,17 @@
     return Math.hypot(a.x - b.x, a.y - b.y);
   };
 
+  // Back button: leave immersive mode first, then close this pane.
+  $effect(() => {
+    if (active)
+      return onBack(() => {
+        if (immersive.on) immersive.on = false;
+        else close();
+      });
+  });
+
   function onPointerDown(e: PointerEvent) {
+    if (e.pointerType === "touch") poke();
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     // Capturing over a video would take drags away from its native seek bar.
     if (zoomable) (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
@@ -572,7 +600,7 @@
         <span>{t("viewer.mayNotPlay")}</span>
         <button class="btn sm primary" onclick={() => convert(brief!.id)}>{t("viewer.convert")}</button>
       {:else}
-        <span>{t("viewer.needFfmpeg")}</span>
+        <span>{canProbe ? t("viewer.unplayableHere") : t("viewer.needFfmpeg")}</span>
       {/if}
       <button class="btn sm" onclick={() => ignoreFile(brief!.id)}>{t("viewer.ignore")}</button>
       <button class="icon-btn sm" aria-label={t("common.close")} onclick={() => (dismissed = new Set([...dismissed, brief!.id]))}><Icon name="x" size={13} /></button>
@@ -944,6 +972,23 @@
   }
   .prev {
     left: 16px;
+  }
+  @media (max-width: 600px) {
+    .hud {
+      gap: 8px;
+      padding: 0 6px 0 12px;
+    }
+    .tools.vol {
+      display: none;
+    }
+    .hb {
+      width: 36px;
+      height: 36px;
+    }
+    .tools {
+      gap: 0;
+      padding: 2px;
+    }
   }
   .next {
     right: 16px;

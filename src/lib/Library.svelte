@@ -1,5 +1,7 @@
 <script lang="ts">
-  import { ask, open } from "@tauri-apps/plugin-dialog";
+  import { ask } from "@tauri-apps/plugin-dialog";
+  import { pickFolder } from "./pick.svelte";
+  import { onBack, PASS } from "./back.svelte";
   import { onDestroy } from "svelte";
   import { api, asCmdError, onScan, type BundleSummary, type SavedQuery, type ScanEvent, type Settings, type SourceRow } from "./api";
   import { i18n, t } from "./i18n.svelte";
@@ -164,8 +166,8 @@
 
   // ---- actions
   async function addFolder() {
-    const path = await open({ title: t("side.addFolder"), directory: true });
-    if (typeof path !== "string") return;
+    const path = await pickFolder(t("side.addFolder"));
+    if (!path) return;
     try {
       const s = await api.addLocalSource(path);
       await refreshSources();
@@ -277,6 +279,42 @@
   }
 
   const scope = $derived(selected === null ? null : (sources.find((s) => s.id === selected) ?? null));
+
+  // ---- narrow screens (phones): the sidebar is a drawer, the panel a bottom sheet, and
+  // a touch selection gets its own action bar.
+  let compact = $state(false);
+  $effect(() => {
+    const mq = matchMedia("(max-width: 760px)");
+    const update = () => (compact = mq.matches);
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  });
+  let drawer = $state(false);
+  $effect(() => {
+    if (!compact) drawer = false;
+  });
+  function setPanel(on: boolean) {
+    ui().panel_visible = on;
+    savePrefs();
+  }
+
+  // Back button: open layers first (registered later, so they run first), then up a folder.
+  $effect(() =>
+    onBack(() => {
+      if (selected !== null && folder) folder = folder.split("/").slice(0, -1).join("/");
+      else return PASS;
+    }),
+  );
+  $effect(() => {
+    if (drawer) return onBack(() => (drawer = false));
+  });
+  $effect(() => {
+    if (compact && ui().panel_visible) return onBack(() => setPanel(false));
+  });
+  $effect(() => {
+    if (compact && selection.set.size > 0) return onBack(() => selection.clear());
+  });
 </script>
 
 <svelte:window onkeydown={onKey} />
@@ -287,7 +325,18 @@
   style:--panel="{ui().panel_visible ? ui().panel_width : 0}px"
   class:no-panel={!ui().panel_visible}
 >
-  <div class="sidebar">
+  {#if drawer}
+    <div class="drawer-scrim" role="presentation" onclick={() => (drawer = false)}></div>
+  {/if}
+  <!-- In the drawer, picking anything in the sidebar closes it. -->
+  <div
+    class="sidebar"
+    class:open={drawer}
+    role="presentation"
+    onclick={(e) => {
+      if (compact && (e.target as Element).closest("button.item")) drawer = false;
+    }}
+  >
     <Sidebar
       {bundle}
       {sources}
@@ -326,7 +375,16 @@
       ontile={setTile}
       onadvanced={() => (modal = { editing: null })}
       onnewwindow={isMobile ? undefined : openExplorerWindow}
+      onmenu={compact ? () => (drawer = true) : undefined}
     />
+    {#if compact && selection.set.size > 0}
+      <div class="selbar">
+        <button class="icon-btn" aria-label={t("sel.clear")} onclick={() => selection.clear()}><Icon name="x" size={16} /></button>
+        <span class="grow tabular">{t("sel.count", { n: selection.set.size })}</span>
+        <button class="btn sm ghost" onclick={() => selection.selectAll(ids)}><Icon name="checkSquare" size={14} />{t("sel.all")}</button>
+        <button class="btn sm primary" onclick={() => setPanel(true)}><Icon name="info" size={14} />{t("sel.info")}</button>
+      </div>
+    {/if}
     {#if queryError}
       <div class="qerror"><Icon name="alert" size={13} /><span>{queryError}</span></div>
     {/if}
@@ -371,6 +429,7 @@
         selected={selectedIds}
         onopen={(id) => openViewer(id, ids.includes(id) ? ids : [id])}
         onopenwindow={isMobile ? undefined : (id) => openViewerWindow(id, ids.includes(id) ? ids : [id])}
+        onclose={compact ? () => setPanel(false) : undefined}
         onchanged={() => {
           invalidate(selectedIds);
           broadcast("media", selectedIds);
@@ -425,7 +484,8 @@
       viewing = null;
       if (id !== undefined) {
         selection.set.clear();
-        selection.set.add(id);
+        // On touch a selection means selection mode; just remember where the viewer was.
+        if (!selection.touch) selection.set.add(id);
         selection.focus = id;
       }
     }}
@@ -508,19 +568,65 @@
     margin: 0;
     color: var(--muted);
   }
+  .selbar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0 8px 6px;
+    padding: 4px 6px;
+    border-radius: var(--radius-pill);
+    background: var(--accent-soft);
+    color: var(--fg);
+    font-weight: 500;
+  }
+  .drawer-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 34;
+    background: var(--scrim);
+    animation: vp-fade var(--t-med) var(--ease);
+  }
   @media (max-width: 760px) {
     .app {
       grid-template-columns: minmax(0, 1fr);
-      grid-template-rows: auto minmax(0, 1fr) auto;
+      grid-template-rows: minmax(0, 1fr) auto;
     }
     .sidebar {
-      max-height: 34vh;
+      position: fixed;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: min(320px, 86vw);
+      z-index: 35;
+      transform: translateX(-102%);
+      transition: transform var(--t-med) var(--ease);
+    }
+    .sidebar.open {
+      transform: none;
+      box-shadow: var(--shadow);
     }
     .panel {
-      display: none;
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      height: 64%;
+      z-index: 33;
+      border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+      overflow: hidden;
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      box-shadow: var(--shadow);
+      animation: vp-sheet var(--t-med) var(--ease);
     }
     .resizer {
       display: none;
+    }
+  }
+  @keyframes vp-sheet {
+    from {
+      transform: translateY(30%);
+      opacity: 0;
     }
   }
 </style>

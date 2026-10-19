@@ -62,7 +62,7 @@ pub struct CacheSettings {
     pub prefetch_workers: u32,
     /// Files larger than this are streamed instead of cached whole.
     pub max_item_bytes: u64,
-    /// Largest response served for one range request when streaming uncached files.
+    /// Largest response served for one video range request (cached or streamed).
     pub stream_chunk_bytes: u64,
 }
 

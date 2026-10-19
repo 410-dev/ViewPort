@@ -9,6 +9,7 @@
 use serde_json::Value;
 use vp_driver::{ConfigField, ConfigKind};
 
+#[cfg(any(windows, target_os = "macos", target_os = "ios", target_os = "linux"))]
 const SERVICE: &str = "ViewPort";
 const MARKER: &str = "$keyring";
 

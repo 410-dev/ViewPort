@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onBack } from "../back.svelte";
   import type { Settings, SourceRow } from "../api";
   import { t } from "../i18n.svelte";
   import { savePrefs, ui } from "../prefs.svelte";
@@ -18,6 +19,7 @@
     ontile,
     onadvanced,
     onnewwindow,
+    onmenu,
   }: {
     query: string;
     scope: SourceRow | null;
@@ -31,10 +33,15 @@
     onadvanced: () => void;
     /** Opens another explorer window here; absent on mobile. */
     onnewwindow?: () => void;
+    /** Narrow screens: opens the sidebar drawer; the breadcrumbs move to a second row. */
+    onmenu?: () => void;
   } = $props();
 
   let search: HTMLInputElement;
   let basic = $state(false);
+  $effect(() => {
+    if (basic) return onBack(() => (basic = false));
+  });
 
   export function focusSearch() {
     search?.focus();
@@ -44,7 +51,10 @@
   const parts = $derived(folder ? folder.split("/") : []);
 </script>
 
-<div class="toolbar">
+<div class="toolbar" class:compact={!!onmenu}>
+  {#if onmenu}
+    <button class="icon-btn menu" title={t("tb.menu")} aria-label={t("tb.menu")} onclick={onmenu}><Icon name="menu" size={18} /></button>
+  {/if}
   <div class="crumbs">
     <button class="icon-btn" disabled={!scope || !folder} title={t("tb.up")} onclick={() => onfolder(parts.slice(0, -1).join("/"))}>
       <Icon name="arrowUp" size={15} />
@@ -93,7 +103,7 @@
         }}><Icon name="layers" size={16} /></button
       >
     {/if}
-    {#if viewKey === "grid" && settings}
+    {#if viewKey === "grid" && settings && !onmenu}
       <input
         class="tile"
         type="range"
@@ -213,6 +223,29 @@
     display: flex;
     align-items: center;
     gap: 6px;
+  }
+  .toolbar.compact {
+    flex-wrap: wrap;
+    height: auto;
+    gap: 6px 8px;
+    padding: 8px 8px 4px;
+  }
+  /* Two rows: menu + search, then breadcrumbs + view controls. */
+  .compact .search {
+    min-width: 0;
+    flex: 1 1 calc(100% - 50px);
+    height: var(--h-control);
+  }
+  .compact .crumbs {
+    order: 3;
+    flex: 1 1 0;
+    max-width: none;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .compact .right {
+    order: 4;
+    gap: 2px;
   }
   .tile {
     width: 96px;

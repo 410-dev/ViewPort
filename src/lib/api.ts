@@ -405,7 +405,43 @@ export const onConvert = (f: (e: ConvertEvent) => void): Promise<UnlistenFn> =>
   listen<ConvertEvent>("convert-progress", (e) => f(e.payload));
 
 export const thumbUrl = (id: number) => convertFileSrc(String(id), "vpthumb");
-export const mediaUrl = (id: number) => convertFileSrc(String(id), "vpmedia");
+let mediaBase: string | null = null;
+/** Android serves original media over loopback HTTP (`media_server.rs`); call once at startup. */
+export async function initMediaUrls() {
+  mediaBase = await invoke<string | null>("media_base_url").catch(() => null);
+}
+export const mediaUrl = (id: number) => (mediaBase ? `${mediaBase}/${id}` : convertFileSrc(String(id), "vpmedia"));
+
+export interface PlatformInfo {
+  /** "android", "ios", "windows", "macos" or "linux". */
+  os: string;
+  mobile: boolean;
+  /** Shared storage may be read and written (always true on desktop). */
+  storage_granted: boolean;
+  os_media: boolean;
+}
+
+export interface StorageRoot {
+  kind: "internal" | "external" | "home";
+  name: string;
+  path: string;
+}
+
+export interface DirListing {
+  path: string;
+  parent: string | null;
+  entries: { name: string; dir: boolean; size: number }[];
+}
+
+/** Platform services (`src-tauri/src/platform.rs`). */
+export const platformApi = {
+  info: () => invoke<PlatformInfo>("platform_info"),
+  requestStorageAccess: () => invoke<boolean>("request_storage_access"),
+  setSystemFullscreen: (on: boolean) => invoke<void>("set_system_fullscreen", { on }),
+  setSystemBars: (dark: boolean, background: string) => invoke<void>("set_system_bars", { dark, background }),
+  storageRoots: () => invoke<StorageRoot[]>("storage_roots"),
+  browseDir: (path: string, files: boolean, extensions: string[] = []) => invoke<DirListing>("browse_dir", { path, files, extensions }),
+};
 
 export function asCmdError(e: unknown): CmdError {
   if (e && typeof e === "object" && "code" in e) return e as CmdError;

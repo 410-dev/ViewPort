@@ -173,7 +173,7 @@
             {/if}
             <Combobox
               placeholder={ids.length > 1 ? t("info.addToAll") : t("info.add")}
-              bind:value={tagInput[f.key]}
+              bind:value={() => tagInput[f.key] ?? "", (v) => (tagInput[f.key] = v)}
               suggest={(prefix) => api.suggestValues(f.key, prefix)}
               onpick={() => addTag(f.key)}
               onenter={() => addTag(f.key)}
@@ -305,6 +305,11 @@
   }
   .field:hover .x {
     opacity: 1;
+  }
+  @media (hover: none) {
+    .x {
+      opacity: 1;
+    }
   }
   .input {
     width: 100%;

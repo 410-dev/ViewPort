@@ -3,8 +3,9 @@
  * startup, applied to the document as CSS variables, and saved back with a short delay
  * so dragging a splitter or a slider does not write on every frame.
  */
-import { api, type AppSettings, type UiSettings } from "./api";
+import { api, platformApi, type AppSettings, type UiSettings } from "./api";
 import { i18n, resolveLocale } from "./i18n.svelte";
+import { isAndroid } from "./platform";
 
 export const prefs = $state<{ app: AppSettings | null }>({ app: null });
 
@@ -36,6 +37,18 @@ export function applyPrefs(app: AppSettings) {
   i18n.locale = resolveLocale(u.locale);
   i18n.queryLocale = u.query_locale === "auto" ? i18n.locale : resolveLocale(u.query_locale);
   root.lang = i18n.locale;
+  matchSystemBars(theme);
+}
+
+let lastBars = "";
+/** Android: the status and navigation bars follow the theme. */
+function matchSystemBars(theme: string) {
+  if (!isAndroid) return;
+  const bg = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
+  const key = `${theme}|${bg}`;
+  if (key === lastBars) return;
+  lastBars = key;
+  platformApi.setSystemBars(theme === "dark", bg).catch(() => {});
 }
 
 const FALLBACK_FONTS = `"Segoe UI", "Malgun Gothic", -apple-system, "Apple SD Gothic Neo", system-ui, sans-serif`;

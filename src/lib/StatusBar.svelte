@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onBack } from "./back.svelte";
   import { api, type TaskInfo } from "./api";
   import { fmtBytes, fmtCount } from "./format";
   import { t, tx } from "./i18n.svelte";
@@ -10,6 +11,9 @@
   let { count, elapsed, selected }: { count: number; elapsed: number; selected: number } = $props();
 
   let open = $state(false);
+  $effect(() => {
+    if (open) return onBack(() => (open = false));
+  });
   const active = $derived(running());
   const primary = $derived(active.find((x) => x.kind === "read") ?? active[0] ?? null);
   const failed = $derived(tasks.list.filter((x) => x.state === "failed"));
@@ -35,10 +39,10 @@
 </script>
 
 <footer class="status">
-  <span class="tabular">{t("lib.items", { n: fmtCount(count) })}</span>
+  <span class="tabular nowrap">{t("lib.items", { n: fmtCount(count) })}</span>
   {#if selected > 0}<span class="sep"></span><span class="tabular">{t("status.selected", { n: fmtCount(selected) })}</span>{/if}
-  <span class="sep"></span>
-  <span class="faint tabular">{elapsed.toFixed(1)} ms</span>
+  <span class="sep wide"></span>
+  <span class="faint tabular wide">{elapsed.toFixed(1)} ms</span>
   <span class="grow"></span>
 
   <VolumeControl />
@@ -122,6 +126,9 @@
   .faint {
     color: var(--faint);
   }
+  .nowrap {
+    white-space: nowrap;
+  }
   .tasks {
     display: flex;
     align-items: center;
@@ -156,6 +163,24 @@
   .tasks .bar {
     width: 90px;
     flex-shrink: 0;
+  }
+  /* Narrow screens: timing goes, the task summary shrinks instead of widening the page. */
+  @media (max-width: 760px) {
+    .status {
+      gap: 8px;
+      padding: 0 6px 0 12px;
+    }
+    .wide {
+      display: none;
+    }
+    .tasks {
+      min-width: 0;
+      flex-shrink: 1;
+      max-width: none;
+    }
+    .tasks .bar {
+      width: 40px;
+    }
   }
   .more {
     color: var(--accent);

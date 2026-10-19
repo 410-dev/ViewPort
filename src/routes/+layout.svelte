@@ -5,6 +5,9 @@
   import { matches } from "$lib/keys";
   import { prefs } from "$lib/prefs.svelte";
   import { exitImmersive } from "$lib/immersive.svelte";
+  import { startBackButton } from "$lib/back.svelte";
+  import { picker } from "$lib/pick.svelte";
+  import PathPicker from "$lib/ui/PathPicker.svelte";
 
   let { children } = $props();
 
@@ -12,6 +15,7 @@
   // mode. It is captured before any component sees the key. A single press keeps its normal
   // meaning; in immersive mode it leaves immersive mode first.
   onMount(() => {
+    startBackButton();
     let last = 0;
     const onKey = (e: KeyboardEvent) => {
       const p = prefs.app?.privacy;
@@ -37,3 +41,9 @@
 </script>
 
 {@render children()}
+
+{#if picker.req}
+  {#key picker.req}
+    <PathPicker req={picker.req} />
+  {/key}
+{/if}

@@ -280,6 +280,18 @@
     opacity: 1;
     pointer-events: auto;
   }
+  @media (pointer: coarse) {
+    .item {
+      height: 42px;
+    }
+  }
+  @media (hover: none) {
+    .actions {
+      opacity: 1 !important;
+      pointer-events: auto !important;
+      background: linear-gradient(to right, transparent, var(--surface) 12px);
+    }
+  }
   .empty {
     margin: 2px 10px 4px;
     font-size: 12px;

@@ -4,11 +4,53 @@ import { SvelteSet } from "svelte/reactivity";
  * Selection over an ordered list of media ids, shared by every view: click selects,
  * Ctrl/Cmd toggles, Shift extends from the anchor; arrow keys move the focus.
  * `focus` is the item the preview follows.
+ *
+ * Touch: a tap opens the item (a folder: enters it), a long press starts a selection, and
+ * while one is in progress taps toggle items. Views call `pointer` on pointerdown so the
+ * following click knows how it was made.
  */
 export class Selection {
   readonly set = new SvelteSet<number>();
   focus = $state<number | null>(null);
   #anchor = -1;
+  #pointer = "mouse";
+
+  pointer(e: PointerEvent) {
+    this.#pointer = e.pointerType;
+  }
+
+  /** The last press was a finger. */
+  get touch() {
+    return this.#pointer === "touch";
+  }
+
+  /** A click on item `index`: touch semantics on touch, `click` otherwise. */
+  activate(e: MouseEvent, index: number, ids: number[], open: (id: number, ids: number[]) => void) {
+    if (!this.touch) return this.click(e, index, ids);
+    if (this.set.size > 0) this.toggle(index, ids);
+    else if (ids[index] !== undefined) open(ids[index], ids);
+  }
+
+  /** Long press (`contextmenu` on touch screens): selects, or toggles within a selection. */
+  hold(e: MouseEvent, index: number, ids: number[]) {
+    if (!this.touch) return;
+    e.preventDefault();
+    this.toggle(index, ids);
+    navigator.vibrate?.(12);
+  }
+
+  toggle(index: number, ids: number[]) {
+    const id = ids[index];
+    if (id === undefined) return;
+    if (this.set.has(id)) {
+      this.set.delete(id);
+      if (this.focus === id) this.focus = this.set.size ? [...this.set].at(-1)! : null;
+    } else {
+      this.set.add(id);
+      this.focus = id;
+    }
+    this.#anchor = index;
+  }
 
   click(e: MouseEvent | KeyboardEvent, index: number, ids: number[]) {
     const id = ids[index];

@@ -89,6 +89,12 @@ body {
   height: 100%;
 }
 
+/* Nothing may widen the page beyond the screen (mobile WebViews would grow the layout
+   viewport to fit, pushing fixed UI off-screen). */
+html {
+  overflow: hidden;
+}
+
 body {
   margin: 0;
   background: var(--bg);
@@ -506,4 +512,31 @@ input.input[type="date"] {
 
 .grow {
   flex: 1;
+}
+
+/* Touch screens: finger-sized controls, no tap flash or long-press callouts. Controls
+   that only appear on hover elsewhere are always shown under `(hover: none)`. */
+html {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+}
+@media (pointer: coarse) {
+  :root {
+    --h-control: 38px;
+    --h-control-sm: 32px;
+  }
+  .scrim {
+    padding: 12px;
+  }
+  .switch {
+    width: 42px;
+    height: 24px;
+  }
+  .switch::after {
+    width: 18px;
+    height: 18px;
+  }
+  .switch.on::after {
+    transform: translateX(18px);
+  }
 }

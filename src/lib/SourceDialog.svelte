@@ -1,6 +1,7 @@
 <script lang="ts">
   import Select from "./ui/Select.svelte";
-  import { open } from "@tauri-apps/plugin-dialog";
+  import { onBack } from "./back.svelte";
+  import { pickFolder as pickDir } from "./pick.svelte";
   import { untrack } from "svelte";
   import { api, asCmdError, type DriverKind, type SourceRow } from "./api";
   import { t, tx } from "./i18n.svelte";
@@ -78,9 +79,11 @@
   }
 
   async function pickFolder() {
-    const p = await open({ directory: true });
-    if (typeof p === "string") root = p;
+    const p = await pickDir(t("src.folder"));
+    if (p) root = p;
   }
+
+  $effect(() => onBack(onclose));
 </script>
 
 <div class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>

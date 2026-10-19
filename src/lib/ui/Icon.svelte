@@ -69,6 +69,9 @@
     volume: "M4 9h4l5-4v14l-5-4H4zM16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12",
     volumeLow: "M4 9h4l5-4v14l-5-4H4zM16.5 8.5a5 5 0 0 1 0 7",
     volumeMute: "M4 9h4l5-4v14l-5-4H4zM17 9l5 6M22 9l-5 6",
+    menu: "M4 7h16M4 12h16M4 17h16",
+    hardDrive: "M4 14h16v5H4zM4 14l2.5-8h11l2.5 8M8 16.5h.01",
+    checkSquare: "M4 4h16v16H4zM8 12l3 3 5-6",
     eyeOff: "M3 3l18 18M10.6 6.1A9.8 9.8 0 0 1 12 6c6.5 0 10 6 10 6a17 17 0 0 1-3.2 3.9M6.6 7.7C3.8 9.5 2 12 2 12s3.5 7 10 7a9.6 9.6 0 0 0 4.4-1.1M9.9 10a3 3 0 0 0 4.2 4.2",
   } as const;
   export type IconName = keyof typeof ICONS;

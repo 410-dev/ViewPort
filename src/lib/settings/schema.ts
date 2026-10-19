@@ -46,6 +46,22 @@ const bundle = (f: Omit<Base, "target">) => ({ ...f, target: "bundle" as const }
 
 const key = (path: string, label: Key): Field => ({ kind: "list", ...bundle({ path: `keys.${path}`, label }) });
 
+/** Settings with no effect on phones and tablets (WebView switches, windows, tray, FFmpeg). */
+export const DESKTOP_ONLY = new Set([
+  "privacy.panic_hide",
+  "privacy.restore_shortcut",
+  "privacy.tray_icon",
+  "windows.new_width",
+  "windows.new_height",
+  "hardware.gpu",
+  "hardware.gpu_rasterization",
+  "hardware.zero_copy",
+  "hardware.ffmpeg_hwaccel",
+  "hardware.video_encode",
+  "hardware.encoders",
+  "playback.ffmpeg_path",
+]);
+
 export const SECTIONS: Section[] = [
   {
     id: "general",

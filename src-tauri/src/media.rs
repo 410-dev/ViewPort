@@ -2,10 +2,12 @@
 //!
 //! Requests are answered from the memory cache when possible. Uncached items that fit
 //! the cache are loaded into it first (images, small videos); larger files are streamed
-//! from their driver in bounded ranges, which is what `<video>` seeking needs.
+//! from their driver in bounded ranges, which is what `<video>` seeking needs. Video
+//! responses are always bounded, cached or not: the player asks for the next range
+//! anyway, and Android's WebView copies every response body into one Java array.
 
 use tauri::http::{Request, Response, StatusCode, header};
-use tauri::{Manager, Runtime, UriSchemeContext, UriSchemeResponder};
+use tauri::{AppHandle, Manager, Runtime, UriSchemeContext, UriSchemeResponder};
 
 use crate::AppState;
 use crate::error::{CmdError, CmdResult};
@@ -85,7 +87,7 @@ fn serve_variant(ws: &Workspace, id: i64, path: &std::path::Path, range: Option<
     };
     let stream_max = ws.settings.read().unwrap().cache.stream_chunk_bytes.max(64 * 1024);
     let (start, end) = range.and_then(|r| parse_range(r, total)).unwrap_or((0, total.saturating_sub(1)));
-    let want = (end - start + 1).min(if cached.is_some() { u64::MAX } else { stream_max });
+    let want = (end - start + 1).min(stream_max);
     let data = match &cached {
         Some(c) => c.to_vec(start, want),
         None => {
@@ -142,7 +144,10 @@ fn serve(ws: &Workspace, drivers: &vp_driver::DriverRegistry, id: i64, range: Op
         None if cached.is_some() => (0, total.saturating_sub(1), false),
         None => (0, total.saturating_sub(1).min(stream_max - 1), true),
     };
-    let want = end - start + 1;
+    let want = match loc.kind {
+        vp_core::MediaKind::Video => (end - start + 1).min(stream_max),
+        _ => end - start + 1,
+    };
     let data = match &cached {
         Some(c) => c.to_vec(start, want),
         None => {
@@ -159,38 +164,45 @@ fn serve(ws: &Workspace, drivers: &vp_driver::DriverRegistry, id: i64, range: Op
 
 pub fn handle<R: Runtime>(ctx: UriSchemeContext<'_, R>, request: Request<Vec<u8>>, responder: UriSchemeResponder) {
     let app = ctx.app_handle().clone();
-    let id = request.uri().path().trim_start_matches('/').parse::<i64>();
+    let id = request.uri().path().trim_start_matches('/').parse::<i64>().ok();
     let range = request.headers().get(header::RANGE).and_then(|v| v.to_str().ok()).map(str::to_string);
-    tauri::async_runtime::spawn_blocking(move || {
-        let Ok(id) = id else { return responder.respond(status(StatusCode::BAD_REQUEST)) };
-        let state = app.state::<AppState>();
-        let Some(ws) = state.workspace.read().unwrap().clone() else {
-            return responder.respond(status(StatusCode::SERVICE_UNAVAILABLE));
-        };
-        let response = match serve(&ws, &state.drivers, id, range) {
-            Ok(Some(b)) => {
-                let end = b.start + b.data.len().max(1) as u64 - 1;
-                let mut r = Response::builder()
-                    .header(header::CONTENT_TYPE, b.mime)
-                    .header(header::ACCEPT_RANGES, "bytes")
-                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                    .header(header::CONTENT_LENGTH, b.data.len());
-                if b.partial {
-                    r = r
-                        .status(StatusCode::PARTIAL_CONTENT)
-                        .header(header::CONTENT_RANGE, format!("bytes {}-{}/{}", b.start, end, b.total));
-                }
-                r.body(b.data).unwrap()
+    tauri::async_runtime::spawn_blocking(move || responder.respond(answer(&app, id, range)));
+}
+
+/// The response for media `id` (and an optional `Range` header), shared by the
+/// `vpmedia://` protocol and the loopback server (`media_server.rs`).
+pub fn answer<R: Runtime>(app: &AppHandle<R>, id: Option<i64>, range: Option<String>) -> Response<Vec<u8>> {
+    let Some(id) = id else { return status(StatusCode::BAD_REQUEST) };
+    let state = app.state::<AppState>();
+    let Some(ws) = state.workspace.read().unwrap().clone() else {
+        return status(StatusCode::SERVICE_UNAVAILABLE);
+    };
+    // A panic must still answer: a dropped responder leaves the WebView request hanging.
+    let served = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| serve(&ws, &state.drivers, id, range)))
+        .unwrap_or_else(|_| Err(CmdError::new("panic", "media handler panicked")));
+    let response = match served {
+        Ok(Some(b)) => {
+            let end = b.start + b.data.len().max(1) as u64 - 1;
+            let mut r = Response::builder()
+                .header(header::CONTENT_TYPE, b.mime)
+                .header(header::ACCEPT_RANGES, "bytes")
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .header(header::CONTENT_LENGTH, b.data.len());
+            if b.partial {
+                r = r
+                    .status(StatusCode::PARTIAL_CONTENT)
+                    .header(header::CONTENT_RANGE, format!("bytes {}-{}/{}", b.start, end, b.total));
             }
-            Ok(None) => status(StatusCode::NOT_FOUND),
-            Err(CmdError { code: "driver", .. }) => status(StatusCode::BAD_GATEWAY),
-            Err(_) => status(StatusCode::INTERNAL_SERVER_ERROR),
-        };
-        responder.respond(response);
-        if !ws.cache.contains(id) {
-            crate::commands::spawn_prefetch(&app, &ws, vec![id]);
+            r.body(b.data).unwrap()
         }
-    });
+        Ok(None) => status(StatusCode::NOT_FOUND),
+        Err(CmdError { code: "driver", .. }) => status(StatusCode::BAD_GATEWAY),
+        Err(_) => status(StatusCode::INTERNAL_SERVER_ERROR),
+    };
+    if !ws.cache.contains(id) {
+        crate::commands::spawn_prefetch(app, &ws, vec![id]);
+    }
+    response
 }
 
 #[cfg(test)]

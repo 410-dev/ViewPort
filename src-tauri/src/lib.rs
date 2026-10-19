@@ -3,6 +3,7 @@ mod audio;
 mod commands;
 mod error;
 mod media;
+mod media_server;
 mod platform;
 mod recent;
 mod secrets;
@@ -46,6 +47,9 @@ pub fn run() {
                 secrets::init(dir);
             }
             tasks::init(app.handle());
+            // Android plays media over loopback HTTP (see media_server.rs).
+            #[cfg(target_os = "android")]
+            media_server::start(app.handle())?;
             create_main_window(app.handle())?;
             audio::init(app.handle());
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -120,6 +124,7 @@ pub fn run() {
             platform::set_system_bars,
             platform::storage_roots,
             platform::browse_dir,
+            media_base_url,
         ])
         .on_window_event(|window, event| {
             // Mobile: the OS may end a backgrounded app without notice; write what a locked
@@ -155,6 +160,13 @@ pub fn run() {
                 }
             }
         });
+}
+
+/// Base URL for original media when the platform needs the loopback server (Android),
+/// otherwise `None` and the UI uses `vpmedia://`.
+#[tauri::command]
+fn media_base_url() -> Option<String> {
+    media_server::base()
 }
 
 /// Chromium switches derived from the device's hardware settings. The first switch is

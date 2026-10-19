@@ -3,6 +3,7 @@
   import { savePrefs, ui } from "../prefs.svelte";
   import InfoPanel from "./InfoPanel.svelte";
   import Preview from "./Preview.svelte";
+  import Icon from "../ui/Icon.svelte";
 
   let {
     focus,
@@ -10,12 +11,15 @@
     onopen,
     onopenwindow,
     onchanged,
+    onclose,
   }: {
     focus: number | null;
     selected: number[];
     onopen: (id: number) => void;
     onopenwindow?: (id: number) => void;
     onchanged: () => void;
+    /** Shown as a bottom sheet (narrow screens): a close button. */
+    onclose?: () => void;
   } = $props();
 
   const MODES: { key: "preview" | "both" | "info"; label: Key }[] = [
@@ -59,6 +63,10 @@
         >
       {/each}
     </div>
+    {#if onclose}
+      <span class="grow"></span>
+      <button class="icon-btn" aria-label={t("common.close")} onclick={onclose}><Icon name="x" size={16} /></button>
+    {/if}
   </header>
   <div class="body" bind:this={body}>
     {#if ui().panel_mode === "preview"}

@@ -1,6 +1,8 @@
 <script lang="ts">
   import Select from "../ui/Select.svelte";
-  import { ask, open as openDialog } from "@tauri-apps/plugin-dialog";
+  import { ask } from "@tauri-apps/plugin-dialog";
+  import { onBack } from "../back.svelte";
+  import { pickFile } from "../pick.svelte";
   import { onDestroy, onMount, untrack } from "svelte";
   import { api, asCmdError, type AppSettings, type BundleSummary, type CacheStats, type FfmpegStatus, type Settings } from "../api";
   import { fmtBytes } from "../format";
@@ -8,7 +10,8 @@
   import { applyPrefs, prefs } from "../prefs.svelte";
   import Icon from "../ui/Icon.svelte";
   import { COLUMNS } from "../views/columns";
-  import { SECTIONS, type Field } from "./schema";
+  import { DESKTOP_ONLY, SECTIONS as ALL_SECTIONS, type Field } from "./schema";
+  import { isMobile } from "../platform";
   import { broadcast } from "../sync";
 
   let {
@@ -48,6 +51,16 @@
       ];
     return f.options.map((o) => ({ value: o.value, label: typeof o.label === "string" ? t(o.label as Key) : o.label.raw }));
   }
+
+  // Mobile leaves out what only applies to desktop.
+  const SECTIONS = isMobile
+    ? ALL_SECTIONS.map((s) => ({
+        ...s,
+        groups: s.groups
+          .map((g) => ({ ...g, fields: g.fields.filter((f) => !("path" in f && DESKTOP_ONLY.has(f.path))) }))
+          .filter((g) => g.fields.length),
+      })).filter((s) => s.groups.length)
+    : ALL_SECTIONS;
 
   const ACCENTS = ["#6b7cff", "#4f8cff", "#2bb4a0", "#3ecf8e", "#e0a43a", "#f06a6d", "#d36bd8", "#9aa0ad"];
 
@@ -110,8 +123,8 @@
   let lockBusy = $state(false);
   let lockError = $state("");
   async function pickLockKeyfile() {
-    const p = await openDialog({});
-    if (typeof p === "string") lockKeyfile = p;
+    const p = await pickFile(t("lock.keyfile"));
+    if (p) lockKeyfile = p;
   }
   async function applyLock() {
     lockError = "";
@@ -166,6 +179,7 @@
     applyPrefs(prefs.app!);
     onclose();
   }
+  $effect(() => onBack(cancel));
   function reset() {
     draft = structuredClone($state.snapshot(settings)) as Settings;
     appDraft = structuredClone($state.snapshot(prefs.app!)) as AppSettings;
@@ -734,11 +748,33 @@
     .settings {
       flex-direction: column;
     }
+    .settings {
+      height: 100%;
+    }
     .nav {
       width: auto;
-      max-height: 160px;
       border-right: 0;
       border-bottom: 1px solid var(--border);
+    }
+    /* Sections become one scrolling row of chips. */
+    .nav-list {
+      display: flex;
+      overflow-x: auto;
+      overflow-y: hidden;
+      gap: 4px;
+      padding: 0 12px 10px;
+      scrollbar-width: none;
+    }
+    .nav-item {
+      flex-shrink: 0;
+      white-space: nowrap;
+    }
+    .main {
+      flex: 1;
+      min-height: 0;
+    }
+    footer {
+      flex-wrap: wrap;
     }
     .scroll {
       padding: 8px 16px 0;

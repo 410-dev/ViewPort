@@ -181,7 +181,9 @@
           class:focus={selection.focus === r.id}
           style:height="{rowPx}px"
           style:transform="translateY({slot * rowPx}px)"
-          onclick={(e) => selection.click(e, r.index, flat.files)}
+          onpointerdown={(e) => selection.pointer(e)}
+          onclick={(e) => selection.activate(e, r.index, flat.files, onopen)}
+          oncontextmenu={(e) => selection.hold(e, r.index, flat.files)}
           ondblclick={() => onopen(r.id, flat.files)}
           onauxclick={(e) => e.button === 1 && onopenwindow?.(r.id, flat.files)}
           onmousedown={(e) => e.button === 1 && e.preventDefault()}

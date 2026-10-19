@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount, untrack } from "svelte";
-  import { api, type Settings } from "./api";
+  import { api, platformApi, type Settings } from "./api";
   import { toggleMute } from "./audio.svelte";
   import { isTyping, matches } from "./keys";
   import { isMobile } from "./platform";
@@ -75,6 +75,8 @@
   let unlistenResize: (() => void) | undefined;
   onMount(() => {
     window.addEventListener("keydown", onKey);
+    // Mobile fullscreen hides the system bars (Viewer), which the window does not report.
+    if (isMobile) return;
     try {
       const win = getCurrentWindow();
       const check = () => win.isFullscreen().then(fullscreenChanged).catch(() => {});
@@ -88,6 +90,7 @@
     window.removeEventListener("keydown", onKey);
     unlistenResize?.();
     resetImmersive();
+    if (isMobile) platformApi.setSystemFullscreen(false).catch(() => {});
   });
 </script>
 

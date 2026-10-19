@@ -71,11 +71,6 @@
     if (i >= 0) scrollToIndex(i);
   }
 
-  let lastPointer = "mouse";
-  function click(e: MouseEvent, index: number) {
-    if (lastPointer === "touch") return onopen(ids[index], ids);
-    selection.click(e, index, ids);
-  }
 </script>
 
 <div
@@ -100,6 +95,8 @@
           style:width="{tileW}px"
           style:transform="translate({PAD + col * (tileW + GAP)}px, {PAD + row * rowH}px)"
           title={f.name}
+          onpointerdown={(e) => selection.pointer(e)}
+          onclick={() => selection.touch && onfolder(f.path)}
           ondblclick={() => onfolder(f.path)}
           onkeydown={(e) => e.key === "Enter" && onfolder(f.path)}
         >
@@ -120,8 +117,9 @@
           style:width="{tileW}px"
           style:transform="translate({PAD + col * (tileW + GAP)}px, {PAD + row * rowH}px)"
           title={b?.name}
-          onpointerdown={(e) => (lastPointer = e.pointerType)}
-          onclick={(e) => click(e, v.index)}
+          onpointerdown={(e) => selection.pointer(e)}
+          onclick={(e) => selection.activate(e, v.index, ids, onopen)}
+          oncontextmenu={(e) => selection.hold(e, v.index, ids)}
           ondblclick={() => onopen(id, ids)}
           onauxclick={(e) => e.button === 1 && onopenwindow?.(id, ids)}
           onmousedown={(e) => e.button === 1 && e.preventDefault()}
@@ -132,6 +130,9 @@
               <span class="placeholder"><Icon name={b?.kind === "video" ? "film" : "image"} size={26} stroke={1.4} /></span>
             {:else}
               <img src={thumbUrl(id)} alt="" decoding="async" loading="lazy" draggable="false" onerror={() => broken.add(id)} />
+            {/if}
+            {#if selection.set.has(id)}
+              <span class="check"><Icon name="check" size={13} stroke={3} /></span>
             {/if}
             {#if b?.kind === "video"}
               <span class="badge tabular">{fmtDuration(b.duration_ms) || "VIDEO"}</span>
@@ -185,6 +186,28 @@
     box-shadow:
       inset 0 0 0 2px var(--accent),
       0 0 0 3px var(--accent-soft);
+  }
+  /* Drawn over the image so a selection is visible on any thumbnail. */
+  .tile.selected .frame::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    box-shadow: inset 0 0 0 3px var(--accent);
+    pointer-events: none;
+  }
+  .check {
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    z-index: 1;
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--accent-fg);
   }
   .tile.focus:not(.selected) .frame {
     box-shadow: inset 0 0 0 1px var(--accent-line);

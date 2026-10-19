@@ -16,8 +16,8 @@
         "default-src": "'self'",
         "script-src": "'self'",
         "style-src": "'self' 'unsafe-inline'",
-        "img-src": "'self' data: blob: vpthumb: http://vpthumb.localhost https://vpthumb.localhost vpmedia: http://vpmedia.localhost https://vpmedia.localhost",
-        "media-src": "'self' blob: vpmedia: http://vpmedia.localhost https://vpmedia.localhost",
+        "img-src": "'self' data: blob: vpthumb: http://vpthumb.localhost https://vpthumb.localhost vpmedia: http://vpmedia.localhost https://vpmedia.localhost http://127.0.0.1:*",
+        "media-src": "'self' blob: vpmedia: http://vpmedia.localhost https://vpmedia.localhost http://127.0.0.1:*",
         "connect-src": "'self' ipc: http://ipc.localhost https://ipc.localhost",
         "font-src": "'self' data:"
       }
