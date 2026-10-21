@@ -198,6 +198,89 @@ const MIGRATIONS: &[&str] = &[
                OR lower(aliases) LIKE '%"좋아요"%' OR lower(aliases) LIKE '%"favorite"%' OR lower(aliases) LIKE '%"즐겨찾기"%'
         );
     "#,
+    // v7: image analysis. Faces (photo people and illustration characters) with identity
+    // vectors, grouped into people; tagger scores; and built-in fields their names and tags
+    // are written to (origin 'auto:faces' / 'auto:tagger'). Each built-in field is skipped
+    // when a field of the user's already goes by one of its names.
+    r#"
+    CREATE TABLE ml_model (
+        id   INTEGER PRIMARY KEY,
+        key  TEXT NOT NULL UNIQUE,              -- pack id@version: results of other models do not mix
+        kind TEXT NOT NULL
+    );
+    -- An item analysed by a model (also when nothing was found).
+    CREATE TABLE ml_done (
+        media_id INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+        model_id INTEGER NOT NULL REFERENCES ml_model(id) ON DELETE CASCADE,
+        ok       INTEGER NOT NULL,              -- 0: the image could not be read
+        done_ms  INTEGER NOT NULL,
+        PRIMARY KEY (media_id, model_id)
+    );
+    -- A person (kind 'real') or character ('anime'); an empty name is a group found by
+    -- grouping that nobody has named yet.
+    CREATE TABLE person (
+        id         INTEGER PRIMARY KEY,
+        kind       TEXT NOT NULL,
+        name       TEXT NOT NULL DEFAULT '',
+        hidden     INTEGER NOT NULL DEFAULT 0,
+        created_ms INTEGER NOT NULL
+    );
+    CREATE INDEX person_name ON person(kind, name COLLATE NOCASE);
+    CREATE TABLE face (
+        id         INTEGER PRIMARY KEY,
+        media_id   INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+        model_id   INTEGER NOT NULL REFERENCES ml_model(id) ON DELETE CASCADE, -- the embedder (or detector)
+        kind       TEXT NOT NULL,
+        x REAL NOT NULL, y REAL NOT NULL, w REAL NOT NULL, h REAL NOT NULL,      -- fractions of the image
+        score      REAL NOT NULL,
+        embedding  BLOB,                        -- unit vector, little-endian f16
+        crop_pack  INTEGER,                     -- face picture in the thumbnail packs
+        crop_off   INTEGER,
+        crop_len   INTEGER,
+        person_id  INTEGER REFERENCES person(id) ON DELETE SET NULL,
+        confirmed  INTEGER NOT NULL DEFAULT 0   -- put there by the user
+    );
+    CREATE INDEX face_media ON face(media_id);
+    CREATE INDEX face_person ON face(person_id);
+    CREATE INDEX face_kind ON face(kind, model_id);
+    -- "Not this person": grouping never puts the face there again.
+    CREATE TABLE face_reject (
+        face_id   INTEGER NOT NULL REFERENCES face(id) ON DELETE CASCADE,
+        person_id INTEGER NOT NULL REFERENCES person(id) ON DELETE CASCADE,
+        PRIMARY KEY (face_id, person_id)
+    );
+    CREATE TABLE tag_score (
+        media_id INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+        model_id INTEGER NOT NULL REFERENCES ml_model(id) ON DELETE CASCADE,
+        tag      TEXT NOT NULL,
+        category INTEGER NOT NULL,              -- 0 general, 4 character
+        score    REAL NOT NULL,
+        PRIMARY KEY (media_id, model_id, tag)
+    );
+    CREATE INDEX tag_score_tag ON tag_score(tag, score);
+
+    INSERT OR IGNORE INTO ext_field (key, names, aliases, ty, builtin, sort_index)
+        SELECT 'x.people', '[["ko","인물"],["en","people"]]', '["사람"]', '{"type":"enum"}', 1, (SELECT COALESCE(MAX(sort_index), 0) + 1 FROM ext_field)
+        WHERE NOT EXISTS (
+            SELECT 1 FROM ext_field
+            WHERE lower(names) LIKE '%"인물"%' OR lower(names) LIKE '%"people"%' OR lower(names) LIKE '%"사람"%'
+               OR lower(aliases) LIKE '%"인물"%' OR lower(aliases) LIKE '%"people"%' OR lower(aliases) LIKE '%"사람"%'
+        );
+    INSERT OR IGNORE INTO ext_field (key, names, aliases, ty, builtin, sort_index)
+        SELECT 'x.characters', '[["ko","캐릭터"],["en","characters"]]', '["character"]', '{"type":"enum"}', 1, (SELECT COALESCE(MAX(sort_index), 0) + 1 FROM ext_field)
+        WHERE NOT EXISTS (
+            SELECT 1 FROM ext_field
+            WHERE lower(names) LIKE '%"캐릭터"%' OR lower(names) LIKE '%"characters"%' OR lower(names) LIKE '%"character"%'
+               OR lower(aliases) LIKE '%"캐릭터"%' OR lower(aliases) LIKE '%"characters"%' OR lower(aliases) LIKE '%"character"%'
+        );
+    INSERT OR IGNORE INTO ext_field (key, names, aliases, ty, builtin, sort_index)
+        SELECT 'x.auto_tags', '[["ko","자동 태그"],["en","auto tags"]]', '[]', '{"type":"enum"}', 1, (SELECT COALESCE(MAX(sort_index), 0) + 1 FROM ext_field)
+        WHERE NOT EXISTS (
+            SELECT 1 FROM ext_field
+            WHERE lower(names) LIKE '%"자동 태그"%' OR lower(names) LIKE '%"auto tags"%'
+               OR lower(aliases) LIKE '%"자동 태그"%' OR lower(aliases) LIKE '%"auto tags"%'
+        );
+    "#,
 ];
 
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;

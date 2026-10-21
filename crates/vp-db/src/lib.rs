@@ -1,6 +1,7 @@
 //! ViewPort library database (SQLite).
 
 pub mod collation;
+pub mod faces;
 pub mod schema;
 
 use std::path::Path;

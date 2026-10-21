@@ -545,3 +545,71 @@ fn favorite_toggle() {
     assert!(lib.db.set_values_many(&[1], "x.favorite", &[ExtValue::Int(2)], "user").is_err());
     assert!(lib.db.set_values_many(&[1], "x.favorite", &[ExtValue::Text("예".into())], "user").is_err());
 }
+
+#[test]
+fn faces_group_into_people_whose_names_are_searchable() {
+    use crate::faces::*;
+    let mut lib = library();
+    let det = lib.db.ml_model_id("yunet@1", "face_detector").unwrap();
+    let emb = lib.db.ml_model_id("sface@1", "face_embedder").unwrap();
+    assert_eq!(lib.db.ml_model_id("sface@1", "face_embedder").unwrap(), emb, "registered once");
+    // Only images (ids 1 and 2) are analysed.
+    assert_eq!(lib.db.media_to_analyze(&[det, emb], &[], 0, 10).unwrap(), [1, 2]);
+    let face = |score: f32| NewFace { model_id: emb, kind: "real".into(), bbox: [0.1, 0.1, 0.2, 0.2], score, embedding: Some(vec![1, 2]), crop: Some(CropRef { pack: 0, offset: 5, len: 9 }) };
+    lib.db.record_analysis(1, &[det, emb], true, &[face(0.9), face(0.8)], None, OCT18).unwrap();
+    assert_eq!(lib.db.media_to_analyze(&[det, emb], &[], 0, 10).unwrap(), [2]);
+    assert_eq!(lib.db.media_to_analyze(&[det, emb], &[2], 0, 10).unwrap(), [2], "the images are not on the NAS");
+    assert!(lib.db.media_to_analyze(&[det, emb], &[1], 0, 10).unwrap().is_empty(), "a disconnected source is skipped");
+    lib.db.record_analysis(2, &[det, emb], true, &[face(0.7)], Some((det, &[("long hair".into(), 0, 0.9), ("miku".into(), 4, 0.95)])), OCT18).unwrap();
+    let counts = lib.db.analysis_counts(&[det, emb], &[]).unwrap();
+    assert_eq!((counts.images, counts.done, counts.faces), (2, 2, 3));
+
+    // Grouping: all three faces in one unnamed group.
+    let faces = lib.db.faces_for_grouping("real", emb).unwrap();
+    assert_eq!(faces.len(), 3);
+    let groups: Vec<(i64, usize)> = faces.iter().map(|f| (f.id, 0)).collect();
+    lib.db.apply_grouping("real", &[], &groups, OCT18).unwrap();
+    let people = lib.db.people("real", false).unwrap();
+    assert_eq!(people.len(), 1);
+    assert_eq!((people[0].name.as_str(), people[0].items, people[0].faces), ("", 2, 3));
+    assert_eq!(people[0].cover, Some(faces[0].id), "the best-scored face is the cover");
+    assert!(lib.db.face_crop(faces[0].id).unwrap().is_some());
+
+    // Naming it makes the name searchable; regrouping keeps named people.
+    let kim = lib.db.rename_person(people[0].id, "김철수").unwrap();
+    lib.db.sync_people_values().unwrap();
+    lib.reg = lib.db.field_registry().unwrap();
+    assert_eq!(lib.ids("인물(김철수)"), [1, 2]);
+    lib.db.apply_grouping("real", &[], &[], OCT18).unwrap();
+    assert_eq!(lib.db.people("real", false).unwrap()[0].id, kim);
+
+    // "Not this person": the face leaves and is remembered.
+    lib.db.assign_faces(&[faces[2].id], None).unwrap();
+    assert!(lib.db.face_rejects().unwrap().contains(&(faces[2].id, kim)));
+    lib.db.sync_people_values().unwrap();
+    assert_eq!(lib.ids("인물(김철수)"), [1]);
+
+    // Naming another group alike merges the two.
+    let other = lib.db.create_person("real", "", OCT18).unwrap();
+    lib.db.assign_faces(&[faces[2].id], Some(other)).unwrap();
+    assert_eq!(lib.db.rename_person(other, "김철수").unwrap(), kim);
+    assert_eq!(lib.db.people("real", false).unwrap().len(), 1);
+
+    // A user's own value is never duplicated or removed by the automatic ones.
+    lib.db.set_values_many(&[1], PEOPLE_FIELD, &[ExtValue::Text("김철수".into())], "user").unwrap();
+    lib.db.sync_people_values().unwrap();
+    let values = lib.db.media_detail(1).unwrap().unwrap().values;
+    assert_eq!(values.get(PEOPLE_FIELD).map(|v| v.len()), Some(1));
+
+    // Tagger scores become tags and character names above their thresholds.
+    lib.db.sync_tag_values(det, 0.35, 0.99).unwrap();
+    lib.reg = lib.db.field_registry().unwrap();
+    assert_eq!(lib.ids("자동 태그(long hair)"), [2]);
+    assert!(lib.ids("캐릭터(miku)").is_empty(), "below the character threshold");
+    lib.db.sync_tag_values(det, 0.35, 0.9).unwrap();
+    assert_eq!(lib.ids("캐릭터(miku)"), [2]);
+
+    // Results of a model that is gone go with it.
+    lib.db.forget_model("sface@1").unwrap();
+    assert!(lib.db.faces_for_grouping("real", emb).unwrap().is_empty());
+}
