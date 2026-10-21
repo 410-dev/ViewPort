@@ -169,6 +169,9 @@ pub async fn ml_analyze(app: AppHandle) -> CmdResult<()> {
     if !runtime::SUPPORTED {
         return Err(CmdError::new("unsupported", "image analysis is not available on this device"));
     }
+    if !ws.autosave() {
+        return Err(CmdError::new("read_only", "results cannot be saved in this bundle (opened from a newer version)"));
+    }
     blocking(load_runtime).await?;
     start(&app, ws);
     Ok(())
@@ -261,7 +264,9 @@ fn run(app: &AppHandle, ws: &Arc<Workspace>, task: &tasks::Task, cancel: &Atomic
     let used: Vec<String> = engine.models().map(|m| format!("{} ({})", m.pack.manifest.name, m.model.provider)).collect();
     task.detail(used.join(", "));
 
-    let offline = ws.offline_sources();
+    // Disconnected sources and locked shards wait: their items are not "unreadable".
+    let mut offline = ws.offline_sources();
+    offline.extend(ws.locked_sources());
     let total = ws.read_db.lock().unwrap().analysis_counts(&all, &offline)?;
     task.set(0, Some(total.images - total.done));
     let opts = vp_ml::Options {
@@ -306,6 +311,7 @@ fn run(app: &AppHandle, ws: &Arc<Workspace>, task: &tasks::Task, cancel: &Atomic
 
     let result = (|| -> CmdResult<()> {
         let mut since_regroup = 0usize;
+        let mut failed = 0usize;
         for (id, img) in rx.iter() {
             if cancel.load(Ordering::Relaxed) || ws.closed.load(Ordering::Relaxed) {
                 return Err(cancelled());
@@ -315,37 +321,48 @@ fn run(app: &AppHandle, ws: &Arc<Workspace>, task: &tasks::Task, cancel: &Atomic
             let mut models_run = Vec::new();
             let mut faces = Vec::new();
             let mut tags = None;
+            let mut ok = img.is_some();
             if let Some(img) = &img {
                 for (kind, models, emb, det) in [(FaceKind::Real, &real_models, face_emb, face_det), (FaceKind::Anime, &anime_models, anime_emb, anime_det)] {
                     if !pending(models) {
                         continue;
                     }
                     let owner = emb.or(det).unwrap_or_default();
-                    for f in engine.faces(kind, img, &opts)? {
-                        faces.push(NewFace {
-                            model_id: owner,
-                            kind: kind.as_str().into(),
-                            bbox: f.bbox,
-                            score: f.score,
-                            embedding: f.embedding.as_deref().map(cluster::pack),
-                            crop: keep_crop(ws, &f.crop, quality),
-                        });
+                    // A model failing on one image is that image's problem, not the job's.
+                    match engine.faces(kind, img, &opts) {
+                        Ok(found) => {
+                            for f in found {
+                                faces.push(NewFace {
+                                    model_id: owner,
+                                    kind: kind.as_str().into(),
+                                    bbox: f.bbox,
+                                    score: f.score,
+                                    embedding: f.embedding.as_deref().map(cluster::pack),
+                                    crop: keep_crop(ws, &f.crop, quality),
+                                });
+                            }
+                        }
+                        Err(_) => ok = false,
                     }
                     models_run.extend(models.iter().copied());
                 }
                 if let Some(t) = tagger.filter(|t| !done.contains(t)) {
-                    let found: Vec<(String, i64, f32)> = engine.tags(img, settings.keep_score)?.into_iter().map(|s| (s.name, s.category.code(), s.score)).collect();
-                    tags = Some((t, found));
+                    match engine.tags(img, settings.keep_score) {
+                        Ok(found) => tags = Some((t, found.into_iter().map(|s| (s.name, s.category.code(), s.score)).collect::<Vec<_>>())),
+                        Err(_) => ok = false,
+                    }
                     models_run.push(t);
                 }
             } else {
                 // Unreadable here: marked, so it is not retried every run.
                 models_run = all.iter().copied().filter(|m| !done.contains(m)).collect();
             }
-            if ws.autosave() {
-                let tags_ref = tags.as_ref().map(|(m, t)| (*m, t.as_slice()));
-                ws.write_db.lock().unwrap().record_analysis(id, &models_run, img.is_some(), &faces, tags_ref, now_ms())?;
+            if !ok {
+                failed += 1;
+                task.detail(format!("{} · {failed} failed", used.join(", ")));
             }
+            let tags_ref = tags.as_ref().map(|(m, t)| (*m, t.as_slice()));
+            ws.write_db.lock().unwrap().record_analysis(id, &models_run, ok, &faces, tags_ref, now_ms())?;
             task.add(1);
             since_regroup += 1;
             // Groups show up while a long job is still running.
