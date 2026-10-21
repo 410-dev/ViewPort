@@ -406,6 +406,8 @@ pub async fn search(
     let ws = workspace(&app.state::<AppState>())?;
     blocking(move || {
         let started = std::time::Instant::now();
+        // Before taking the database lock: `offline_sources` takes it too.
+        let offline = ws.offline_sources();
         let db = ws.read_db.lock().unwrap();
         let reg = db.field_registry()?;
         let mut q = if query.trim().is_empty() {
@@ -421,7 +423,7 @@ pub async fn search(
             }
         }
         let scope =
-            vp_db::Scope { source_id, folder, recursive: recursive.unwrap_or(false), exclude_sources: ws.offline_sources() };
+            vp_db::Scope { source_id, folder, recursive: recursive.unwrap_or(false), exclude_sources: offline };
         let ids = db.search_in(&q, &reg, &Db::compile_context(now_ms(), tz_offset_minutes), &scope)?;
         Ok(SearchResult { ids, elapsed_ms: started.elapsed().as_secs_f64() * 1000.0 })
     })

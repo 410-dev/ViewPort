@@ -825,6 +825,26 @@ mod lock_tests {
     use vp_db::NewSource;
 
     #[test]
+    fn sources_on_missing_folders_are_offline() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("Lib.vpbun");
+        let ws = Workspace::create(&root, "Lib").unwrap();
+        std::fs::create_dir_all(root.join("media")).unwrap();
+        let add = |driver: &str, root: &str| {
+            let source = NewSource { name: root.into(), driver: driver.into(), config: serde_json::json!({}), root: root.into() };
+            ws.write_db.lock().unwrap().add_source(&source).unwrap()
+        };
+        let here = add(BUNDLE_DRIVER, "media");
+        let gone = add(BUNDLE_DRIVER, "unplugged");
+        let local = add("local", &dir.path().display().to_string());
+        let drive = add("local", &dir.path().join("E-drive").display().to_string());
+        let nas = add("smb", "share");
+        let offline = ws.offline_sources();
+        assert_eq!(offline, [gone, drive]);
+        assert!(![here, local, nas].iter().any(|id| offline.contains(id)));
+    }
+
+    #[test]
     fn lock_unlock_round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("Secret.vpbun");
