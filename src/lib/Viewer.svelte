@@ -16,6 +16,7 @@
   import { ZoomPan } from "./zoom.svelte";
   import { onBack } from "./back.svelte";
   import { isMobile } from "./platform";
+  import { reportBroken } from "./views/briefs.svelte";
 
   /**
    * One viewer pane. `ViewerShell` lays out up to `windows.max_viewer_panes` of them;
@@ -32,6 +33,7 @@
     onactivate,
     onsplit,
     onpop,
+    onbrowse,
   }: {
     ids: number[];
     index: number;
@@ -46,6 +48,8 @@
     onsplit?: () => void;
     /** Moves this pane to its own window; absent on mobile. */
     onpop?: () => void;
+    /** Shows an explorer in this pane to pick other items (split view). */
+    onbrowse?: () => void;
   } = $props();
 
   let showInfo = $state(false);
@@ -156,6 +160,10 @@
     if (tier === undefined) return displayUrl(b, displayMax());
     return tier === 0 ? mediaUrl(b.id) : mediaUrl(b.id, tier);
   };
+  // A file that will not load may be gone: check, so searches stop listing it.
+  $effect(() => {
+    if (error && id !== undefined) reportBroken(id);
+  });
   let shownAt = performance.now();
   let lastId: number | undefined;
 
@@ -836,7 +844,20 @@
       <span class="load"><span class="spinner"></span><span class="tabular">{fmtBytes(loadingTask.done)} / {fmtBytes(loadingTask.total)}</span>
         <span class="bar"><i style:width="{(f ?? 0) * 100}%"></i></span></span>
     {/if}
-    <span class="tools vol" role="presentation" onpointerdown={(e) => e.stopPropagation()} onpointerup={(e) => e.stopPropagation()}>
+    <span class="tools">
+      <button class="hb" onclick={close} title={t("common.close")}><Icon name="x" size={15} /></button>
+    </span>
+  </div>
+  <!-- Everything but "close" sits at the bottom, above a video's own control bar. -->
+  <div
+    class="dock"
+    class:visible={showHud}
+    class:above-controls={brief?.kind === "video"}
+    role="presentation"
+    onpointerdown={(e) => e.stopPropagation()}
+    onpointerup={(e) => e.stopPropagation()}
+  >
+    <span class="tools vol">
       <VolumeControl dark />
     </span>
     <span class="tools">
@@ -845,6 +866,9 @@
         <button class="hb" class:on={showLoops} onclick={() => (showLoops = !showLoops)} title={t("viewer.loops")}><Icon name="loop" size={15} /></button>
       {/if}
       <button class="hb" class:on={showInfo} onclick={() => (showInfo = !showInfo)} title={t("viewer.info")}><Icon name="info" size={15} /></button>
+      {#if onbrowse}
+        <button class="hb" onclick={onbrowse} title={t("viewer.browse")}><Icon name="search" size={15} /></button>
+      {/if}
       {#if onsplit}
         <button class="hb" onclick={onsplit} title={t("viewer.split")}><Icon name="columns" size={15} /></button>
       {/if}
@@ -853,7 +877,6 @@
       {/if}
       <button class="hb" onclick={() => (immersive.on = true)} title={t("viewer.immersive")}><Icon name="eyeOff" size={15} /></button>
       <button class="hb" onclick={() => toggleFullscreen()} title={t("viewer.fullscreen")}><Icon name="maximize" size={15} /></button>
-      <button class="hb" onclick={close} title={t("common.close")}><Icon name="x" size={15} /></button>
     </span>
   </div>
   <button class="nav prev" class:visible={showHud} onclick={() => go(-1)} aria-label={t("viewer.prev")}><Icon name="chevronLeft" size={26} /></button>
@@ -884,6 +907,12 @@
     --faint: #626877;
     --tile: #1d2028;
     color-scheme: dark;
+    /* Bottom tool dock; banners and panels stack above it. */
+    --dock-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    --above-dock: calc(var(--dock-bottom) + 56px);
+  }
+  .viewer:has(.dock.above-controls) {
+    --dock-bottom: calc(64px + env(safe-area-inset-bottom, 0px));
   }
   .viewer.active::after {
     content: "";
@@ -953,7 +982,7 @@
   }
   .banner {
     position: absolute;
-    bottom: 76px;
+    bottom: var(--above-dock);
     left: 50%;
     transform: translateX(-50%);
     z-index: 3;
@@ -974,7 +1003,7 @@
     width: 120px;
   }
   .banner.err {
-    bottom: 128px;
+    bottom: calc(var(--above-dock) + 52px);
     border-color: color-mix(in srgb, var(--danger) 60%, transparent);
   }
   .ss {
@@ -994,7 +1023,7 @@
   .loops {
     position: absolute;
     left: 16px;
-    bottom: 76px;
+    bottom: var(--above-dock);
     z-index: 3;
     width: min(400px, calc(100% - 32px));
     display: grid;
@@ -1076,7 +1105,7 @@
     position: absolute;
     top: 56px;
     right: 12px;
-    bottom: 12px;
+    bottom: var(--above-dock);
     z-index: 2;
     width: 320px;
     border-radius: var(--radius-lg);
@@ -1100,7 +1129,22 @@
     pointer-events: none;
     transition: opacity var(--t-med) var(--ease);
   }
+  .dock {
+    position: absolute;
+    left: 50%;
+    bottom: var(--dock-bottom);
+    transform: translateX(-50%);
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    max-width: calc(100% - 24px);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--t-med) var(--ease);
+  }
   .hud.visible,
+  .dock.visible,
   .nav.visible {
     opacity: 1;
     pointer-events: auto;
@@ -1175,6 +1219,9 @@
     .hud {
       gap: 8px;
       padding: 0 6px 0 12px;
+    }
+    .dock {
+      gap: 4px;
     }
     .tools.vol {
       display: none;

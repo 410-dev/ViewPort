@@ -3,7 +3,7 @@
   import { thumbUrl } from "../api";
   import { fmtDuration } from "../format";
   import Icon from "../ui/Icon.svelte";
-  import { briefs, want } from "./briefs.svelte";
+  import { briefs, reportBroken, want } from "./briefs.svelte";
   import { arrowStep } from "./selection.svelte";
   import type { ViewProps } from "./types";
 
@@ -129,7 +129,17 @@
             {#if noThumb}
               <span class="placeholder"><Icon name={b?.kind === "video" ? "film" : b?.kind === "nonmedia" ? "file" : "image"} size={26} stroke={1.4} /></span>
             {:else}
-              <img src={thumbUrl(id)} alt="" decoding="async" loading="lazy" draggable="false" onerror={() => broken.add(id)} />
+              <img
+                src={thumbUrl(id)}
+                alt=""
+                decoding="async"
+                loading="lazy"
+                draggable="false"
+                onerror={() => {
+                  broken.add(id);
+                  reportBroken(id);
+                }}
+              />
             {/if}
             {#if selection.set.has(id)}
               <span class="check"><Icon name="check" size={13} stroke={3} /></span>

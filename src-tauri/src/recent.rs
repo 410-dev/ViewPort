@@ -1,5 +1,5 @@
 //! Per-device state stored in the app config directory (not in any bundle):
-//! recently opened bundles and [`AppSettings`].
+//! recently opened bundles, where each was last browsed, and [`AppSettings`].
 
 use std::path::PathBuf;
 
@@ -10,6 +10,10 @@ const FILE: &str = "recent_bundles.json";
 const MAX: usize = 10;
 
 const APP_SETTINGS: &str = "app_settings.json";
+
+/// Last browsing state (source, folder, query, sort) of each recent bundle, as the UI
+/// stores it. Device state: source ids belong to the bundle, the path to this device.
+const LAST_VIEW: &str = "last_view.json";
 
 fn config_file<R: Runtime>(app: &AppHandle<R>, name: &str) -> Option<PathBuf> {
     app.path().app_config_dir().ok().map(|d| d.join(name))
@@ -71,6 +75,32 @@ fn write(app: &AppHandle, items: &[String]) {
         let _ = std::fs::create_dir_all(dir);
     }
     if let Ok(json) = serde_json::to_vec_pretty(items) {
+        let _ = std::fs::write(p, json);
+    }
+}
+
+fn last_views(app: &AppHandle) -> serde_json::Map<String, serde_json::Value> {
+    config_file(app, LAST_VIEW)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+pub fn last_view(app: &AppHandle, bundle: &str) -> Option<serde_json::Value> {
+    last_views(app).remove(bundle)
+}
+
+/// Remembers a bundle's browsing state; bundles no longer in the recent list are dropped.
+pub fn save_last_view(app: &AppHandle, bundle: &str, view: serde_json::Value) {
+    let recent = list(app);
+    let mut views = last_views(app);
+    views.retain(|k, _| recent.contains(k));
+    views.insert(bundle.to_string(), view);
+    let Some(p) = config_file(app, LAST_VIEW) else { return };
+    if let Some(dir) = p.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(json) = serde_json::to_vec_pretty(&views) {
         let _ = std::fs::write(p, json);
     }
 }

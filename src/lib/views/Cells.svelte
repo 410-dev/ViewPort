@@ -3,6 +3,7 @@
   import { thumbUrl, type MediaBrief } from "../api";
   import Icon, { type IconName } from "../ui/Icon.svelte";
   import type { Column } from "./columns";
+  import { reportBroken } from "./briefs.svelte";
 
   /** One row of cells for the list and tree views. */
   let {
@@ -41,7 +42,17 @@
       {:else if id != null}
         <span class="thumb">
           {#if !noThumb}
-            <img src={thumbUrl(id)} alt="" loading="lazy" decoding="async" draggable="false" onerror={() => (broken = true)} />
+            <img
+              src={thumbUrl(id)}
+              alt=""
+              loading="lazy"
+              decoding="async"
+              draggable="false"
+              onerror={() => {
+                broken = true;
+                reportBroken(id);
+              }}
+            />
           {:else}
             <Icon name={brief?.kind === "video" ? "film" : brief?.kind === "nonmedia" ? "file" : "image"} size={13} />
           {/if}

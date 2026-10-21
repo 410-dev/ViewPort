@@ -200,6 +200,17 @@ pub fn forget_recent_bundle(app: AppHandle, path: String) {
     recent::remove(&app, &path);
 }
 
+/// Where a bundle was last browsed on this device (opaque UI state).
+#[tauri::command]
+pub fn last_view(app: AppHandle, path: String) -> Option<serde_json::Value> {
+    recent::last_view(&app, &path)
+}
+
+#[tauri::command]
+pub fn save_last_view(app: AppHandle, path: String, view: serde_json::Value) {
+    recent::save_last_view(&app, &path, view);
+}
+
 // ---------------------------------------------------------------- settings
 
 #[tauri::command]
@@ -409,7 +420,8 @@ pub async fn search(
                 q.sorts = d.sorts;
             }
         }
-        let scope = vp_db::Scope { source_id, folder, recursive: recursive.unwrap_or(false) };
+        let scope =
+            vp_db::Scope { source_id, folder, recursive: recursive.unwrap_or(false), exclude_sources: ws.offline_sources() };
         let ids = db.search_in(&q, &reg, &Db::compile_context(now_ms(), tz_offset_minutes), &scope)?;
         Ok(SearchResult { ids, elapsed_ms: started.elapsed().as_secs_f64() * 1000.0 })
     })
@@ -419,6 +431,42 @@ pub async fn search(
 fn utf16_error(mut e: QueryError, src: &str) -> QueryError {
     e.span = e.span.to_utf16(src);
     e
+}
+
+/// Sources whose storage is not connected (see [`Workspace::offline_sources`]).
+#[tauri::command]
+pub async fn offline_sources(app: AppHandle) -> CmdResult<Vec<i64>> {
+    let ws = workspace(&app.state::<AppState>())?;
+    blocking(move || Ok(ws.offline_sources())).await
+}
+
+/// Checks that the files of `ids` still exist (after one failed to load). Items whose file
+/// is gone are marked missing, so searches leave them out until a scan finds them again.
+/// Returns the ids found missing.
+#[tauri::command]
+pub async fn check_media(app: AppHandle, ids: Vec<i64>) -> CmdResult<Vec<i64>> {
+    let ws = workspace(&app.state::<AppState>())?;
+    let registry = app.state::<AppState>().drivers.clone();
+    blocking(move || {
+        let offline = ws.offline_sources();
+        let mut gone = Vec::new();
+        for id in ids {
+            let Some(loc) = ws.read_db.lock().unwrap().media_location(id)? else { continue };
+            if offline.contains(&loc.source_id) {
+                continue;
+            }
+            let Some(source) = ws.read_db.lock().unwrap().source(loc.source_id)? else { continue };
+            let Ok(driver) = ws.driver(&registry, &source) else { continue };
+            if let Err(vp_driver::DriverError::NotFound(_)) = driver.stat(&loc.rel_path) {
+                gone.push(id);
+            }
+        }
+        if !gone.is_empty() {
+            ws.write_db.lock().unwrap().mark_missing(&gone)?;
+        }
+        Ok(gone)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -875,6 +923,10 @@ pub struct FolderEntry {
 pub async fn child_folders(app: AppHandle, source_id: i64, parent: String) -> CmdResult<Vec<FolderEntry>> {
     let ws = workspace(&app.state::<AppState>())?;
     blocking(move || {
+        // A disconnected source shows nothing, like its items.
+        if ws.offline_sources().contains(&source_id) {
+            return Ok(Vec::new());
+        }
         let rows = ws.read_db.lock().unwrap().child_folders(source_id, &parent)?;
         Ok(rows.into_iter().map(|(name, count)| FolderEntry { name, count }).collect())
     })

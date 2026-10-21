@@ -6,7 +6,7 @@
   import { prefs, ui } from "../prefs.svelte";
   import { fraction, tasks } from "../tasks.svelte";
   import Icon from "../ui/Icon.svelte";
-  import { briefs, want } from "../views/briefs.svelte";
+  import { briefs, reportBroken, want } from "../views/briefs.svelte";
 
   /**
    * Preview of the focused item. The thumbnail shows at once; the original loads after
@@ -92,7 +92,10 @@
               preload="metadata"
               class:hidden={!loaded}
               onloadeddata={() => (loaded = true)}
-              onerror={() => (failed = true)}
+              onerror={() => {
+                failed = true;
+                reportBroken(b.id);
+              }}
             ></video>
           {:else}
             <img
@@ -102,7 +105,10 @@
               alt={b.name}
               decoding="async"
               onload={() => (loaded = true)}
-              onerror={() => (failed = true)}
+              onerror={() => {
+                failed = true;
+                reportBroken(b.id);
+              }}
             />
           {/if}
         {/key}

@@ -515,6 +515,10 @@ pub struct UiSettings {
     pub media_only: bool,
     /// Pause after typing before the search runs.
     pub search_debounce_ms: u32,
+    /// How often the library checks whether each source's storage (an external drive,
+    /// a shard folder) is connected. Offline sources are struck through and their items
+    /// hidden. 0 = only when the window gets focus.
+    pub source_check_secs: u32,
 }
 
 impl Default for UiSettings {
@@ -543,6 +547,7 @@ impl Default for UiSettings {
             reduce_motion: false,
             media_only: false,
             search_debounce_ms: 200,
+            source_check_secs: 5,
         }
     }
 }

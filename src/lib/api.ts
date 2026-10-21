@@ -195,6 +195,7 @@ export interface UiSettings {
   reduce_motion: boolean;
   media_only: boolean;
   search_debounce_ms: number;
+  source_check_secs: number;
 }
 
 export interface AppSettings {
@@ -336,6 +337,9 @@ export const api = {
   openBundle: (path: string, allowNewer = false) => invoke<BundleSummary>("open_bundle", { path, allowNewer }),
   closeBundle: () => invoke<void>("close_bundle"),
   currentBundle: () => invoke<BundleSummary | null>("current_bundle"),
+  /** Where a bundle was last browsed on this device (state stored by the library view). */
+  lastView: (path: string) => invoke<unknown>("last_view", { path }),
+  saveLastView: (path: string, view: unknown) => invoke<void>("save_last_view", { path, view }),
   recentBundles: () => invoke<RecentBundle[]>("recent_bundles"),
   forgetRecentBundle: (path: string) => invoke<void>("forget_recent_bundle", { path }),
   getSettings: () => invoke<Settings>("get_settings"),
@@ -350,6 +354,10 @@ export const api = {
   childFolders: (sourceId: number, parent: string) =>
     invoke<{ name: string; count: number }[]>("child_folders", { sourceId, parent }),
   mediaBrief: (ids: number[]) => invoke<MediaBrief[]>("media_brief", { ids }),
+  /** Sources whose storage is not connected; searches leave their items out. */
+  offlineSources: () => invoke<number[]>("offline_sources"),
+  /** After a load failed: marks items whose file is gone as missing, returns those ids. */
+  checkMedia: (ids: number[]) => invoke<number[]>("check_media", { ids }),
   saveBundle: () => invoke<void>("save_bundle"),
   prefetch: (ids: number[]) => invoke<void>("prefetch", { ids }),
   recordView: (id: number, viewMs: number) => invoke<void>("record_view", { id, viewMs }),

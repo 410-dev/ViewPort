@@ -42,3 +42,27 @@ export function invalidate(ids?: number[]) {
   if (!ids) briefs.clear();
   else for (const id of ids) briefs.delete(id);
 }
+
+// ---- items whose file may be gone
+const checked = new Set<number>();
+const suspects = new Set<number>();
+let checkTimer: ReturnType<typeof setTimeout> | undefined;
+/** Called with the ids found gone (marked missing, so searches now leave them out). */
+export const goneListeners = new Set<(ids: number[]) => void>();
+
+/** An item failed to load: checks (once, batched) whether its file still exists. */
+export function reportBroken(id: number) {
+  if (checked.has(id)) return;
+  checked.add(id);
+  suspects.add(id);
+  clearTimeout(checkTimer);
+  checkTimer = setTimeout(async () => {
+    const batch = [...suspects];
+    suspects.clear();
+    const gone = await api.checkMedia(batch).catch(() => []);
+    if (gone.length) {
+      invalidate(gone);
+      for (const f of goneListeners) f(gone);
+    }
+  }, 300);
+}
