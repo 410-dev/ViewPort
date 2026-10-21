@@ -426,6 +426,33 @@ impl Workspace {
         }
     }
 
+    /// Sources whose storage is not reachable now (an unplugged drive, a missing shard
+    /// folder). Their items are left out of searches. Network sources are not probed here:
+    /// that could block for the connection timeout.
+    pub fn offline_sources(&self) -> Vec<i64> {
+        let sources = self.read_db.lock().unwrap().sources().unwrap_or_default();
+        sources
+            .iter()
+            .filter(|s| {
+                let root = if s.driver == BUNDLE_DRIVER {
+                    vp_driver::checked_components(&s.root).ok().map(|c| {
+                        let mut p = self.bundle.root.clone();
+                        p.extend(c);
+                        p
+                    })
+                } else if s.driver == crate::shards::DRIVER {
+                    self.shard_root(s).ok()
+                } else if s.driver == "local" {
+                    Some(PathBuf::from(&s.root))
+                } else {
+                    return false;
+                };
+                !root.is_some_and(|p| p.is_dir())
+            })
+            .map(|s| s.id)
+            .collect()
+    }
+
     pub fn driver(&self, registry: &DriverRegistry, source: &SourceRow) -> CmdResult<Arc<dyn MediaDriver>> {
         if let Some(d) = self.drivers.lock().unwrap().get(&source.id) {
             return Ok(d.clone());

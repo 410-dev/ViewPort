@@ -267,6 +267,8 @@ pub struct Scope {
     pub folder: Option<String>,
     /// Include subfolders of `folder`.
     pub recursive: bool,
+    /// Sources left out (e.g. ones whose storage is not connected).
+    pub exclude_sources: Vec<i64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -483,6 +485,10 @@ impl Db {
                 }
             }
         }
+        if !scope.exclude_sources.is_empty() {
+            let ids: Vec<String> = scope.exclude_sources.iter().map(|id| id.to_string()).collect();
+            source_filter.push_str(&format!(" AND m.source_id NOT IN ({})", ids.join(",")));
+        }
         let sql = format!(
             "SELECT m.id FROM media m
              JOIN source src ON src.id = m.source_id
@@ -594,6 +600,15 @@ impl Db {
         self.conn
             .prepare_cached("UPDATE media SET seen_gen = ?2, missing = 0 WHERE id = ?1")?
             .execute(params![media_id, gen_id])?;
+        Ok(())
+    }
+
+    /// Marks items whose file was found gone outside a scan; the next scan clears it if it is back.
+    pub fn mark_missing(&self, ids: &[i64]) -> Result<()> {
+        let mut stmt = self.conn.prepare_cached("UPDATE media SET missing = 1 WHERE id = ?1")?;
+        for id in ids {
+            stmt.execute([id])?;
+        }
         Ok(())
     }
 

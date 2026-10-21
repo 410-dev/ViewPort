@@ -11,6 +11,9 @@
     shards = {},
     saved,
     activeQuery,
+    offline = [],
+    cansavecurrent = false,
+    closeLabel,
     secondary = false,
     onselect,
     onaddfolder,
@@ -22,6 +25,7 @@
     onrunsaved,
     oneditsaved,
     ondeletesaved,
+    onsavecurrent,
     onsettings,
     onclose,
     onsave,
@@ -34,6 +38,12 @@
     shards?: Record<number, ShardStatus>;
     saved: SavedQuery[];
     activeQuery: string;
+    /** Sources whose storage is not connected: struck through. */
+    offline?: number[];
+    /** A search is running that is not saved yet. */
+    cansavecurrent?: boolean;
+    /** Overrides the label of the close item. */
+    closeLabel?: string;
     secondary?: boolean;
     onselect: (id: number | null) => void;
     onaddfolder: () => void;
@@ -45,6 +55,7 @@
     onrunsaved: (q: SavedQuery) => void;
     oneditsaved: (q: SavedQuery) => void;
     ondeletesaved: (q: SavedQuery) => void;
+    onsavecurrent: () => void;
     onsettings: () => void;
     onclose: () => void;
     onsave: () => void;
@@ -109,8 +120,15 @@
         {@const scanning = scans[s.id] && !scans[s.id].done}
         {@const shard = s.driver === "shard" ? shards[s.id] : undefined}
         {@const shardLocked = !!shard && shard.found && shard.encrypted && !shard.unlocked}
-        <div class="row" class:off={!s.enabled}>
-          <button class="item" class:on={selected === s.id} onclick={() => onselect(s.id)} title={shardLocked ? t("side.shardLocked") : s.root}>
+        {@const gone = offline.includes(s.id)}
+        <div class="row" class:off={!s.enabled || gone}>
+          <button
+            class="item"
+            class:on={selected === s.id}
+            class:gone
+            onclick={() => onselect(s.id)}
+            title={gone ? `${t("side.offline")} · ${s.root}` : shardLocked ? t("side.shardLocked") : s.root}
+          >
             <Icon name={s.driver === "shard" ? "archive" : s.driver === "local" || s.driver === "bundle" ? "folder" : "server"} size={15} />
             <span class="label">{s.name}</span>
             {#if shardLocked}<span class="lock"><Icon name="lock" size={12} /></span>{/if}
@@ -129,6 +147,11 @@
 
     <div class="group">
       <div class="ghead"><span class="eyebrow">{t("side.saved")}</span></div>
+      {#if cansavecurrent}
+        <button class="item save-current" onclick={onsavecurrent}>
+          <Icon name="plus" size={15} /><span class="label">{t("side.saveCurrent")}</span>
+        </button>
+      {/if}
       {#each saved as q (q.id)}
         <div class="row">
           <button class="item" class:on={activeQuery === q.text} title={q.text} onclick={() => onrunsaved(q)}>
@@ -140,7 +163,7 @@
           </span>
         </div>
       {:else}
-        <p class="empty">{t("side.noSaved")}</p>
+        {#if !cansavecurrent}<p class="empty">{t("side.noSaved")}</p>{/if}
       {/each}
     </div>
   </div>
@@ -148,7 +171,7 @@
   <div class="foot">
     <button class="item" onclick={onsettings}><Icon name="settings" size={15} /><span class="label">{t("side.settings")}</span></button>
     <button class="item" onclick={onclose}
-      ><Icon name={secondary ? "x" : "logout"} size={15} /><span class="label">{secondary ? t("side.closeWindow") : t("side.close")}</span></button
+      ><Icon name={secondary ? "x" : "logout"} size={15} /><span class="label">{closeLabel ?? (secondary ? t("side.closeWindow") : t("side.close"))}</span></button
     >
   </div>
 </nav>
@@ -270,6 +293,15 @@
     font-weight: 500;
   }
   .item.on :global(svg) {
+    color: var(--accent);
+  }
+  .item.gone .label {
+    text-decoration: line-through;
+  }
+  .item.save-current {
+    color: var(--accent);
+  }
+  .item.save-current :global(svg) {
     color: var(--accent);
   }
   .label {

@@ -97,6 +97,16 @@ fn enum_and_negation() {
 }
 
 #[test]
+fn items_found_missing_are_hidden() {
+    let lib = library();
+    lib.db.mark_missing(&[1, 3]).unwrap();
+    let all = vp_query::Query::default();
+    let mut ids = lib.db.search(&all, &lib.reg, &Db::compile_context(OCT18, 0)).unwrap();
+    ids.sort();
+    assert_eq!(ids, [2, 4, 5]);
+}
+
+#[test]
 fn base_fields_and_sources() {
     let lib = library();
     assert_eq!(lib.ids("소스(NAS)"), [3, 5]);
@@ -105,6 +115,11 @@ fn base_fields_and_sources() {
     let all = vp_query::Query::default();
     let scope = Scope { source_id: Some(2), ..Default::default() };
     assert_eq!(lib.db.search_in(&all, &lib.reg, &Db::compile_context(OCT18, 0), &scope).unwrap(), [3, 5]);
+    // Offline sources are left out; items found gone are hidden until a scan sees them again.
+    let offline = Scope { exclude_sources: vec![2], ..Default::default() };
+    let mut rest = lib.db.search_in(&all, &lib.reg, &Db::compile_context(OCT18, 0), &offline).unwrap();
+    rest.sort();
+    assert_eq!(rest, [1, 2, 4]);
     assert_eq!(lib.ids("유형(영상) 그리고 내림차순 정렬(생성 날짜)"), [3, 5, 4]);
     assert_eq!(lib.ids("확장자(jpg) 그리고 정렬(이름)"), [2, 1]);
     assert_eq!(lib.ids("이름(패턴:b*.jpg)"), [1, 2]);
@@ -362,7 +377,7 @@ fn folder_browsing() {
     assert_eq!(lib.db.child_folders(1, "trip").unwrap(), [("day1".to_string(), 2), ("day2".to_string(), 1)]);
     let all = vp_query::Query::default();
     let ctx = Db::compile_context(OCT18, 0);
-    let direct = Scope { source_id: Some(1), folder: Some("trip".into()), recursive: false };
+    let direct = Scope { source_id: Some(1), folder: Some("trip".into()), recursive: false, ..Default::default() };
     assert_eq!(lib.db.search_in(&all, &lib.reg, &ctx, &direct).unwrap().len(), 3);
     let deep = Scope { recursive: true, ..direct };
     assert_eq!(lib.db.search_in(&all, &lib.reg, &ctx, &deep).unwrap().len(), 6, "tripx is not inside trip");

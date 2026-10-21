@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount, untrack } from "svelte";
-  import { api, platformApi, type Settings } from "./api";
+  import { api, platformApi, type BundleSummary, type Settings } from "./api";
+  import Library, { type BrowseState } from "./Library.svelte";
   import { toggleMute } from "./audio.svelte";
   import { isTyping, matches } from "./keys";
   import { isMobile } from "./platform";
@@ -11,26 +12,44 @@
 
   /**
    * Viewer split view: up to `windows.max_viewer_panes` panes side by side, each browsing
-   * its own list. On mobile this replaces extra windows; on desktop a pane can also be
-   * moved to its own window.
+   * its own list. A new pane starts as an explorer, so it can show another source or
+   * query; opening an item there turns it into a viewer. On mobile this replaces extra
+   * windows; on desktop a pane can also be moved to its own window.
    */
-  type Pane = { key: number; ids: number[]; index: number };
+  type Pane = {
+    key: number;
+    ids: number[];
+    index: number;
+    /** Showing an explorer (with this state) instead of the viewer. */
+    browse: BrowseState | null;
+  };
 
   let {
     panes: initial,
     settings,
+    bundle: givenBundle,
+    browseFrom,
     onclose,
     onchanged,
   }: {
     panes: { ids: number[]; index: number }[];
     settings: Settings;
+    /** The open workspace; looked up when absent (viewer windows). */
+    bundle?: BundleSummary;
+    /** Where a new explorer pane starts. */
+    browseFrom?: BrowseState;
     /** Called with the item the last active pane showed. */
     onclose: (lastId: number | undefined) => void;
     onchanged?: () => void;
   } = $props();
 
+  // svelte-ignore state_referenced_locally
+  let bundle = $state<BundleSummary | null>(givenBundle ?? null);
+  // svelte-ignore state_referenced_locally
+  if (!givenBundle) api.currentBundle().then((b) => (bundle = b)).catch(() => {});
+
   let nextKey = 0;
-  let panes = $state<Pane[]>(untrack(() => initial.map((p) => ({ key: nextKey++, ...p }))));
+  let panes = $state<Pane[]>(untrack(() => initial.map((p) => ({ key: nextKey++, ...p, browse: null }))));
   let active = $state(0);
   let width = $state(0);
   let height = $state(0);
@@ -41,11 +60,15 @@
     return l === "auto" ? (width >= height ? "columns" : "rows") : l;
   });
 
+  /** Where a new explorer pane starts. */
+  const start = (): BrowseState => ({ sourceId: null, folder: "", query: "", ...browseFrom });
+
   function split() {
     if (panes.length >= max) return;
     const p = panes[active];
-    // The new pane starts on the next item of the active one.
-    panes.push({ key: nextKey++, ids: p.ids, index: (p.index + 1) % p.ids.length });
+    // The new pane starts as an explorer; until something is opened there it keeps the
+    // active pane's list.
+    panes.push({ key: nextKey++, ids: p.ids, index: p.index, browse: start() });
     active = panes.length - 1;
   }
 
@@ -54,6 +77,17 @@
     panes.splice(i, 1);
     active = Math.min(active, panes.length - 1);
   }
+
+  /** Opened from a pane's explorer: the pane views that list. */
+  function openIn(i: number, ids: number[], index: number, state: BrowseState) {
+    const p = panes[i];
+    p.ids = ids;
+    p.index = index;
+    p.browse = null;
+    lastBrowse.set(p.key, state);
+  }
+  /** Where each pane's explorer was, to return there. */
+  const lastBrowse = new Map<number, BrowseState>();
 
   async function pop(i: number) {
     const p = panes[i];
@@ -104,19 +138,33 @@
   aria-modal="true"
 >
   {#each panes as p, i (p.key)}
-    <div class="pane">
-      <Viewer
-        ids={p.ids}
-        bind:index={p.index}
-        {settings}
-        {onchanged}
-        active={i === active}
-        panes={panes.length}
-        onactivate={() => (active = i)}
-        onclose={() => remove(i)}
-        onsplit={panes.length < max ? split : undefined}
-        onpop={isMobile ? undefined : () => pop(i)}
-      />
+    <div class="pane" class:browse={!!p.browse} onpointerdowncapture={() => (active = i)} role="presentation">
+      {#if p.browse}
+        {#if bundle}
+          <Library
+            {bundle}
+            secondary
+            initial={p.browse}
+            onclose={() => remove(i)}
+            onbundle={() => {}}
+            embedded={{ active: i === active, onopen: (ids, index, state) => openIn(i, ids, index, state) }}
+          />
+        {/if}
+      {:else}
+        <Viewer
+          ids={p.ids}
+          bind:index={p.index}
+          {settings}
+          {onchanged}
+          active={i === active}
+          panes={panes.length}
+          onactivate={() => (active = i)}
+          onclose={() => remove(i)}
+          onsplit={panes.length < max ? split : undefined}
+          onpop={isMobile ? undefined : () => pop(i)}
+          onbrowse={panes.length > 1 ? () => (p.browse = lastBrowse.get(p.key) ?? start()) : undefined}
+        />
+      {/if}
     </div>
   {/each}
 </div>
@@ -139,5 +187,12 @@
     position: relative;
     min-width: 0;
     min-height: 0;
+  }
+  /* An explorer pane: its fixed layers (drawer, sheets, dialogs) stay inside the pane. */
+  .pane.browse {
+    transform: translateZ(0);
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--fg);
   }
 </style>

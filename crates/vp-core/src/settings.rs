@@ -529,6 +529,10 @@ pub struct UiSettings {
     pub suggest_limit: u32,
     /// Values listed by a value field's dropdown button.
     pub value_list_limit: u32,
+    /// How often the library checks whether each source's storage (an external drive,
+    /// a shard folder) is connected. Offline sources are struck through and their items
+    /// hidden. 0 = only when the window gets focus.
+    pub source_check_secs: u32,
 }
 
 impl Default for UiSettings {
@@ -559,6 +563,7 @@ impl Default for UiSettings {
             search_debounce_ms: 200,
             suggest_limit: 20,
             value_list_limit: 500,
+            source_check_secs: 5,
         }
     }
 }

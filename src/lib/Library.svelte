@@ -1,3 +1,9 @@
+<script lang="ts" module>
+  import type { SortSpec as Sort } from "./views/columns";
+  /** What the library is browsing: restored on the next start, and used by split-view explorers. */
+  export type BrowseState = { sourceId: number | null; folder: string; query: string; sort?: Sort | null };
+</script>
+
 <script lang="ts">
   import { ask } from "@tauri-apps/plugin-dialog";
   import { pickFolder } from "./pick.svelte";
@@ -35,7 +41,7 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { isMobile } from "./platform";
   import { broadcast, onSync } from "./sync";
-  import { briefs, invalidate } from "./views/briefs.svelte";
+  import { briefs, goneListeners, invalidate } from "./views/briefs.svelte";
   import { columnsFor, type SortSpec } from "./views/columns";
   import { VIEWS } from "./views";
   import { Selection, type FolderRef } from "./views/selection.svelte";
@@ -47,14 +53,21 @@
     onbundle,
     secondary = false,
     initial = null,
+    embedded = null,
   }: {
     bundle: BundleSummary;
     onclose: () => void;
     onbundle: (b: BundleSummary) => void;
     /** An extra explorer window: "close" closes the window, not the bundle. */
     secondary?: boolean;
-    initial?: { sourceId: number | null; folder: string; query: string } | null;
+    initial?: BrowseState | null;
+    /** An explorer inside a viewer split pane: opening items hands them to the pane. */
+    embedded?: { active: boolean; onopen: (ids: number[], index: number, state: BrowseState) => void } | null;
   } = $props();
+
+  /** Only the main window's library is restored on the next start. */
+  // svelte-ignore state_referenced_locally
+  const persist = !secondary && !embedded;
 
   let settings = $state<Settings | null>(null);
   let sources = $state<SourceRow[]>([]);
@@ -64,7 +77,11 @@
   let folder = $state(initial?.folder ?? "");
   // svelte-ignore state_referenced_locally
   let query = $state(initial?.query ?? "");
-  let sort = $state<SortSpec | null>(null);
+  // svelte-ignore state_referenced_locally
+  let sort = $state<SortSpec | null>(initial?.sort ?? null);
+  /** False until the last browsing state is restored, so nothing is searched twice. */
+  // svelte-ignore state_referenced_locally
+  let restored = $state(!persist || !!initial);
   let ids = $state<number[]>([]);
   let elapsed = $state(0);
   let queryError = $state<string | null>(null);
@@ -82,6 +99,13 @@
   let shardPanel = $state<number | null>(null);
   let shards = $state<Record<number, ShardStatus>>({});
 
+  /** Sources whose storage is not connected (struck through, items hidden). */
+  let offline = $state<number[]>([]);
+  // svelte-ignore state_referenced_locally
+  let localPanel = $state(false);
+  /** Panel visibility: a device preference, but per pane for split-view explorers. */
+  const panelVisible = $derived(embedded ? localPanel : ui().panel_visible);
+
   const selection = new Selection();
   const selectedIds = $derived([...selection.set]);
   const view = $derived(VIEWS.find((v) => v.key === ui().view_mode) ?? VIEWS[0]);
@@ -91,7 +115,52 @@
   async function refreshSources() {
     sources = await api.listSources();
     refreshShards();
+    refreshOffline();
   }
+  async function refreshOffline() {
+    const list = await api.offlineSources().catch(() => offline);
+    if (list.join() === offline.join()) return;
+    offline = list;
+    invalidate();
+    runSearch(false);
+  }
+  // Drives come and go: check on focus and every `ui.source_check_secs`.
+  $effect(() => {
+    const secs = ui().source_check_secs;
+    const timer = secs > 0 ? setInterval(refreshOffline, secs * 1000) : undefined;
+    window.addEventListener("focus", refreshOffline);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("focus", refreshOffline);
+    };
+  });
+
+  // ---- last browsing state (main window only)
+  // svelte-ignore state_referenced_locally
+  if (!restored)
+    api
+      .lastView(bundle.path)
+      .then((v) => {
+        const last = v as BrowseState | null;
+        if (last && typeof last === "object") {
+          selected = last.sourceId ?? null;
+          lastSource = selected;
+          folder = last.folder ?? "";
+          query = last.query ?? "";
+          sort = last.sort ?? null;
+        }
+      })
+      .catch(() => {})
+      .finally(() => (restored = true));
+  function browseState(): BrowseState {
+    return { sourceId: selected, folder, query, sort: sort ? { ...sort } : null };
+  }
+  $effect(() => {
+    if (!persist || !restored) return;
+    const state = browseState();
+    const timer = setTimeout(() => api.saveLastView(bundle.path, state).catch(() => {}), 400);
+    return () => clearTimeout(timer);
+  });
   async function refreshShards() {
     if (!sources.some((s) => s.driver === "shard")) {
       shards = {};
@@ -156,6 +225,7 @@
     selected;
     folder;
     ui().recursive;
+    if (!restored) return;
     const timer = setTimeout(() => runSearch(true), ui().search_debounce_ms);
     return () => clearTimeout(timer);
   });
@@ -191,7 +261,16 @@
     onSync("saved", () => refreshSaved()),
     onSync("settings", () => api.getSettings().then((s) => (settings = s))),
   );
-  onDestroy(() => unlisten.forEach((p) => p.then((f) => f())));
+  // Items found gone (failed to load, file missing): drop them from this and other windows.
+  const onGone = (gone: number[]) => {
+    broadcast("media", gone);
+    runSearch(false);
+  };
+  goneListeners.add(onGone);
+  onDestroy(() => {
+    unlisten.forEach((p) => p.then((f) => f()));
+    goneListeners.delete(onGone);
+  });
 
   $effect(() => {
     refreshSources();
@@ -252,7 +331,9 @@
   function openViewer(id: number, all: number[]) {
     const list = viewable(id, all);
     const index = list ? list.indexOf(id) : -1;
-    if (list && index >= 0) viewing = { list, index };
+    if (!list || index < 0) return;
+    if (embedded) embedded.onopen(list, index, browseState());
+    else viewing = { list, index };
   }
 
   /** Desktop: the item in its own viewer window (falls back to the in-window viewer on mobile). */
@@ -288,6 +369,7 @@
   }
 
   async function close() {
+    if (embedded) return onclose();
     if (secondary) return getCurrentWindow().close();
     await api.closeBundle();
     onclose();
@@ -316,17 +398,15 @@
   // ---- keyboard
   let toolbar: Toolbar;
   function onKey(e: KeyboardEvent) {
-    if (!settings || viewing || modal || showSettings || sourceDialog || shardDialog || shardPanel !== null) return;
+    if (embedded && !embedded.active) return;
+    if (!settings || viewing || modal || savingCurrent || showSettings || sourceDialog || shardDialog || shardPanel !== null) return;
     const k = settings.keys;
     if (matches(e, k.focus_search)) toolbar?.focusSearch();
     else if (matches(e, k.query_editor)) modal = { editing: null };
     else if (matches(e, k.open_new_window) && selection.focus != null && !isTyping(e))
       openViewerWindow(selection.focus, ids.includes(selection.focus) ? ids : [selection.focus]);
     else if (isTyping(e)) return;
-    else if (matches(e, k.toggle_panel)) {
-      ui().panel_visible = !ui().panel_visible;
-      savePrefs();
-    } else if (matches(e, k.view_grid)) setView("grid");
+    else if (matches(e, k.toggle_panel)) setPanel(!panelVisible); else if (matches(e, k.view_grid)) setView("grid");
     else if (matches(e, k.view_list)) setView("list");
     else if (matches(e, k.view_tree)) setView("tree");
     else if (e.key === "Backspace" && selected !== null && folder) folder = folder.split("/").slice(0, -1).join("/");
@@ -338,14 +418,9 @@
 
   // ---- narrow screens (phones): the sidebar is a drawer, the panel a bottom sheet, and
   // a touch selection gets its own action bar.
-  let compact = $state(false);
-  $effect(() => {
-    const mq = matchMedia("(max-width: 760px)");
-    const update = () => (compact = mq.matches);
-    update();
-    mq.addEventListener("change", update);
-    return () => mq.removeEventListener("change", update);
-  });
+  // Measured on the library itself, which may be a split-view pane.
+  let rootWidth = $state(0);
+  const compact = $derived(rootWidth > 0 ? rootWidth <= 760 : matchMedia("(max-width: 760px)").matches);
   let drawer = $state(false);
   $effect(() => {
     if (!compact) drawer = false;
@@ -542,8 +617,40 @@
   }
 
   function setPanel(on: boolean) {
+    if (embedded) return void (localPanel = on);
     ui().panel_visible = on;
     savePrefs();
+  }
+
+  // ---- save the current search
+  /** The query as it would be saved: plain words become a name search, the header sort is kept. */
+  const currentText = $derived.by(() => {
+    let q = query.trim();
+    if (q && !/[()]/.test(q)) q = `name(contains:${quoteParam(q)})`;
+    if (sort) q = `${q ? q + " AND " : ""}${sort.desc ? "sort desc" : "sort asc"}(${sort.field})`;
+    return q;
+  });
+  const canSaveCurrent = $derived(!!query.trim() && !queryError && !saved.some((q) => q.text === query));
+  let savingCurrent = $state<{ label: string; error: string } | null>(null);
+  $effect(() => {
+    if (savingCurrent) return onBack(() => (savingCurrent = null));
+  });
+  async function commitSaveCurrent() {
+    if (!savingCurrent) return;
+    try {
+      const id = await api.saveQuery(null, savingCurrent.label.trim(), currentText);
+      savingCurrent = null;
+      await refreshSaved();
+      broadcast("saved");
+      // Show the saved search as the active one (its text is the normalized form).
+      const q = saved.find((x) => x.id === id);
+      if (q) {
+        sort = null;
+        query = q.text;
+      }
+    } catch (e) {
+      if (savingCurrent) savingCurrent.error = asCmdError(e).message;
+    }
   }
 
   // Back button: open layers first (registered later, so they run first), then up a folder.
@@ -557,7 +664,7 @@
     if (drawer) return onBack(() => (drawer = false));
   });
   $effect(() => {
-    if (compact && ui().panel_visible) return onBack(() => setPanel(false));
+    if (compact && panelVisible) return onBack(() => setPanel(false));
   });
   $effect(() => {
     if (compact && selection.set.size > 0) return onBack(() => selection.clear());
@@ -566,137 +673,169 @@
 
 <svelte:window onkeydown={onKey} />
 
-<div
-  class="app"
-  style:--sidebar="{ui().sidebar_width}px"
-  style:--panel="{ui().panel_visible ? ui().panel_width : 0}px"
-  class:no-panel={!ui().panel_visible}
->
-  {#if drawer}
-    <div class="drawer-scrim" role="presentation" onclick={() => (drawer = false)}></div>
-  {/if}
-  <!-- In the drawer, picking anything in the sidebar closes it. -->
+<div class="lib-root" class:embedded={!!embedded} bind:clientWidth={rootWidth}>
   <div
-    class="sidebar"
-    class:open={drawer}
-    role="presentation"
-    onclick={(e) => {
-      if (compact && (e.target as Element).closest("button.item")) drawer = false;
-    }}
+    class="app"
+    class:compact
+    style:--sidebar="{ui().sidebar_width}px"
+    style:--panel="{panelVisible ? ui().panel_width : 0}px"
+    class:no-panel={!panelVisible}
   >
-    <Sidebar
-      {bundle}
-      {sources}
-      {selected}
-      {scans}
-      {saved}
-      activeQuery={query}
-      {secondary}
-      {shards}
-      onselect={selectSource}
-      onaddfolder={addFolder}
-      onaddnetwork={() => (sourceDialog = { source: null })}
-      onaddshard={() => (shardDialog = true)}
-      onrescan={(s) => api.scanSource(s.id)}
-      onedit={(s) => (s.driver === "shard" ? (shardPanel = s.id) : (sourceDialog = { source: s }))}
-      onremove={removeSource}
-      onrunsaved={(q) => (query = q.text)}
-      oneditsaved={(q) => (modal = { editing: q })}
-      ondeletesaved={deleteSaved}
-      onsettings={() => (showSettings = true)}
-      onclose={close}
-      onsave={() => api.saveBundle().catch((e) => alert(asCmdError(e).message))}
-    />
-    <div class="resizer" role="separator" aria-orientation="vertical" onpointerdown={(e) => drag(e, "sidebar")}></div>
-  </div>
+    {#if drawer}
+      <div class="drawer-scrim" role="presentation" onclick={() => (drawer = false)}></div>
+    {/if}
+    <!-- In the drawer, picking anything in the sidebar closes it. -->
+    <div
+      class="sidebar"
+      class:open={drawer}
+      role="presentation"
+      onclick={(e) => {
+        if (compact && (e.target as Element).closest("button.item")) drawer = false;
+      }}
+    >
+      <Sidebar
+        {bundle}
+        {sources}
+        {selected}
+        {scans}
+        {saved}
+        activeQuery={query}
+        {offline}
+        cansavecurrent={canSaveCurrent}
+        closeLabel={embedded ? t("side.closeSplit") : undefined}
+        onsavecurrent={() => (savingCurrent = { label: "", error: "" })}
+        {secondary}
+        {shards}
+        onselect={selectSource}
+        onaddfolder={addFolder}
+        onaddnetwork={() => (sourceDialog = { source: null })}
+        onaddshard={() => (shardDialog = true)}
+        onrescan={(s) => api.scanSource(s.id)}
+        onedit={(s) => (s.driver === "shard" ? (shardPanel = s.id) : (sourceDialog = { source: s }))}
+        onremove={removeSource}
+        onrunsaved={(q) => (query = q.text)}
+        oneditsaved={(q) => (modal = { editing: q })}
+        ondeletesaved={deleteSaved}
+        onsettings={() => (showSettings = true)}
+        onclose={close}
+        onsave={() => api.saveBundle().catch((e) => alert(asCmdError(e).message))}
+      />
+      <div class="resizer" role="separator" aria-orientation="vertical" onpointerdown={(e) => drag(e, "sidebar")}></div>
+    </div>
 
-  <main>
-    <Toolbar
-      bind:this={toolbar}
-      bind:query
-      {scope}
-      {folder}
-      {settings}
-      error={queryError}
-      viewKey={view.key}
-      {sort}
-      onsetsort={(s) => (sort = s)}
-      onfolder={(f) => (folder = f)}
-      onview={setView}
-      ontile={setTile}
-      onadvanced={() => (modal = { editing: null })}
-      onnewwindow={isMobile ? undefined : openExplorerWindow}
-      onmenu={compact ? () => (drawer = true) : undefined}
-    />
-    {#if compact && selection.set.size > 0}
-      <div class="selbar">
-        <button class="icon-btn" aria-label={t("sel.clear")} onclick={() => selection.clear()}><Icon name="x" size={16} /></button>
-        <span class="grow tabular">{t("sel.count", { n: selection.set.size })}</span>
-        <button class="btn sm ghost" onclick={() => selection.selectAll(ids)}><Icon name="checkSquare" size={14} />{t("sel.all")}</button>
-        <button class="btn sm primary" onclick={() => setPanel(true)}><Icon name="info" size={14} />{t("sel.info")}</button>
-        <button class="btn sm danger" onclick={() => (confirmDelete = [...selection.set])}><Icon name="trash" size={14} />{t("sel.delete")}</button>
+    <main>
+      <Toolbar
+        bind:this={toolbar}
+        bind:query
+        {scope}
+        {folder}
+        {settings}
+        error={queryError}
+        viewKey={view.key}
+        {sort}
+        onsetsort={(s) => (sort = s)}
+        onfolder={(f) => (folder = f)}
+        onview={setView}
+        ontile={setTile}
+        onadvanced={() => (modal = { editing: null })}
+        onnewwindow={isMobile ? undefined : openExplorerWindow}
+        onmenu={compact ? () => (drawer = true) : undefined}
+      />
+      {#if compact && selection.set.size > 0}
+        <div class="selbar">
+          <button class="icon-btn" aria-label={t("sel.clear")} onclick={() => selection.clear()}><Icon name="x" size={16} /></button>
+          <span class="grow tabular">{t("sel.count", { n: selection.set.size })}</span>
+          <button class="btn sm ghost" onclick={() => selection.selectAll(ids)}><Icon name="checkSquare" size={14} />{t("sel.all")}</button>
+          <button class="btn sm primary" onclick={() => setPanel(true)}><Icon name="info" size={14} />{t("sel.info")}</button>
+          <button class="btn sm danger" onclick={() => (confirmDelete = [...selection.set])}><Icon name="trash" size={14} />{t("sel.delete")}</button>
+        </div>
+      {/if}
+      {#if queryError}
+        <div class="qerror"><Icon name="alert" size={13} /><span>{queryError}</span></div>
+      {/if}
+      <div class="view">
+        {#if sources.length === 0}
+          <div class="empty">
+            <Icon name="folderPlus" size={36} stroke={1.2} />
+            <p>{t("lib.empty")}</p>
+            <button class="btn primary" onclick={addFolder}><Icon name="plus" size={14} />{t("side.addFolder")}</button>
+          </div>
+        {:else if settings}
+          {#if ids.length === 0 && folders.length === 0 && view.key !== "tree"}
+            <div class="empty"><Icon name="search" size={30} stroke={1.3} /><p>{t("lib.noResults")}</p></div>
+          {:else}
+            <view.component
+              {ids}
+              {folders}
+              {selection}
+              {resetKey}
+              tile={settings.grid.tile_px}
+              showNames={settings.grid.show_names}
+              folderPreview={settings.grid.folder_preview ?? 2}
+              overscan={settings.grid.overscan_rows}
+              {columns}
+              rowPx={ui().row_px}
+              {sort}
+              tree={{ sources: sources.map((s) => ({ id: s.id, name: s.name })), sourceId: selected, folder, query: effectiveQuery }}
+              onsort={toggleSort}
+              onopen={openViewer}
+              onopenwindow={openViewerWindow}
+              onfolder={(p) => (folder = p)}
+            />
+          {/if}
+        {/if}
+      </div>
+    </main>
+
+    {#if panelVisible}
+      <div class="panel">
+        <div class="resizer left" role="separator" aria-orientation="vertical" onpointerdown={(e) => drag(e, "panel")}></div>
+        <RightPanel
+          focus={selection.focus}
+          selected={selectedIds}
+          folder={selection.folder}
+          onopen={(id) => openViewer(id, ids.includes(id) ? ids : [id])}
+          onopenwindow={isMobile ? undefined : (id) => openViewerWindow(id, ids.includes(id) ? ids : [id])}
+          onclose={compact ? () => setPanel(false) : undefined}
+          onchanged={() => {
+            // Folder edits may have reached every item inside.
+            const changed = selection.folder ? undefined : selectedIds;
+            invalidate(changed);
+            broadcast("media", changed);
+            runSearch(false);
+          }}
+        />
       </div>
     {/if}
-    {#if queryError}
-      <div class="qerror"><Icon name="alert" size={13} /><span>{queryError}</span></div>
-    {/if}
-    <div class="view">
-      {#if sources.length === 0}
-        <div class="empty">
-          <Icon name="folderPlus" size={36} stroke={1.2} />
-          <p>{t("lib.empty")}</p>
-          <button class="btn primary" onclick={addFolder}><Icon name="plus" size={14} />{t("side.addFolder")}</button>
-        </div>
-      {:else if settings}
-        {#if ids.length === 0 && folders.length === 0 && view.key !== "tree"}
-          <div class="empty"><Icon name="search" size={30} stroke={1.3} /><p>{t("lib.noResults")}</p></div>
-        {:else}
-          <view.component
-            {ids}
-            {folders}
-            {selection}
-            {resetKey}
-            tile={settings.grid.tile_px}
-            showNames={settings.grid.show_names}
-            folderPreview={settings.grid.folder_preview ?? 2}
-            overscan={settings.grid.overscan_rows}
-            {columns}
-            rowPx={ui().row_px}
-            {sort}
-            tree={{ sources: sources.map((s) => ({ id: s.id, name: s.name })), sourceId: selected, folder, query: effectiveQuery }}
-            onsort={toggleSort}
-            onopen={openViewer}
-            onopenwindow={openViewerWindow}
-            onfolder={(p) => (folder = p)}
-          />
-        {/if}
-      {/if}
-    </div>
-  </main>
 
-  {#if ui().panel_visible}
-    <div class="panel">
-      <div class="resizer left" role="separator" aria-orientation="vertical" onpointerdown={(e) => drag(e, "panel")}></div>
-      <RightPanel
-        focus={selection.focus}
-        selected={selectedIds}
-        folder={selection.folder}
-        onopen={(id) => openViewer(id, ids.includes(id) ? ids : [id])}
-        onopenwindow={isMobile ? undefined : (id) => openViewerWindow(id, ids.includes(id) ? ids : [id])}
-        onclose={compact ? () => setPanel(false) : undefined}
-        onchanged={() => {
-          // Folder edits may have reached every item inside.
-          const changed = selection.folder ? undefined : selectedIds;
-          invalidate(changed);
-          broadcast("media", changed);
-          runSearch(false);
-        }}
-      />
-    </div>
-  {/if}
-
-  <div class="status"><StatusBar count={ids.length} {elapsed} selected={selection.set.size} /></div>
+    <div class="status"><StatusBar count={ids.length} {elapsed} selected={selection.set.size} /></div>
+  </div>
 </div>
+
+{#if savingCurrent}
+  <div class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && (savingCurrent = null)}>
+    <div class="dialog confirm" role="dialog" aria-modal="true" aria-labelledby="savecur-title">
+      <header><h2 id="savecur-title">{t("side.saveCurrent.title")}</h2></header>
+      <div class="body form">
+        <p class="query-text">{currentText}</p>
+        <!-- svelte-ignore a11y_autofocus -->
+        <input
+          class="input"
+          placeholder={t("side.saveCurrent.name")}
+          bind:value={savingCurrent.label}
+          autofocus
+          onkeydown={(e) => e.key === "Enter" && savingCurrent?.label.trim() && commitSaveCurrent()}
+        />
+        {#if savingCurrent.error}<p class="err">{savingCurrent.error}</p>{/if}
+      </div>
+      <footer>
+        <span class="grow"></span>
+        <button class="btn ghost" onclick={() => (savingCurrent = null)}>{t("common.cancel")}</button>
+        <button class="btn primary" disabled={!savingCurrent.label.trim()} onclick={commitSaveCurrent}>{t("common.save")}</button>
+      </footer>
+    </div>
+  </div>
+{/if}
 
 {#if modal}
   <QueryModal
@@ -849,6 +988,8 @@
   <ViewerShell
     panes={[{ ids: viewing.list, index: viewing.index }]}
     {settings}
+    {bundle}
+    browseFrom={browseState()}
     onclose={(id) => {
       viewing = null;
       if (id !== undefined) {
@@ -866,11 +1007,17 @@
 {/if}
 
 <style>
+  .lib-root {
+    height: 100vh;
+  }
+  .lib-root.embedded {
+    height: 100%;
+  }
   .app {
     display: grid;
     grid-template-columns: var(--sidebar) minmax(0, 1fr) var(--panel);
     grid-template-rows: minmax(0, 1fr) auto;
-    height: 100vh;
+    height: 100%;
   }
   .sidebar,
   .panel {
@@ -945,6 +1092,13 @@
     color: var(--danger);
     font-size: 13px;
   }
+  .confirm .query-text {
+    margin: 0;
+    font-family: var(--font-editor);
+    font-size: 12px;
+    color: var(--muted);
+    overflow-wrap: anywhere;
+  }
   .confirm .text {
     margin: 0;
     line-height: 1.5;
@@ -967,42 +1121,40 @@
     background: var(--scrim);
     animation: vp-fade var(--t-med) var(--ease);
   }
-  @media (max-width: 760px) {
-    .app {
-      grid-template-columns: minmax(0, 1fr);
-      grid-template-rows: minmax(0, 1fr) auto;
-    }
-    .sidebar {
-      position: fixed;
-      top: 0;
-      bottom: 0;
-      left: 0;
-      width: min(320px, 86vw);
-      z-index: 35;
-      transform: translateX(-102%);
-      transition: transform var(--t-med) var(--ease);
-    }
-    .sidebar.open {
-      transform: none;
-      box-shadow: var(--shadow);
-    }
-    .panel {
-      position: fixed;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      height: 64%;
-      z-index: 33;
-      border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-      overflow: hidden;
-      background: var(--surface);
-      border-top: 1px solid var(--border);
-      box-shadow: var(--shadow);
-      animation: vp-sheet var(--t-med) var(--ease);
-    }
-    .resizer {
-      display: none;
-    }
+  .app.compact {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+  .compact .sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: min(320px, 86%);
+    z-index: 35;
+    transform: translateX(-102%);
+    transition: transform var(--t-med) var(--ease);
+  }
+  .compact .sidebar.open {
+    transform: none;
+    box-shadow: var(--shadow);
+  }
+  .compact .panel {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 64%;
+    z-index: 33;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    overflow: hidden;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    box-shadow: var(--shadow);
+    animation: vp-sheet var(--t-med) var(--ease);
+  }
+  .compact .resizer {
+    display: none;
   }
   @keyframes vp-sheet {
     from {
