@@ -38,15 +38,18 @@ vp-cache.workspace = true
 vp-media.workspace = true
 vp-crypto.workspace = true
 vp-shard.workspace = true
-zip = { version = "9", default-features = false, features = ["deflate"] }
+vp-ml.workspace = true
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+zip ={ version = "9", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tempfile = "3"
-image = { version = "0.25", default-features = false, features = ["jpeg"] }
 
 # System-wide restore shortcut for the panic key (desktop only).
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-global-shortcut = "2"
+# Image analysis runs models on desktop GPUs; phones only show its results.
+vp-ml = { workspace = true, features = ["onnx"] }
 
 # OS credential stores for driver secrets (network passwords never go into the bundle).
 [target.'cfg(windows)'.dependencies]

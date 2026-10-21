@@ -23,6 +23,9 @@ pub struct CropRef {
     pub len: u32,
 }
 
+/// A tagger result: tag, category (0 general, 4 character), score.
+pub type TagRow = (String, i64, f32);
+
 #[derive(Debug, Clone)]
 pub struct NewFace {
     pub model_id: i64,
@@ -126,7 +129,7 @@ impl Db {
 
     /// Stores one item's results: it was analysed by `models` (`ok` = the image was read),
     /// its faces from these models are replaced, and so are its tags from `tagger`.
-    pub fn record_analysis(&self, media_id: i64, models: &[i64], ok: bool, faces: &[NewFace], tags: Option<(i64, &[(String, i64, f32)])>, now_ms: i64) -> Result<()> {
+    pub fn record_analysis(&self, media_id: i64, models: &[i64], ok: bool, faces: &[NewFace], tags: Option<(i64, &[TagRow])>, now_ms: i64) -> Result<()> {
         self.batch(|db| {
             for &m in models {
                 db.conn.execute("DELETE FROM face WHERE media_id = ?1 AND model_id = ?2", params![media_id, m])?;
@@ -167,6 +170,25 @@ impl Db {
             }
             Ok(())
         })
+    }
+
+    /// Models that have analysed item `media`.
+    pub fn models_done(&self, media: i64) -> Result<Vec<i64>> {
+        let mut stmt = self.conn.prepare_cached("SELECT model_id FROM ml_done WHERE media_id = ?1")?;
+        let rows = stmt.query_map([media], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// The model most faces of `kind` with vectors come from (the one grouping uses).
+    pub fn main_face_model(&self, kind: &str) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT model_id FROM face WHERE kind = ?1 AND embedding IS NOT NULL GROUP BY model_id ORDER BY COUNT(*) DESC LIMIT 1",
+                [kind],
+                |r| r.get(0),
+            )
+            .optional()?)
     }
 
     /// Faces of `kind` made by embedder `model` that have a vector (hidden people's included).

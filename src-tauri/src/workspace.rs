@@ -474,7 +474,7 @@ impl Workspace {
         Ok(driver)
     }
 
-    fn seal_thumb(&self, data: &[u8]) -> CmdResult<Vec<u8>> {
+    pub(crate) fn seal_thumb(&self, data: &[u8]) -> CmdResult<Vec<u8>> {
         Ok(match &self.key {
             Some(k) => vp_crypto::seal(k, data, b"thumb")?,
             None => data.to_vec(),

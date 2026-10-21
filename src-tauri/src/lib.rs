@@ -4,6 +4,7 @@ mod commands;
 mod error;
 mod media;
 mod media_server;
+mod ml;
 mod platform;
 mod recent;
 mod secrets;
@@ -138,6 +139,16 @@ pub fn run() {
             shards::shard_from_source,
             shards::shard_export,
             shards::copy_to_source,
+            ml::ml_status,
+            ml::ml_analyze,
+            ml::ml_regroup,
+            ml::ml_people,
+            ml::ml_person_faces,
+            ml::ml_media_faces,
+            ml::ml_rename_person,
+            ml::ml_merge_people,
+            ml::ml_assign_faces,
+            ml::ml_hide_person,
             shards::shard_verify,
             shards::shard_compact,
             shards::shard_set_encryption,

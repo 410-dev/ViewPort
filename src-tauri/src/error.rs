@@ -98,6 +98,20 @@ impl From<std::io::Error> for CmdError {
     }
 }
 
+impl From<vp_ml::Error> for CmdError {
+    fn from(e: vp_ml::Error) -> Self {
+        use vp_ml::Error as E;
+        let code = match &e {
+            E::Unavailable => "unsupported",
+            E::Runtime(_) => "ml_runtime",
+            E::Model(_) => "ml_model",
+            E::Pack(_) => "ml_pack",
+            E::Io(_) => "io",
+        };
+        CmdError::new(code, e)
+    }
+}
+
 impl From<serde_json::Error> for CmdError {
     fn from(e: serde_json::Error) -> Self {
         CmdError::new("json", e)

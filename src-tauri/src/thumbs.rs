@@ -23,7 +23,27 @@ fn status(code: StatusCode) -> Response<Vec<u8>> {
 
 pub fn handle<R: Runtime>(ctx: UriSchemeContext<'_, R>, request: tauri::http::Request<Vec<u8>>, responder: UriSchemeResponder) {
     let app = ctx.app_handle().clone();
-    let id = request.uri().path().trim_start_matches('/').parse::<i64>();
+    let path = request.uri().path().trim_start_matches('/').to_string();
+    // `face-<id>`: a face picture of the people view.
+    if let Some(face) = path.strip_prefix("face-").and_then(|f| f.parse::<i64>().ok()) {
+        tauri::async_runtime::spawn(async move {
+            let ws = app.state::<AppState>().workspace.read().unwrap().clone();
+            let Some(ws) = ws else { return responder.respond(status(StatusCode::SERVICE_UNAVAILABLE)) };
+            let result = tauri::async_runtime::spawn_blocking(move || crate::ml::face_crop(&ws, face)).await;
+            responder.respond(match result {
+                Ok(Ok(Some(data))) => Response::builder()
+                    .header(header::CONTENT_TYPE, "image/jpeg")
+                    .header(header::CACHE_CONTROL, "max-age=3600")
+                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                    .body(data)
+                    .unwrap(),
+                Ok(Ok(None)) => status(StatusCode::NOT_FOUND),
+                _ => status(StatusCode::INTERNAL_SERVER_ERROR),
+            });
+        });
+        return;
+    }
+    let id = path.parse::<i64>();
     tauri::async_runtime::spawn(async move {
         let Ok(id) = id else { return responder.respond(status(StatusCode::BAD_REQUEST)) };
         let state = app.state::<AppState>();

@@ -5211,6 +5211,7 @@ dependencies = [
  "vp-db",
  "vp-driver",
  "vp-media",
+ "vp-ml",
  "vp-query",
  "vp-scan",
  "vp-shard",

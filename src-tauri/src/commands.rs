@@ -381,6 +381,9 @@ pub(crate) fn scan_now(app: &AppHandle, ws: Arc<Workspace>, source: SourceRow) -
     if result.is_ok() && settings.thumbnails_after_scan && ws.autosave() {
         crate::thumbs::spawn_backfill(app.clone(), ws.clone());
     }
+    if result.is_ok() && ws.autosave() && crate::recent::cached_app_settings().ml.auto_analyze {
+        crate::ml::start(app, ws.clone());
+    }
     result
 }
 
