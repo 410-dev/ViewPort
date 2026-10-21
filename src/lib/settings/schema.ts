@@ -310,6 +310,7 @@ export const SECTIONS: Section[] = [
           { kind: "number", ...app({ path: "viewer.swipe_threshold", label: "set.swipeThreshold", help: "set.swipeThreshold.help" }), min: 5, max: 60, step: 5, scale: 0.01, unit: "%" },
           { kind: "number", ...app({ path: "viewer.swipe_ms", label: "set.swipeMs" }), min: 0, max: 1000, step: 20, unit: "ms" },
           { kind: "number", ...app({ path: "viewer.display_max_px", label: "set.displayMax", help: "set.displayMax.help" }), min: 0, max: 16384, step: 256, unit: "px" },
+          { kind: "toggle", ...app({ path: "viewer.fit_screen", label: "set.fitScreen", help: "set.fitScreen.help" }) },
           { kind: "number", ...app({ path: "viewer.display_quality", label: "set.displayQuality" }), min: 1, max: 100, step: 1 },
           { kind: "list", ...app({ path: "viewer.convert_image_extensions", label: "set.convertImageExt", help: "set.convertImageExt.help" }) },
         ],

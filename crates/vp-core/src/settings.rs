@@ -384,6 +384,14 @@ pub struct ViewerSettings {
     pub display_max_px: u32,
     /// JPEG quality of those display copies.
     pub display_quality: u8,
+    /// Show images no larger than the screen needs (its longer edge in device pixels, at
+    /// most `display_max_px`). Sliding a picture several times the screen's size in
+    /// means decoding and rasterizing it on the fly, which shows as black or torn tiles.
+    /// Zooming in loads larger copies and finally the original.
+    pub fit_screen: bool,
+    /// The screen size is rounded up to a multiple of this, so window size changes reuse
+    /// the same copies.
+    pub fit_screen_step_px: u32,
     /// Image formats the WebView cannot show (HEIF/HEIC): they are always shown as a JPEG
     /// copy, decoded by the OS (Android) or FFmpeg.
     pub convert_image_extensions: Vec<String>,
@@ -404,6 +412,8 @@ impl Default for ViewerSettings {
             swipe_ms: 220,
             display_max_px: if MOBILE { 4096 } else { 8192 },
             display_quality: 90,
+            fit_screen: true,
+            fit_screen_step_px: 512,
             convert_image_extensions: ["heic", "heif", "hif"].map(String::from).to_vec(),
         }
     }

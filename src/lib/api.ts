@@ -239,6 +239,8 @@ export interface AppSettings {
     swipe_ms: number;
     display_max_px: number;
     display_quality: number;
+    fit_screen: boolean;
+    fit_screen_step_px: number;
     convert_image_extensions: string[];
   };
 }

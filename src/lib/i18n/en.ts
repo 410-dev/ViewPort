@@ -544,6 +544,8 @@ const en: Record<Key, string> = {
   "set.swipeThreshold.help": "Dragging this fraction of the screen width, or flicking, goes to the next item; shorter drags spring back.",
   "set.swipeMs": "Swipe animation",
   "set.displayMax": "Large image display size",
+  "set.fitScreen": "Fit images to the screen resolution",
+  "set.fitScreen.help": "Shows a copy scaled to what the screen needs (its longer edge in device pixels). Keeps large images from flashing black or tearing while swiping. Zooming in loads larger copies and the original.",
   "set.displayMax.help": "Images with a longer edge above this are first shown as a copy scaled to it; the original loads only when zooming in past that. 0 always shows originals.",
   "set.displayQuality": "Display copy quality",
   "side.addShard": "Add shard",

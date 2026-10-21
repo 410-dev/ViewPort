@@ -243,6 +243,9 @@ UI에 전달되며 작업별로 `progress.emit_interval_ms` 간격으로 제한�
   (`inSampleSize`)을, 그 밖에는 원본을 디코딩해 줄인다. 뷰어는 사본이 로드되는 동안 썸네일을 보여 주고, 확대해 사본의
   화소가 모자라면 두 배 크기 사본 → … → 원본 순으로 바꾼다. 미리보기 패널·이웃 미리 읽기도 사본을 쓴다.
   Android 썸네일 생성도 같은 OS 축소 디코딩을 쓴다(못 읽는 형식만 Rust 디코더).
+  `viewer.fit_screen`이면 뷰어의 첫 사본은 화면에 필요한 크기(창의 긴 변 × devicePixelRatio를
+  `viewer.fit_screen_step_px` 단위로 올림, 최대 `display_max_px`)다. 화면보다 몇 배 큰 원본을 넘기기 중에 디코딩·래스터하면
+  타일이 검게 비거나 이음새가 보이기 때문이다. 넘기기 중에는 불투명 이미지 아래 썸네일을 깔고, 이동량은 기기 픽셀에 맞춘다.
 - **HEIF/HEIC**: WebView(WebView2·Android WebView)가 직접 그리지 못하는 형식(`viewer.convert_image_extensions`,
   기본 heic/heif/hif)은 크기와 무관하게 항상 표시용 JPEG 사본으로 제공한다(`fit`이 없으면 원본 크기). Rust 디코더가 못 읽는
   이미지(HEIF, AVIF 등)는 `Workspace::foreign_image`가 Android OS 디코더나 FFmpeg(`Ffmpeg::image`, 원본 크기 BMP → Rust로 축소)로
