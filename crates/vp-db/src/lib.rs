@@ -1200,32 +1200,60 @@ impl Db {
                  WHERE a.source_id = ?1",
                 params![from, to, prefix],
             )?;
-            db.conn.execute_batch(
-                "DELETE FROM ext_value WHERE media_id IN (SELECT dst FROM temp.media_map);
-                 INSERT INTO ext_value (media_id, field_id, int_val, real_val, text_val, origin)
-                    SELECT m.dst, e.field_id, e.int_val, e.real_val, e.text_val, e.origin
-                    FROM ext_value e JOIN temp.media_map m ON m.src = e.media_id;
-                 INSERT OR REPLACE INTO media_stats (media_id, view_count, total_view_ms, last_viewed_ms, score)
-                    SELECT m.dst, s.view_count, s.total_view_ms, s.last_viewed_ms, s.score
-                    FROM media_stats s JOIN temp.media_map m ON m.src = s.media_id;
-                 INSERT OR IGNORE INTO media_flag (media_id, flag)
-                    SELECT m.dst, f.flag FROM media_flag f JOIN temp.media_map m ON m.src = f.media_id;
-                 DELETE FROM loop_segment WHERE media_id IN (SELECT dst FROM temp.media_map);
-                 INSERT INTO loop_segment (media_id, label, start_ms, end_ms, sort_index, autoplay)
-                    SELECT m.dst, l.label, l.start_ms, l.end_ms, l.sort_index, l.autoplay
-                    FROM loop_segment l JOIN temp.media_map m ON m.src = l.media_id;
-                 INSERT OR REPLACE INTO media_probe (media_id, ok, container, video_codec, audio_codec, compatible, probed_ms)
-                    SELECT m.dst, p.ok, p.container, p.video_codec, p.audio_codec, p.compatible, p.probed_ms
-                    FROM media_probe p JOIN temp.media_map m ON m.src = p.media_id;
-                 UPDATE media SET
-                    duration_ms = COALESCE(duration_ms, (SELECT a.duration_ms FROM media a JOIN temp.media_map m ON m.src = a.id WHERE m.dst = media.id)),
-                    width = COALESCE(width, (SELECT a.width FROM media a JOIN temp.media_map m ON m.src = a.id WHERE m.dst = media.id)),
-                    height = COALESCE(height, (SELECT a.height FROM media a JOIN temp.media_map m ON m.src = a.id WHERE m.dst = media.id))
-                 WHERE id IN (SELECT dst FROM temp.media_map);
-                 DROP TABLE temp.media_map;",
-            )?;
+            db.copy_mapped_metadata()?;
             Ok(n)
         })
+    }
+
+    /// Like [`Db::copy_media_metadata`] for single items: each `(src, rel_path)` pair copies
+    /// item `src`'s values to the item at `rel_path` in source `to`. Returns how many matched.
+    pub fn copy_metadata_to(&self, to: i64, pairs: &[(i64, String)]) -> Result<usize> {
+        self.batch(|db| {
+            db.conn.execute_batch(
+                "DROP TABLE IF EXISTS temp.media_map;
+                 CREATE TEMP TABLE media_map (src INTEGER PRIMARY KEY, dst INTEGER NOT NULL);",
+            )?;
+            let mut n = 0;
+            {
+                let mut stmt = db.conn.prepare(
+                    "INSERT OR IGNORE INTO temp.media_map (src, dst) SELECT ?1, id FROM media WHERE source_id = ?2 AND rel_path = ?3",
+                )?;
+                for (src, rel) in pairs {
+                    n += stmt.execute(params![src, to, rel])?;
+                }
+            }
+            db.copy_mapped_metadata()?;
+            Ok(n)
+        })
+    }
+
+    /// Copies values from `temp.media_map`'s `src` items to its `dst` items, then drops the map.
+    fn copy_mapped_metadata(&self) -> Result<()> {
+        self.conn.execute_batch(
+            "DELETE FROM ext_value WHERE media_id IN (SELECT dst FROM temp.media_map);
+             INSERT INTO ext_value (media_id, field_id, int_val, real_val, text_val, origin)
+                SELECT m.dst, e.field_id, e.int_val, e.real_val, e.text_val, e.origin
+                FROM ext_value e JOIN temp.media_map m ON m.src = e.media_id;
+             INSERT OR REPLACE INTO media_stats (media_id, view_count, total_view_ms, last_viewed_ms, score)
+                SELECT m.dst, s.view_count, s.total_view_ms, s.last_viewed_ms, s.score
+                FROM media_stats s JOIN temp.media_map m ON m.src = s.media_id;
+             INSERT OR IGNORE INTO media_flag (media_id, flag)
+                SELECT m.dst, f.flag FROM media_flag f JOIN temp.media_map m ON m.src = f.media_id;
+             DELETE FROM loop_segment WHERE media_id IN (SELECT dst FROM temp.media_map);
+             INSERT INTO loop_segment (media_id, label, start_ms, end_ms, sort_index, autoplay)
+                SELECT m.dst, l.label, l.start_ms, l.end_ms, l.sort_index, l.autoplay
+                FROM loop_segment l JOIN temp.media_map m ON m.src = l.media_id;
+             INSERT OR REPLACE INTO media_probe (media_id, ok, container, video_codec, audio_codec, compatible, probed_ms)
+                SELECT m.dst, p.ok, p.container, p.video_codec, p.audio_codec, p.compatible, p.probed_ms
+                FROM media_probe p JOIN temp.media_map m ON m.src = p.media_id;
+             UPDATE media SET
+                duration_ms = COALESCE(duration_ms, (SELECT a.duration_ms FROM media a JOIN temp.media_map m ON m.src = a.id WHERE m.dst = media.id)),
+                width = COALESCE(width, (SELECT a.width FROM media a JOIN temp.media_map m ON m.src = a.id WHERE m.dst = media.id)),
+                height = COALESCE(height, (SELECT a.height FROM media a JOIN temp.media_map m ON m.src = a.id WHERE m.dst = media.id))
+             WHERE id IN (SELECT dst FROM temp.media_map);
+             DROP TABLE temp.media_map;",
+        )?;
+        Ok(())
     }
 
     /// Moves item `id` to `rel_path` in source `to`, keeping its id and everything recorded

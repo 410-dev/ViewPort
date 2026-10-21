@@ -859,6 +859,232 @@ fn export_files(ws: &Workspace, shard: &Shard, paths: &[String], dest: &Path, ta
     Ok(failed)
 }
 
+/// A folder of a source picked for copying (`path` "" = the whole source).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderPick {
+    pub source_id: i64,
+    pub path: String,
+}
+
+/// One file to copy: an item of the library and where it lands in the target.
+struct CopyJob {
+    id: i64,
+    source_id: i64,
+    rel: String,
+    target: String,
+    size: u64,
+    created_ms: Option<i64>,
+    modified_ms: Option<i64>,
+}
+
+/// Copies items (`ids`) and folders of the library into folder `dest` of source `to`, in
+/// the background: from any source into a shard, or out of a shard into a writable one.
+/// A picked item or folder lands in `dest` by its own name; a whole source (`path` "")
+/// lands with its contents directly in `dest`. Files already at the target are skipped.
+/// Tags, ratings, statistics and loop segments follow; thumbnails and (into a shard)
+/// converted copies too, so nothing is made twice.
+#[tauri::command]
+pub async fn copy_to_source(app: AppHandle, ids: Vec<i64>, folders: Vec<FolderPick>, to: i64, dest: String) -> CmdResult<()> {
+    let ws = workspace(&app)?;
+    let registry = app.state::<AppState>().drivers.clone();
+    let (ws2, reg2) = (ws.clone(), registry.clone());
+    let (target, jobs) = blocking(move || {
+        let target = ws2.read_db.lock().unwrap().source(to)?.ok_or_else(|| CmdError::new("not_found", "source"))?;
+        let dest = vp_shard::normalize_path(&dest).ok_or_else(|| CmdError::new("invalid", "invalid folder"))?;
+        let jobs = copy_jobs(&ws2, &ids, &folders, &dest)?;
+        if jobs.iter().any(|j| j.source_id == to) {
+            return Err(CmdError::new("invalid", "a source cannot be copied into itself"));
+        }
+        if target.driver == DRIVER {
+            writable(&ws2, &target)?;
+        } else if !ws2.driver(&reg2, &target)?.capabilities().write {
+            return Err(CmdError::new("unsupported", "files cannot be written to this source"));
+        }
+        Ok((target, jobs))
+    })
+    .await?;
+    std::thread::spawn(move || {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let task = tasks::begin_with_cancel("copy_to_source", &target.name, Unit::Bytes, None, Some(cancel.clone()));
+        let rescan = || {
+            let _ = crate::commands::scan_now(&app, ws.clone(), target.clone());
+        };
+        let result = copy_files(&ws, &registry, &target, jobs, &task, &cancel, rescan);
+        match result {
+            Ok((0, 0)) => task.finish(),
+            Ok((failed, skipped)) => task.fail(format!("{failed} files failed, {skipped} already existed")),
+            Err(e) => end_task::<()>(&task, &Err(e)),
+        }
+        if target.driver == DRIVER {
+            maybe_compact(&ws, &target);
+        }
+    });
+    Ok(())
+}
+
+/// Streams `reader` into a new file at `path` (its folders are made), keeping `modified_ms`.
+fn write_local(path: &Path, reader: &dyn MediaReader, modified_ms: Option<i64>, task: &Task, cancel: &AtomicBool) -> CmdResult<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let f = std::fs::File::create(path)?;
+    let mut buf = vec![0u8; PIECE];
+    let mut off = 0u64;
+    let result = (|| -> CmdResult<()> {
+        while off < reader.len() {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(cancelled());
+            }
+            let n = reader.read_full_at(off, &mut buf)?;
+            if n == 0 {
+                break;
+            }
+            std::io::Write::write_all(&mut &f, &buf[..n])?;
+            off += n as u64;
+            task.add(n as u64);
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        drop(f);
+        let _ = std::fs::remove_file(path);
+        return result;
+    }
+    if let Some(m) = modified_ms.and_then(|m| u64::try_from(m).ok()) {
+        let _ = f.set_modified(UNIX_EPOCH + std::time::Duration::from_millis(m));
+    }
+    Ok(())
+}
+
+fn copy_jobs(ws: &Workspace, ids: &[i64], folders: &[FolderPick], dest: &str) -> CmdResult<Vec<CopyJob>> {
+    let db = ws.read_db.lock().unwrap();
+    let job = |b: &vp_db::MediaBrief, target: String| CopyJob {
+        id: b.id,
+        source_id: b.source_id,
+        rel: join_rel(&b.folder, &b.name),
+        target,
+        size: b.size,
+        created_ms: b.created_ms,
+        modified_ms: b.modified_ms,
+    };
+    let mut jobs: Vec<CopyJob> = db.media_brief(ids)?.iter().map(|b| job(b, join_rel(dest, &b.name))).collect();
+    let reg = db.field_registry()?;
+    let ctx = vp_db::Db::compile_context(now_ms(), 0);
+    for f in folders {
+        let path = vp_shard::normalize_path(&f.path).ok_or_else(|| CmdError::new("invalid", "invalid folder"))?;
+        let scope = vp_db::Scope { source_id: Some(f.source_id), folder: Some(path.clone()), recursive: true, ..Default::default() };
+        let found = db.search_in(&vp_query::Query::default(), &reg, &ctx, &scope)?;
+        // Paths below the picked folder's parent, so the folder keeps its own name.
+        let base = path.rsplit_once('/').map(|(b, _)| b.len() + 1).unwrap_or(0);
+        for b in db.media_brief(&found)? {
+            let rel = join_rel(&b.folder, &b.name);
+            let below = if path.is_empty() { rel.as_str() } else { &rel[base..] };
+            jobs.push(job(&b, join_rel(dest, below)));
+        }
+    }
+    Ok(jobs)
+}
+
+/// Runs the copies, then `rescan` (which adds the copies to the library) and records what
+/// followed them; returns `(failed, skipped)`.
+fn copy_files(
+    ws: &Workspace,
+    registry: &vp_driver::DriverRegistry,
+    to: &SourceRow,
+    jobs: Vec<CopyJob>,
+    task: &Task,
+    cancel: &AtomicBool,
+    rescan: impl FnOnce(),
+) -> CmdResult<(usize, usize)> {
+    let shard = if to.driver == DRIVER { Some(writable(ws, to)?) } else { None };
+    let out = ws.driver(registry, to)?;
+    let max_whole = ws.settings.read().unwrap().cache.max_item_bytes;
+    task.set(0, Some(jobs.iter().map(|j| j.size).sum()));
+    let (mut failed, mut skipped) = (0, 0);
+    let mut copied = Vec::new();
+    let mut thumbs = Vec::new();
+    let mut variants = Vec::new();
+    let mut origins: std::collections::HashMap<i64, Arc<dyn vp_driver::MediaDriver>> = Default::default();
+    for j in jobs {
+        if ws.closed.load(Ordering::Relaxed) {
+            return Err(cancelled());
+        }
+        task.detail(&j.target);
+        if out.stat(&j.target).is_ok() {
+            skipped += 1;
+            task.add(j.size);
+            continue;
+        }
+        let one = (|| -> CmdResult<()> {
+            let from = match origins.get(&j.source_id) {
+                Some(d) => d.clone(),
+                None => {
+                    let s = ws.read_db.lock().unwrap().source(j.source_id)?.ok_or_else(|| CmdError::new("not_found", "source"))?;
+                    let d = ws.driver(registry, &s)?;
+                    origins.insert(j.source_id, d.clone());
+                    d
+                }
+            };
+            let reader = from.open(&j.rel)?;
+            match (&shard, out.local_path(&j.target)) {
+                (Some(s), _) => put_file(s, &j.target, reader.as_ref(), j.created_ms, j.modified_ms, task, cancel)?,
+                (None, Some(path)) => write_local(&path, reader.as_ref(), j.modified_ms, task, cancel)?,
+                (None, None) if reader.len() <= max_whole => {
+                    let mut data = vec![0u8; reader.len() as usize];
+                    let n = reader.read_full_at(0, &mut data)?;
+                    data.truncate(n);
+                    out.write(&j.target, &data)?;
+                    task.add(n as u64);
+                }
+                (None, None) => return Err(CmdError::new("too_large", "the file is too large to copy to this source")),
+            }
+            Ok(())
+        })();
+        match one {
+            Err(e) if e.code == "cancelled" => return Err(e),
+            Err(_) => {
+                failed += 1;
+                continue;
+            }
+            Ok(()) => {}
+        }
+        // The thumbnail goes along: into the shard, or the bundle's packs. Its row is
+        // recorded after the scan below, once the copy has an id.
+        if let Some(t) = ws.stored_thumb(j.id, &j.rel, j.source_id)?
+            && let Some(row) = ws.keep_thumb(shard.as_deref(), &j.target, &t)?
+        {
+            thumbs.push((j.target.clone(), row));
+        }
+        if let Some(s) = &shard
+            && let Some(v) = ws.variant_reader(j.id)?
+        {
+            let mut attrs = serde_json::Map::new();
+            attrs.insert("mime".into(), "video/mp4".into());
+            let len = v.len();
+            if fill(s.blob_writer(Stream::Converted, &j.target, Some(len), attrs)?, v.as_ref(), task, cancel).is_ok() {
+                variants.push((j.target.clone(), len));
+            }
+        }
+        copied.push((j.id, j.target));
+    }
+    rescan();
+    ws.write_db.lock().unwrap().copy_metadata_to(to.id, &copied)?;
+    let known = ws.read_db.lock().unwrap().known_files(to.id)?;
+    for (rel, row) in thumbs {
+        if let Some(k) = known.get(&rel) {
+            ws.write_db.lock().unwrap().set_thumbnail(k.id, &row)?;
+        }
+    }
+    let db = ws.write_db.lock().unwrap();
+    for (rel, len) in variants {
+        if let Some(k) = known.get(&rel) {
+            db.set_variant(k.id, VARIANT_IN_SHARD, len, now_ms())?;
+        }
+    }
+    Ok((failed, skipped))
+}
+
 // ---------------------------------------------------------------- maintenance
 
 #[tauri::command]
@@ -1019,5 +1245,76 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("s.vpshard")).unwrap();
         assert_eq!(unique_dir(dir.path(), "s").file_name().unwrap(), "s (2).vpshard");
         assert_eq!(folder_stem(Path::new("/x/My.vpshard")), "My");
+    }
+}
+
+#[cfg(test)]
+mod copy_tests {
+    use super::*;
+    use vp_driver::DriverRegistry;
+
+    fn scan(ws: &Workspace, registry: &DriverRegistry, id: i64) {
+        let source = ws.read_db.lock().unwrap().source(id).unwrap().unwrap();
+        let drv = ws.driver(registry, &source).unwrap();
+        let settings = ws.settings.read().unwrap().scan.clone();
+        let cancel = AtomicBool::new(false);
+        vp_scan::Scanner { db: &ws.write_db, driver: drv.as_ref(), settings: &settings, source_id: id, include_nonmedia: true, now_ms: 1, cancel: &cancel }
+            .run(&mut |_| {})
+            .unwrap();
+    }
+
+    fn add(ws: &Workspace, name: &str, driver: &str, root: &str, config: serde_json::Value) -> i64 {
+        ws.write_db.lock().unwrap().add_source(&NewSource { name: name.into(), driver: driver.into(), config, root: root.into() }).unwrap()
+    }
+
+    fn copy(ws: &Workspace, registry: &DriverRegistry, ids: &[i64], folders: &[FolderPick], to: i64, dest: &str) -> (usize, usize) {
+        let target = ws.read_db.lock().unwrap().source(to).unwrap().unwrap();
+        let jobs = copy_jobs(ws, ids, folders, dest).unwrap();
+        let task = tasks::begin("copy_to_source", "test", Unit::Bytes, None);
+        let cancel = AtomicBool::new(false);
+        copy_files(ws, registry, &target, jobs, &task, &cancel, || scan(ws, registry, to)).unwrap()
+    }
+
+    #[test]
+    fn items_and_folders_copy_into_a_shard_and_back_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("Lib.vpbun");
+        let ws = Workspace::create(&root, "Lib").unwrap();
+        let registry = DriverRegistry::with_builtin();
+        let photos = dir.path().join("photos");
+        std::fs::create_dir_all(photos.join("trip/day1")).unwrap();
+        std::fs::write(photos.join("a.jpg"), b"aaa").unwrap();
+        std::fs::write(photos.join("trip/b.jpg"), b"bbbb").unwrap();
+        std::fs::write(photos.join("trip/day1/c.jpg"), b"ccccc").unwrap();
+        let local = add(&ws, "photos", "local", &photos.display().to_string(), serde_json::json!({}));
+        scan(&ws, &registry, local);
+        let known = ws.read_db.lock().unwrap().known_files(local).unwrap();
+        let a = known["a.jpg"].id;
+        // A value that has to follow the copy.
+        ws.write_db.lock().unwrap().record_view(a, 1, 5_000, 1e9).unwrap();
+
+        let shard_dir = root.join(vp_bundle::SHARDS_DIR).join("s.vpshard");
+        Shard::create(&shard_dir, &CreateOptions { chunk_bytes: 1 << 20, ..Default::default() }).unwrap();
+        let shard = add(&ws, "s", DRIVER, "shards/s.vpshard", serde_json::json!({ "in_bundle": true }));
+
+        // An item and a folder (with its own name) into the shard.
+        let folders = [FolderPick { source_id: local, path: "trip".into() }];
+        assert_eq!(copy(&ws, &registry, &[a], &folders, shard, "in"), (0, 0));
+        let inside = ws.read_db.lock().unwrap().known_files(shard).unwrap();
+        let mut paths: Vec<&str> = inside.keys().map(String::as_str).collect();
+        paths.sort();
+        assert_eq!(paths, ["in/a.jpg", "in/trip/b.jpg", "in/trip/day1/c.jpg"]);
+        let copied = ws.read_db.lock().unwrap().media_detail(inside["in/a.jpg"].id).unwrap().unwrap();
+        assert_eq!(copied.view_count, 1);
+        // Again: everything is already there.
+        assert_eq!(copy(&ws, &registry, &[a], &folders, shard, "in"), (0, 3));
+
+        // The whole shard out into a new folder of the local source.
+        let out = [FolderPick { source_id: shard, path: String::new() }];
+        assert_eq!(copy(&ws, &registry, &[], &out, local, "from-shard"), (0, 0));
+        assert_eq!(std::fs::read(photos.join("from-shard/in/trip/day1/c.jpg")).unwrap(), b"ccccc");
+        let back = ws.read_db.lock().unwrap().known_files(local).unwrap();
+        assert!(back.contains_key("from-shard/in/a.jpg"));
+        ws.close_shard(shard).unwrap();
     }
 }

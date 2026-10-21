@@ -432,6 +432,12 @@ fn metadata_follows_files_into_another_source() {
     assert_eq!((d.width, d.view_count), (Some(1920), 1));
     assert_eq!(lib.db.media_detail(2).unwrap().unwrap().values, d.values);
     assert_eq!(lib.ids("태그(바다)"), [1, 2, b2]);
+    // Single items copied elsewhere (by target path) get the values too.
+    let one = copy_of(&lib.db, "picked/b.jpg");
+    assert_eq!(lib.db.copy_metadata_to(shard, &[(2, "picked/b.jpg".into()), (1, "not/there.jpg".into())]).unwrap(), 1);
+    assert_eq!(lib.db.media_detail(one).unwrap().unwrap().values, d.values);
+    assert_eq!(lib.ids("태그(바다)"), [1, 2, b2, one]);
+    lib.db.delete_media(one).unwrap();
 
     // Move: the item itself changes source and keeps its id; one at the target is replaced.
     copy_of(&lib.db, "b10.jpg");

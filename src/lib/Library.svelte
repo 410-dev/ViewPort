@@ -101,6 +101,8 @@
 
   /** Sources whose storage is not connected (struck through, items hidden). */
   let offline = $state<number[]>([]);
+  /** Copying between sources is offered only while the bundle has a shard. */
+  const hasShard = $derived(sources.some((s) => s.driver === "shard"));
   // svelte-ignore state_referenced_locally
   let localPanel = $state(false);
   /** Panel visibility: a device preference, but per pane for split-view explorers. */
@@ -399,14 +401,15 @@
   let toolbar: Toolbar;
   function onKey(e: KeyboardEvent) {
     if (embedded && !embedded.active) return;
-    if (!settings || viewing || modal || savingCurrent || showSettings || sourceDialog || shardDialog || shardPanel !== null) return;
+    if (!settings || viewing || modal || savingCurrent || copying || showSettings || sourceDialog || shardDialog || shardPanel !== null) return;
     const k = settings.keys;
     if (matches(e, k.focus_search)) toolbar?.focusSearch();
     else if (matches(e, k.query_editor)) modal = { editing: null };
     else if (matches(e, k.open_new_window) && selection.focus != null && !isTyping(e))
       openViewerWindow(selection.focus, ids.includes(selection.focus) ? ids : [selection.focus]);
     else if (isTyping(e)) return;
-    else if (matches(e, k.toggle_panel)) setPanel(!panelVisible); else if (matches(e, k.view_grid)) setView("grid");
+    else if (matches(e, k.toggle_panel)) setPanel(!panelVisible);
+    else if (matches(e, k.view_grid)) setView("grid");
     else if (matches(e, k.view_list)) setView("list");
     else if (matches(e, k.view_tree)) setView("tree");
     else if (e.key === "Backspace" && selected !== null && folder) folder = folder.split("/").slice(0, -1).join("/");
@@ -436,6 +439,7 @@
     { label: t("sel.info"), icon: "info", action: () => setPanel(true) },
     ...(selection.set.size === 1 ? [{ label: t("sel.rename"), icon: "pencil" as const, action: () => startRename([...selection.set][0]) }] : []),
     { label: t("sel.move"), icon: "folder", action: () => startMove([...selection.set]) },
+    ...(hasShard ? [{ label: t("sel.copyTo"), icon: "copy" as const, action: () => startCopy([...selection.set], []) }] : []),
     { label: t("sel.export"), icon: "download", action: () => exportSelected([...selection.set]) },
     { label: t("sel.all"), icon: "checkSquare", action: () => selection.selectAll(ids) },
     { label: t("sel.clear"), icon: "x", action: () => selection.clear() },
@@ -523,6 +527,33 @@
     if (selected !== null) api.childFolders(selected, folder).then((l) => (subfolders = l)).catch(() => {});
   }
 
+  // ---- copy to another source: into a shard, or out of one (only while the bundle has a shard)
+  type FolderPick = { sourceId: number; path: string };
+  let copying = $state<{ ids: number[]; folders: FolderPick[]; targets: { id: number; name: string }[] } | null>(null);
+  $effect(() => {
+    if (copying) return onBack(() => (copying = null));
+  });
+
+  /** Items of shards may go anywhere else; anything else only into a shard. */
+  async function startCopy(list: number[], folders: FolderPick[]) {
+    const origin = new Set([...(await briefsOf(list)).map((b) => b.source_id), ...folders.map((f) => f.sourceId)]);
+    const isShard = (id: number) => sources.find((s) => s.id === id)?.driver === "shard";
+    const fromShards = [...origin].every(isShard);
+    const targets = sources
+      .filter((s) => !origin.has(s.id) && s.enabled && !offline.includes(s.id) && (fromShards || s.driver === "shard"))
+      .map((s) => ({ id: s.id, name: s.name }));
+    if (targets.length === 0) return alert(t("copy.noTarget"));
+    copying = { ids: list, folders, targets };
+  }
+
+  async function commitCopy(dest: string, to: number) {
+    const c = copying;
+    copying = null;
+    if (!c) return;
+    // Runs in the background (status bar); the target's rescan brings the copies in.
+    api.copyToSource(c.ids, c.folders, to, dest).catch((e) => alert(asCmdError(e).message));
+  }
+
   // ---- folder actions (a folder's context menu)
   const parentOf = (path: string) => path.split("/").slice(0, -1).join("/");
   const baseName = (path: string) => path.split("/").at(-1) ?? path;
@@ -559,6 +590,7 @@
         ]),
     { label: t("sel.rename"), icon: "pencil", action: folderAction((f) => (renaming = { folder: f, name: baseName(f.path), error: "" })) },
     { label: t("sel.move"), icon: "folder", action: folderAction((f) => (moving = { ids: [], folder: f, sourceId: f.sourceId, start: parentOf(f.path) })) },
+    ...(hasShard ? [{ label: t("sel.copyTo"), icon: "copy" as const, action: folderAction((f) => startCopy([], [{ sourceId: f.sourceId, path: f.path }])) }] : []),
     { label: t("sel.delete"), icon: "trash", danger: true, action: folderAction((f) => (confirmFolderDelete = f)) },
   ]);
 
@@ -713,6 +745,7 @@
         onrescan={(s) => api.scanSource(s.id)}
         onedit={(s) => (s.driver === "shard" ? (shardPanel = s.id) : (sourceDialog = { source: s }))}
         onremove={removeSource}
+      oncopy={hasShard ? (s) => startCopy([], [{ sourceId: s.id, path: "" }]) : undefined}
         onrunsaved={(q) => (query = q.text)}
         oneditsaved={(q) => (modal = { editing: q })}
         ondeletesaved={deleteSaved}
@@ -886,6 +919,19 @@
       </footer>
     </div>
   </div>
+{/if}
+
+{#if copying}
+  <MoveDialog
+    sourceId={copying.targets[0].id}
+    sourceName={copying.targets[0].name}
+    start=""
+    targets={copying.targets}
+    title={t("copy.title")}
+    action={t("copy.here")}
+    onpick={commitCopy}
+    onclose={() => (copying = null)}
+  />
 {/if}
 
 {#if moving}

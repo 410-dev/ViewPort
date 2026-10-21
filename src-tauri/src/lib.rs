@@ -137,6 +137,7 @@ pub fn run() {
             shards::shard_import,
             shards::shard_from_source,
             shards::shard_export,
+            shards::copy_to_source,
             shards::shard_verify,
             shards::shard_compact,
             shards::shard_set_encryption,

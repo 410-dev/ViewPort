@@ -466,6 +466,9 @@ export const api = {
   shardFromSource: (from: number, to: number, dest: string, mode: TransferMode) =>
     invoke<void>("shard_from_source", { from, to, dest, mode }),
   shardExport: (sourceId: number, paths: string[], dest: string) => invoke<void>("shard_export", { sourceId, paths, dest }),
+  /** Copies items and folders (`path` "" = a whole source) into folder `dest` of source `to`, in the background. */
+  copyToSource: (ids: number[], folders: { sourceId: number; path: string }[], to: number, dest: string) =>
+    invoke<void>("copy_to_source", { ids, folders, to, dest }),
   shardVerify: (sourceId: number) => invoke<VerifyReport>("shard_verify", { sourceId }),
   shardCompact: (sourceId: number) => invoke<CompactReport>("shard_compact", { sourceId }),
   shardSetEncryption: (sourceId: number, password: string | null, keyfile: string | null, remember: boolean) =>

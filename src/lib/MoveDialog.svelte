@@ -3,16 +3,21 @@
   import { onBack } from "./back.svelte";
   import { t } from "./i18n.svelte";
   import Icon from "./ui/Icon.svelte";
+  import Select from "./ui/Select.svelte";
 
   /**
    * Picks a folder inside one source (a local folder, a share or a shard) to move items
    * into. Lists the folders the library knows; a new folder name is created on the move.
+   * With `targets`, the source is picked too (copying to another source).
    */
   let {
-    sourceId,
+    sourceId: initialSource,
     sourceName,
     start,
     exclude = null,
+    targets,
+    title,
+    action,
     onpick,
     onclose,
   }: {
@@ -21,10 +26,18 @@
     start: string;
     /** A folder being moved: neither it nor anything inside it can be the target. */
     exclude?: string | null;
-    onpick: (folder: string) => void;
+    /** Sources to choose from; `sourceId` is the first choice. */
+    targets?: { id: number; name: string }[];
+    title?: string;
+    /** Label of the confirm button. */
+    action?: string;
+    onpick: (folder: string, sourceId: number) => void;
     onclose: () => void;
   } = $props();
 
+  // svelte-ignore state_referenced_locally
+  let sourceId = $state(initialSource);
+  const shownName = $derived(targets?.find((s) => s.id === sourceId)?.name ?? sourceName);
   // svelte-ignore state_referenced_locally
   let folder = $state(start);
   let children = $state<{ name: string; count: number }[]>([]);
@@ -47,15 +60,29 @@
 <div class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
   <div class="dialog mover" role="dialog" aria-modal="true" aria-labelledby="move-title">
     <header>
-      <h2 id="move-title">{t("move.title")}</h2>
+      <h2 id="move-title">{title ?? t("move.title")}</h2>
       <button class="icon-btn" aria-label={t("common.close")} onclick={onclose}><Icon name="x" size={16} /></button>
     </header>
+    {#if targets}
+      <div class="target">
+        <span>{t("copy.target")}</span>
+        <Select
+          value={String(sourceId)}
+          options={targets.map((s) => ({ value: String(s.id), label: s.name }))}
+          label={t("copy.target")}
+          onchange={(v) => {
+            sourceId = Number(v);
+            folder = "";
+          }}
+        />
+      </div>
+    {/if}
     <div class="pathbar">
       <button class="icon-btn" disabled={!folder} aria-label={t("tb.up")} onclick={() => (folder = parts.slice(0, -1).join("/"))}>
         <Icon name="arrowUp" size={16} />
       </button>
       <div class="crumbs">
-        <button class="crumb" class:cur={!folder} onclick={() => (folder = "")}>{sourceName}</button>
+        <button class="crumb" class:cur={!folder} onclick={() => (folder = "")}>{shownName}</button>
         {#each parts as p, i (i)}
           <Icon name="chevronRight" size={12} />
           <button class="crumb" class:cur={i === parts.length - 1} onclick={() => (folder = parts.slice(0, i + 1).join("/"))}>{p}</button>
@@ -76,7 +103,9 @@
     </div>
     <footer>
       <input class="input grow" placeholder={t("move.newFolder")} bind:value={newName} />
-      <button class="btn primary" disabled={inside(target)} onclick={() => onpick(target)}><Icon name="check" size={14} />{t("move.here")}</button>
+      <button class="btn primary" disabled={inside(target)} onclick={() => onpick(target, sourceId)}
+        ><Icon name="check" size={14} />{action ?? t("move.here")}</button
+      >
     </footer>
   </div>
 </div>
@@ -85,6 +114,20 @@
   .mover {
     width: min(520px, 100%);
     height: min(600px, 100%);
+  }
+  .target {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 13px;
+    flex-shrink: 0;
+  }
+  .target :global(.select) {
+    flex: 1;
+    min-width: 0;
   }
   .pathbar {
     display: flex;

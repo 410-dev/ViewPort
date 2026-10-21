@@ -489,7 +489,7 @@ impl Workspace {
 
     /// Stores a newly made thumbnail: next to the item for shard sources, otherwise in the
     /// bundle's packs. `None` when it cannot be kept (manual-save mode, read-only shard).
-    fn keep_thumb(&self, shard: Option<&vp_shard::Shard>, rel_path: &str, t: &vp_thumb::Thumb) -> CmdResult<Option<ThumbRow>> {
+    pub(crate) fn keep_thumb(&self, shard: Option<&vp_shard::Shard>, rel_path: &str, t: &vp_thumb::Thumb) -> CmdResult<Option<ThumbRow>> {
         if !self.autosave() {
             return Ok(None);
         }
