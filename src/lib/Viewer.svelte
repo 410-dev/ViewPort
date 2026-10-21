@@ -189,19 +189,26 @@
   // unless the zoom really needs it.
   const displayMax = () => prefs.app?.viewer.display_max_px ?? 4096;
   /**
-   * Edge of the copy shown before zooming: no more than the screen needs (its longer edge
-   * in device pixels, rounded up to `viewer.fit_screen_step_px`). Sliding in a picture
-   * several times the screen's size means decoding and rasterizing it on the fly, which
-   * shows as black or torn tiles. The window's size, not the pane's, keeps the URL (and
-   * so the decoded copy) the same in split view and after rotating.
+   * Edge of the copy shown before zooming: the size the picture is actually drawn at when
+   * fitted to the screen (in device pixels, rounded up to `viewer.fit_screen_step_px`).
+   * A picture larger than that is drawn scaled down, and the WebView decodes and
+   * rasterizes it again for that scale while it slides in, which shows as black or torn
+   * tiles. The window's size, not the pane's, and the fit in either orientation keep the
+   * URL (and so the decoded copy) the same in split view and after rotating.
    */
-  const defaultTier = () => {
+  const defaultTier = (b: MediaBrief | undefined) => {
     const max = displayMax();
     const v = prefs.app?.viewer;
     if (max <= 0 || !(v?.fit_screen ?? true)) return max;
     const step = Math.max(64, v?.fit_screen_step_px ?? 512);
-    const screen = Math.ceil((Math.max(innerWidth, innerHeight) * devicePixelRatio) / step) * step;
-    return Math.min(max, screen);
+    const W = innerWidth * devicePixelRatio;
+    const H = innerHeight * devicePixelRatio;
+    let need = Math.max(W, H);
+    if (b?.width && b.height) {
+      const fit = Math.max(Math.min(W / b.width, H / b.height), Math.min(H / b.width, W / b.height));
+      need = Math.max(b.width, b.height) * Math.min(1, fit);
+    }
+    return Math.min(max, Math.ceil(need / step) * step);
   };
   /** Edge in px of the copy shown per id (absent: `displayMax`; 0: the original). */
   const tiers = new SvelteMap<number, number>();
@@ -210,11 +217,9 @@
   const loaded = new SvelteSet<number>();
   /** Largest copy the backend makes (`media::display_key`); beyond it, the original. */
   const MAX_COPY_PX = 16383;
-  /** Formats without transparency: a thumbnail underneath never shows through. */
-  const opaque = (b: MediaBrief) => ["jpg", "jpeg", "heic", "heif", "hif"].includes(b.ext.toLowerCase());
   const imageSrc = (b: MediaBrief) => {
     const tier = tiers.get(b.id);
-    if (tier === undefined) return displayUrl(b, defaultTier());
+    if (tier === undefined) return displayUrl(b, defaultTier(b));
     return tier === 0 ? mediaUrl(b.id) : mediaUrl(b.id, tier);
   };
   // A file that will not load may be gone: check, so searches stop listing it.
@@ -512,7 +517,7 @@
     const n = zoom.natural;
     const scale = zoom.scale;
     if (!zoomable || !n.w || upgrading.has(current)) return;
-    const tier = tiers.get(current) ?? defaultTier();
+    const tier = tiers.get(current) ?? defaultTier(known.get(current) ?? (brief?.id === current ? brief : undefined));
     // Copies come out within a few percent of their size; a smaller picture is the whole image.
     if (tier <= 0 || Math.max(n.w, n.h) < tier * 0.9) return;
     const fit = Math.min(stageW / n.w, stageH / n.h);
@@ -576,6 +581,19 @@
     if (next === prev) out.push({ id: next, pos: swipe > 0 ? -1 : 1 });
     else out.push({ id: prev, pos: -1 }, { id: next, pos: 1 });
     return out;
+  });
+
+  /**
+   * The current item once it has stayed put for two slide durations: its thumbnail
+   * underlay goes then, not the moment the slide ends, when the WebView may still be
+   * drawing the picture's tiles.
+   */
+  let rested = $state<number | undefined>(undefined);
+  $effect(() => {
+    const current = id;
+    rested = undefined;
+    const timer = setTimeout(() => (rested = current), slideMs() * 2);
+    return () => clearTimeout(timer);
   });
 
   const slideMs = () => (prefs.app?.ui.reduce_motion ? 0 : (prefs.app?.viewer.swipe_ms ?? 220));
@@ -810,9 +828,10 @@
           {:else if b?.kind === "nonmedia"}
             <div class="nomedia"><Icon name="file" size={48} stroke={1.2} /><span>{b.name}</span><small>{t("panel.noPreview")}</small></div>
           {:else if b}
-            <!-- The thumbnail stands in until the picture loads, and under an opaque neighbour
-                 while it slides in, so tiles not yet drawn show it instead of black. -->
-            {#if b.kind === "image" && (!loaded.has(s.id) || ((s.pos !== 0 || sliding) && opaque(b)))}
+            <!-- The thumbnail stands in until the picture loads, and under a neighbour while it
+                 slides in, so tiles not yet drawn show it instead of black. (At rest it is
+                 gone, so transparent pictures show as they are.) -->
+            {#if b.kind === "image" && (!loaded.has(s.id) || s.pos !== 0 || sliding || rested !== s.id)}
               <img class="ph" src={thumbUrl(s.id)} alt="" draggable="false" style:transform={s.pos === 0 ? zoom.transform : null} />
             {/if}
             <!-- Neighbouring videos show their thumbnail until they become current. -->
@@ -926,7 +945,7 @@
   {/if}
 
   <div class="hud" class:visible={showHud}>
-    <span class="name">{brief?.name ?? ""}</span>
+    <span class="name">{(known.get(id) ?? brief)?.name ?? ""}</span>
     <span class="pos">{index + 1} / {ids.length}</span>
     {#if slideshow}
       <span class="ss">{ssPaused ? t("viewer.slideshowPaused") : t("viewer.slideshow")}</span>
