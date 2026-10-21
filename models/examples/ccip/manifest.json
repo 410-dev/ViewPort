@@ -1,0 +1,11 @@
+{
+  "id": "ccip",
+  "name": "CCIP character features (deepghs)",
+  "version": "caformer-24-randaug-pruned",
+  "kind": "anime_embedder",
+  "format": "embedding",
+  "model": "model_feat.onnx",
+  "input": { "width": 384, "height": 384, "layout": "nchw", "channels": "rgb", "scale": 0.00392156862, "mean": [0.5, 0.5, 0.5], "std": [0.5, 0.5, 0.5], "fit": "stretch", "pad": [255, 255, 255] },
+  "license": { "name": "see the model card", "url": "https://huggingface.co/deepghs/ccip_onnx" },
+  "source": "https://huggingface.co/deepghs/ccip_onnx"
+}

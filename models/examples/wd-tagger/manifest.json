@@ -1,0 +1,12 @@
+{
+  "id": "wd-tagger",
+  "name": "WD EVA02 Large Tagger v3 (SmilingWolf)",
+  "version": "v3",
+  "kind": "tagger",
+  "format": "wd_tagger",
+  "model": "model.onnx",
+  "labels": "selected_tags.csv",
+  "input": { "width": 448, "height": 448, "layout": "nhwc", "channels": "bgr", "scale": 1.0, "fit": "pad_square", "pad": [255, 255, 255] },
+  "license": { "name": "Apache-2.0", "url": "https://huggingface.co/SmilingWolf/wd-eva02-large-tagger-v3" },
+  "source": "https://huggingface.co/SmilingWolf/wd-eva02-large-tagger-v3"
+}

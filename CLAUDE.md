@@ -18,7 +18,8 @@ cargo test -p vp-db spec_query     # 이름으로 필터링한 테스트
 npm run tauri build -- --bundles msi   # Windows MSI (target/release/bundle/msi/)
 ```
 
-- 선택적 실제 환경 테스트: `VP_TEST_FFMPEG=<ffmpeg 폴더>`, `VP_TEST_SMB='{"host":..,"share":..,"username":..,"password":..}'`.
+- 선택적 실제 환경 테스트: `VP_TEST_FFMPEG=<ffmpeg 폴더>`, `VP_TEST_SMB='{"host":..,"share":..,"username":..,"password":..}'`,
+  `VP_TEST_ORT=<onnxruntime 라이브러리> VP_TEST_MODELS=<모델 팩 폴더>`(`cargo test -p vp-ml --features onnx`).
   환경 변수가 없으면 해당 테스트는 건너뛴다.
 - dev 프로필에서도 의존성은 `opt-level = 2`로 빌드한다(이미지 디코딩·SQLite가 너무 느려서). 첫 빌드는 오래 걸린다.
 - FFmpeg는 번들에 포함하지 않는다(GPL). 앱 폴더 → 설정 경로 → `PATH` 순으로 찾고, 없으면 영상 썸네일·길이·변환만 꺼진다.
@@ -40,6 +41,7 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
 | `vp-media` | 외부 FFmpeg/ffprobe: 분석, 프레임 추출, 고호환 변환(HW 인코더 → libx264) |
 | `vp-crypto` | Argon2id 키 도출, XChaCha20-Poly1305 봉인(통째·조각 단위), 키 래핑 |
 | `vp-shard` | 샤드 저장소(`.vpshard`): 작은 파일 다수를 4 GiB 미만 청크로 묶음, 선택적 암호화, 최적화·검증·재구축 |
+| `vp-ml` | 이미지 분석: 모델 팩(`manifest.json`), ONNX Runtime 동적 로드(feature `onnx`, 데스크톱만)·실행 장치 순서(CUDA→DirectML→CPU), 검출 출력 해석, 얼굴 정렬, 태거, 묶기. DB 비의존 |
 
 의존 방향: `src-tauri → vp-* → vp-core`. **vp-query는 DB에 의존하지 않는다** — `(sql, params)`만 만들고 컬럼 매핑은 주입받는다.
 
@@ -54,13 +56,16 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
   프론트엔드는 `code`로 분기한다(예: `locked`).
 - `media.rs`(`vpmedia://`, HTTP Range 지원, 캐시 경유), `thumbs.rs`(`vpthumb://`, 없으면 즉시 생성),
   `video.rs`(probe 백필·변환), `archive.rs`(zip 번들 해제, zip slip 방지), `secrets.rs`(OS 자격 증명 저장소),
-  `recent.rs`(기기별 상태: 최근 번들, `AppSettings`), `shards.rs`(샤드 소스: 열기·키·만들기·연결·가져오기·풀기·최적화·재암호화).
+  `recent.rs`(기기별 상태: 최근 번들, `AppSettings`), `shards.rs`(샤드 소스: 열기·키·만들기·연결·가져오기·풀기·최적화·재암호화),
+  `ml.rs`(이미지 분석 작업·묶기·인물 커맨드. 결과는 `vp-db::faces`, 자동 값은 `x.people`/`x.characters`/`x.auto_tags`에 `auto:*` 출처로).
+  모델·ONNX Runtime은 번들하지 않는다(`models/README.md`).
 
 ### 프론트엔드 (`src/`)
 - `routes/+page.svelte`가 기기 설정(`prefs.svelte.ts`)을 불러온 뒤 `StartScreen` ↔ `Library` 전환. `app.css`가 디자인 토큰
   (다크 기본, `data-theme="light"`)과 알약형 기본 컴포넌트(`.btn`, `.icon-btn`, `.seg`, `.input`, `.switch`, `.dialog`)를 정의한다.
 - `Library.svelte`가 조합: `shell/Sidebar`, `shell/Toolbar`, `views/*`(그리드·목록·트리), `panel/RightPanel`(미리보기/결합/정보),
-  `StatusBar`(작업 진행), `query/QueryModal`(쿼리 명령어 편집기), `settings/SettingsPanel`, `SourceDialog`, `Viewer`.
+  `StatusBar`(작업 진행), `query/QueryModal`(쿼리 명령어 편집기), `settings/SettingsPanel`, `SourceDialog`, `Viewer`,
+  `people/PeopleView`(인물·캐릭터 그룹, 이름 붙이기·합치기·"이 사람 아님").
 - `views/`: 모든 보기는 `ViewProps`(`views/types.ts`)를 받고 `Selection`·`briefs` 캐시를 공유한다. 새 보기는 `views/index.ts`의
   `VIEWS`에, 새 열은 `views/columns.ts`의 `COLUMNS`에 항목 하나로 추가한다.
 - `settings/schema.ts`: 설정 패널 레이아웃(데이터). 각 필드는 `bundle`(번들 `Settings`) 또는 `app`(기기 `AppSettings`) 경로를 가리킨다.

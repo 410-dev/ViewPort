@@ -49,6 +49,14 @@ const key = (path: string, label: Key): Field => ({ kind: "list", ...bundle({ pa
 /** Settings with no effect on phones and tablets (WebView switches, windows, tray, FFmpeg). */
 export const DESKTOP_ONLY = new Set([
   "privacy.panic_hide",
+  // Phones show analysis results but do not run the models.
+  "ml.runtime_path",
+  "ml.providers",
+  "ml.device_id",
+  "ml.threads",
+  "ml.max_edge_px",
+  "ml.model_dirs",
+  "ml.auto_analyze",
   "privacy.restore_shortcut",
   "privacy.tray_icon",
   "windows.new_width",
@@ -313,6 +321,59 @@ export const SECTIONS: Section[] = [
           { kind: "toggle", ...app({ path: "viewer.fit_screen", label: "set.fitScreen", help: "set.fitScreen.help" }) },
           { kind: "number", ...app({ path: "viewer.display_quality", label: "set.displayQuality" }), min: 1, max: 100, step: 1 },
           { kind: "list", ...app({ path: "viewer.convert_image_extensions", label: "set.convertImageExt", help: "set.convertImageExt.help" }) },
+        ],
+      },
+    ],
+  },
+  {
+    id: "analysis",
+    icon: "cpu",
+    title: "set.analysis",
+    groups: [
+      {
+        title: "set.analysis.what",
+        note: "set.analysis.note",
+        fields: [
+          { kind: "toggle", ...bundle({ path: "analysis.faces", label: "set.analysis.faces", help: "set.analysis.faces.help" }) },
+          { kind: "toggle", ...bundle({ path: "analysis.characters", label: "set.analysis.characters", help: "set.analysis.characters.help" }) },
+          { kind: "toggle", ...bundle({ path: "analysis.tagger", label: "set.analysis.tagger", help: "set.analysis.tagger.help" }) },
+          { kind: "toggle", ...app({ path: "ml.auto_analyze", label: "set.analysis.auto", help: "set.analysis.auto.help" }) },
+        ],
+      },
+      {
+        title: "set.analysis.runtime",
+        note: "set.analysis.runtime.note",
+        fields: [
+          { kind: "text", ...app({ path: "ml.runtime_path", label: "set.analysis.runtimePath", help: "set.analysis.runtimePath.help" }), placeholder: "onnxruntime.dll" },
+          { kind: "list", ...app({ path: "ml.providers", label: "set.analysis.providers", help: "set.analysis.providers.help" }) },
+          { kind: "number", ...app({ path: "ml.device_id", label: "set.analysis.device" }), min: 0, max: 16, step: 1 },
+          { kind: "number", ...app({ path: "ml.threads", label: "set.analysis.threads", help: "set.analysis.threads.help" }), min: 0, max: 64, step: 1 },
+          { kind: "number", ...app({ path: "ml.max_edge_px", label: "set.analysis.maxEdge" }), min: 320, max: 4096, step: 64, unit: "px" },
+          { kind: "list", ...app({ path: "ml.model_dirs", label: "set.analysis.modelDirs", help: "set.analysis.modelDirs.help" }) },
+        ],
+      },
+      {
+        title: "set.analysis.packs",
+        note: "set.analysis.packs.note",
+        fields: [
+          { kind: "text", ...bundle({ path: "analysis.face_detector", label: "set.analysis.faceDetector" }), placeholder: "—" },
+          { kind: "text", ...bundle({ path: "analysis.face_embedder", label: "set.analysis.faceEmbedder" }), placeholder: "—" },
+          { kind: "text", ...bundle({ path: "analysis.anime_detector", label: "set.analysis.animeDetector" }), placeholder: "—" },
+          { kind: "text", ...bundle({ path: "analysis.anime_embedder", label: "set.analysis.animeEmbedder" }), placeholder: "—" },
+          { kind: "text", ...bundle({ path: "analysis.tagger_pack", label: "set.analysis.taggerPack" }), placeholder: "—" },
+        ],
+      },
+      {
+        title: "set.analysis.tuning",
+        fields: [
+          { kind: "number", ...bundle({ path: "analysis.detect_score", label: "set.analysis.detectScore" }), min: 5, max: 99, step: 5, scale: 0.01, unit: "%" },
+          { kind: "number", ...bundle({ path: "analysis.min_face_px", label: "set.analysis.minFace" }), min: 8, max: 512, step: 4, unit: "px" },
+          { kind: "number", ...bundle({ path: "analysis.group_similarity", label: "set.analysis.groupSim", help: "set.analysis.groupSim.help" }), min: 10, max: 95, step: 1, scale: 0.01, unit: "%" },
+          { kind: "number", ...bundle({ path: "analysis.assign_similarity", label: "set.analysis.assignSim", help: "set.analysis.assignSim.help" }), min: 10, max: 95, step: 1, scale: 0.01, unit: "%" },
+          { kind: "number", ...bundle({ path: "analysis.min_group_size", label: "set.analysis.minGroup" }), min: 1, max: 100, step: 1 },
+          { kind: "number", ...bundle({ path: "analysis.tag_threshold", label: "set.analysis.tagThreshold" }), min: 5, max: 99, step: 1, scale: 0.01, unit: "%" },
+          { kind: "number", ...bundle({ path: "analysis.character_threshold", label: "set.analysis.charThreshold" }), min: 5, max: 99, step: 1, scale: 0.01, unit: "%" },
+          { kind: "number", ...bundle({ path: "analysis.character_crop_scale", label: "set.analysis.cropScale", help: "set.analysis.cropScale.help" }), min: 1, max: 6, step: 0.1, unit: "×" },
         ],
       },
     ],

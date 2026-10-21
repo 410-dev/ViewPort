@@ -244,6 +244,71 @@ export interface AppSettings {
     fit_screen_step_px: number;
     convert_image_extensions: string[];
   };
+  ml: {
+    runtime_path: string;
+    providers: string[];
+    device_id: number;
+    model_dirs: string[];
+    max_edge_px: number;
+    threads: number;
+    auto_analyze: boolean;
+  };
+}
+
+// ---- image analysis (`ml.rs`)
+export type PackKind = "face_detector" | "face_embedder" | "anime_detector" | "anime_embedder" | "tagger";
+/** "real": people in photos; "anime": characters in illustrations. */
+export type FaceKind = "real" | "anime";
+
+export interface PackInfo {
+  id: string;
+  key: string;
+  name: string;
+  kind: PackKind;
+  license: string;
+  license_url: string;
+  source: string;
+  path: string;
+}
+
+export interface AnalysisCounts {
+  images: number;
+  done: number;
+  faces: number;
+  people: number;
+  unnamed: number;
+}
+
+export interface MlStatus {
+  supported: boolean;
+  runtime: string | null;
+  runtime_error: string | null;
+  providers: string[];
+  packs: PackInfo[];
+  pack_errors: string[];
+  model_dirs: string[];
+  running: boolean;
+  counts: AnalysisCounts | null;
+}
+
+export interface PersonRow {
+  id: number;
+  kind: FaceKind;
+  /** Empty: a group nobody has named yet. */
+  name: string;
+  items: number;
+  faces: number;
+  cover: number | null;
+}
+
+export interface FaceRow {
+  id: number;
+  media_id: number;
+  /** x, y, width, height as fractions of the image. */
+  bbox: [number, number, number, number];
+  score: number;
+  person_id: number | null;
+  confirmed: boolean;
 }
 
 export interface AudioState {
@@ -469,6 +534,19 @@ export const api = {
   /** Copies items and folders (`path` "" = a whole source) into folder `dest` of source `to`, in the background. */
   copyToSource: (ids: number[], folders: { sourceId: number; path: string }[], to: number, dest: string) =>
     invoke<void>("copy_to_source", { ids, folders, to, dest }),
+  mlStatus: () => invoke<MlStatus>("ml_status"),
+  /** Analyses every image not seen by the chosen models yet, in the background. */
+  mlAnalyze: () => invoke<void>("ml_analyze"),
+  mlRegroup: () => invoke<void>("ml_regroup"),
+  mlPeople: (kind: FaceKind, hidden = false) => invoke<PersonRow[]>("ml_people", { kind, hidden }),
+  mlPersonFaces: (person: number, offset: number, limit: number) => invoke<FaceRow[]>("ml_person_faces", { person, offset, limit }),
+  mlMediaFaces: (media: number) => invoke<FaceRow[]>("ml_media_faces", { media }),
+  /** Returns the id carrying the name: naming like another person merges into them. */
+  mlRenamePerson: (id: number, name: string) => invoke<number>("ml_rename_person", { id, name }),
+  mlMergePeople: (into: number, from: number[]) => invoke<void>("ml_merge_people", { into, from }),
+  /** `person` null: "not this person". */
+  mlAssignFaces: (faces: number[], person: number | null) => invoke<void>("ml_assign_faces", { faces, person }),
+  mlHidePerson: (id: number, hidden: boolean) => invoke<void>("ml_hide_person", { id, hidden }),
   shardVerify: (sourceId: number) => invoke<VerifyReport>("shard_verify", { sourceId }),
   shardCompact: (sourceId: number) => invoke<CompactReport>("shard_compact", { sourceId }),
   shardSetEncryption: (sourceId: number, password: string | null, keyfile: string | null, remember: boolean) =>
@@ -538,6 +616,8 @@ export const onConvert = (f: (e: ConvertEvent) => void): Promise<UnlistenFn> =>
   listen<ConvertEvent>("convert-progress", (e) => f(e.payload));
 
 export const thumbUrl = (id: number) => convertFileSrc(String(id), "vpthumb");
+/** A face picture of the people view (`thumbs.rs`). */
+export const faceUrl = (id: number) => convertFileSrc(`face-${id}`, "vpthumb");
 let mediaBase: string | null = null;
 /** Android serves original media over loopback HTTP (`media_server.rs`); call once at startup. */
 export async function initMediaUrls() {

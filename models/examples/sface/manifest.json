@@ -1,0 +1,11 @@
+{
+  "id": "sface",
+  "name": "SFace (OpenCV Zoo)",
+  "version": "2021dec",
+  "kind": "face_embedder",
+  "format": "embedding",
+  "model": "face_recognition_sface_2021dec.onnx",
+  "input": { "width": 112, "height": 112, "layout": "nchw", "channels": "rgb", "scale": 1.0, "fit": "stretch" },
+  "license": { "name": "Apache-2.0", "url": "https://github.com/opencv/opencv_zoo/tree/main/models/face_recognition_sface" },
+  "source": "https://github.com/opencv/opencv_zoo/tree/main/models/face_recognition_sface"
+}

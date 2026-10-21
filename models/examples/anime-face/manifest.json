@@ -1,0 +1,11 @@
+{
+  "id": "anime-face",
+  "name": "Anime face detection (deepghs, YOLOv8)",
+  "version": "v1.4_s",
+  "kind": "anime_detector",
+  "format": "yolo",
+  "model": "model.onnx",
+  "input": { "width": 640, "height": 640, "layout": "nchw", "channels": "rgb", "scale": 0.00392156862, "fit": "letterbox", "pad": [114, 114, 114] },
+  "license": { "name": "see the model card", "url": "https://huggingface.co/deepghs/anime_face_detection" },
+  "source": "https://huggingface.co/deepghs/anime_face_detection"
+}

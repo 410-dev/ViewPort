@@ -28,6 +28,7 @@
   import { quoteParam } from "./query";
   import QueryModal from "./query/QueryModal.svelte";
   import SettingsPanel from "./settings/SettingsPanel.svelte";
+  import PeopleView from "./people/PeopleView.svelte";
   import ShardDialog from "./shard/ShardDialog.svelte";
   import ShardPanel from "./shard/ShardPanel.svelte";
   import Sidebar from "./shell/Sidebar.svelte";
@@ -93,6 +94,7 @@
   let viewing = $state<{ list: number[]; index: number } | null>(null);
   let modal = $state<{ editing: SavedQuery | null } | null>(null);
   let showSettings = $state(false);
+  let showPeople = $state(false);
   let sourceDialog = $state<{ source: SourceRow | null } | null>(null);
   let shardDialog = $state(false);
   /** Source id of the shard being managed (or unlocked). */
@@ -401,7 +403,7 @@
   let toolbar: Toolbar;
   function onKey(e: KeyboardEvent) {
     if (embedded && !embedded.active) return;
-    if (!settings || viewing || modal || savingCurrent || copying || showSettings || sourceDialog || shardDialog || shardPanel !== null) return;
+    if (!settings || viewing || modal || savingCurrent || copying || showSettings || showPeople || sourceDialog || shardDialog || shardPanel !== null) return;
     const k = settings.keys;
     if (matches(e, k.focus_search)) toolbar?.focusSearch();
     else if (matches(e, k.query_editor)) modal = { editing: null };
@@ -750,6 +752,7 @@
         oneditsaved={(q) => (modal = { editing: q })}
         ondeletesaved={deleteSaved}
         onsettings={() => (showSettings = true)}
+        onpeople={embedded ? undefined : () => (showPeople = true)}
         onclose={close}
         onsave={() => api.saveBundle().catch((e) => alert(asCmdError(e).message))}
       />
@@ -1028,6 +1031,21 @@
 
 {#if showSettings && settings}
   <SettingsPanel {settings} {bundle} {onbundle} onclose={() => (showSettings = false)} />
+{/if}
+
+{#if showPeople}
+  <PeopleView
+    onclose={() => (showPeople = false)}
+    onshow={(q) => {
+      // A person's photos: everything with their name, in every source.
+      selected = null;
+      lastSource = null;
+      folder = "";
+      sort = null;
+      query = q;
+      showPeople = false;
+    }}
+  />
 {/if}
 
 {#if viewing && settings}

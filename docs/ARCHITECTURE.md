@@ -34,6 +34,7 @@ crates/
   vp-media/             외부 FFmpeg로 영상 분석·프레임 추출·고호환 변환
   vp-crypto/            Argon2id 키 도출, XChaCha20-Poly1305 봉인(통째·조각 단위), 키 래핑
   vp-shard/             샤드 저장소(.vpshard): 작은 파일 다수를 큰 청크 파일로 묶어 저장, 선택적 암호화
+  vp-ml/                이미지 분석: 모델 팩, ONNX Runtime 동적 로드·실행 장치 선택, 검출 출력 해석, 얼굴 정렬, 태거, 묶기
 src-tauri/              Tauri 앱: 커맨드, 상태, 백그라운드 작업 조율
 src/                    SvelteKit UI
 ```
@@ -168,6 +169,34 @@ name.vpshard/
   샤드로 가는 변환본도 함께 옮긴다. 샤드가 아닌 대상은 로컬 경로로 스트리밍하고, 경로가 없는 드라이버(SMB)는
   `cache.max_item_bytes` 이하 파일만 통째로 쓴다.
 - 한계: OS 미디어 프레임워크(Android, FFmpeg 없음)는 경로로만 읽으므로 샤드 안 영상의 썸네일·분석은 FFmpeg가 있어야 한다.
+
+## 이미지 분석 (인물·캐릭터·자동 태그)
+
+사진 속 얼굴(인물)과 일러스트 속 얼굴(캐릭터)을 찾아 같은 사람끼리 묶고, 사용자가 붙인 이름과 태거의 태그를 검색 조건으로 쓴다.
+모델은 이 기기에서만 실행되고 결과는 번들 DB에 남으므로, PC GPU로 분석한 번들을 휴대폰에서 열어도 인물·검색을 그대로 쓴다.
+
+- **모델 팩**(`vp-ml::pack`, 안내는 `models/README.md`): 앱은 모델을 포함하지 않는다(라이선스가 모델마다 다름). 팩 = `manifest.json`
+  (종류, 출력 형식 `yunet`/`yolo`/`embedding`/`wd_tagger`, 입력 크기·채널 순서·정규화·맞춤 방식, 라이선스·배포처) + ONNX 파일.
+  앱 폴더·설정 폴더의 `models/`와 `ml.model_dirs`에서 찾는다. 번들 설정 `analysis.*_detector` 등은 팩 id(빈 값 = 종류별 첫 팩).
+- **실행**(`vp-ml::runtime`): `ort`의 `load-dynamic` — ONNX Runtime도 포함하지 않고 실행 중에 불러온다(`ml.runtime_path` → 앱 폴더 →
+  `ORT_DYLIB_PATH` → 시스템 경로). 모델마다 `ml.providers` 순서(기본 Windows `cuda, directml, cpu`, Linux `cuda, cpu`)로 시도해
+  처음 되는 장치를 쓴다. DirectML은 Windows 빌드에만 컴파일된다. 휴대폰 빌드는 `onnx` 기능을 끄고(결과 보기·이름 붙이기만) 빌드한다.
+- **파이프라인**(`src-tauri/src/ml.rs`, 작업 `analyze`): 읽기 스레드가 원본을 읽어 `ml.max_edge_px`로 줄여 디코딩해 두고(HEIF는 OS/FFmpeg),
+  추론 스레드가 실사 검출(YuNet: 다섯 점) → 112×112 템플릿 정렬(Umeyama) → 특징값, 애니 검출(YOLO) → 얼굴 상자를
+  `analysis.character_crop_scale`배 키운 정사각형 → 특징값, 태거(이미지 전체)를 돌린다. 항목마다 아직 안 돌린 모델만 돌린다(`ml_done`).
+  얼굴 그림(`analysis.face_crop_px`)은 썸네일 팩에 넣고(잠긴 번들이면 봉인) `vpthumb://localhost/face-<id>`로 보여 준다.
+  끝나면(긴 작업은 2000장마다) 다시 묶고 자동 값을 갱신한다. `ml.auto_analyze`면 스캔 뒤에 자동으로 시작한다.
+- **저장**(스키마 v7): `ml_model`(팩 `id@version` — 모델이 다르면 특징값을 섞지 않음), `ml_done`, `face`(위치는 이미지 대비 비율,
+  특징값은 f16), `person`(이름 빈 값 = 아직 이름 없는 그룹), `face_reject`("이 사람 아님"), `tag_score`(임계값을 바꿔도 다시 돌리지 않게 점수 보관).
+- **묶기**(`vp-ml::cluster`): 이름 붙은 인물의 얼굴은 그대로 둔다. 나머지 얼굴은 이름 붙은 인물의 중심과 `analysis.assign_similarity`
+  이상이면(거절한 쌍 제외) 그 인물로, 아니면 리더 군집화 → 중심 병합 → 재배정으로 `analysis.group_similarity` 그룹을 만든다.
+  `analysis.min_group_size`보다 작은 그룹은 버린다. 이름 없는 그룹은 다시 묶을 때마다 새로 만든다.
+- **이름과 검색**: 사람이 이름을 붙이면(같은 종류에 같은 이름이 있으면 합쳐짐) `x.people`(인물)·`x.characters`(캐릭터) 기본 필드에
+  출처 `auto:faces` 값으로, 태거 결과는 `x.auto_tags`(자동 태그)·`x.characters`에 `auto:tagger` 값으로 다시 쓴다(`sync_*`).
+  사용자가 직접 넣은 같은 값은 건드리지도, 중복하지도 않는다. 그래서 `인물(김철수)`, `캐릭터(miku)`, `자동 태그(long hair)`가 그대로 검색된다.
+- **UI**: 사이드바 "인물" → `people/PeopleView.svelte`(인물/캐릭터 탭, 분석 상태·시작, 그룹 카드, 합치기, 이름 붙이기, 얼굴별 "이 사람 아님",
+  "사진 보기" = 해당 조건 검색). 설정 → 분석.
+- 선택적 실제 환경 테스트: `VP_TEST_ORT=<ONNX Runtime 라이브러리> VP_TEST_MODELS=<모델 팩 폴더> [VP_TEST_IMAGE=<사진>] cargo test -p vp-ml --features onnx`.
 
 ## 썸네일
 

@@ -27,6 +27,7 @@
     oneditsaved,
     ondeletesaved,
     onsavecurrent,
+    onpeople,
     onsettings,
     onclose,
     onsave,
@@ -59,6 +60,8 @@
     oneditsaved: (q: SavedQuery) => void;
     ondeletesaved: (q: SavedQuery) => void;
     onsavecurrent: () => void;
+    /** Opens the people view (image analysis). */
+    onpeople?: () => void;
     onsettings: () => void;
     onclose: () => void;
     onsave: () => void;
@@ -85,6 +88,9 @@
       <button class="item" class:on={selected === null} onclick={() => onselect(null)}>
         <Icon name="home" size={15} /><span class="label">{t("side.all")}</span>
       </button>
+      {#if onpeople}
+        <button class="item" onclick={onpeople}><Icon name="users" size={15} /><span class="label">{t("side.people")}</span></button>
+      {/if}
     </div>
 
     <div class="group">

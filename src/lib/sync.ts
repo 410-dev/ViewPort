@@ -6,7 +6,7 @@
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { windowLabel } from "./platform";
 
-export type SyncKind = "media" | "settings" | "saved" | "sources" | "fields";
+export type SyncKind = "media" | "settings" | "saved" | "sources" | "fields" | "people";
 
 const EVENT = "vp-sync";
 

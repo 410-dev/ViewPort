@@ -1,0 +1,11 @@
+{
+  "id": "yunet",
+  "name": "YuNet (OpenCV Zoo)",
+  "version": "2023mar",
+  "kind": "face_detector",
+  "format": "yunet",
+  "model": "face_detection_yunet_2023mar.onnx",
+  "input": { "width": 640, "height": 640, "layout": "nchw", "channels": "bgr", "scale": 1.0, "fit": "letterbox", "pad": [0, 0, 0] },
+  "license": { "name": "MIT", "url": "https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet" },
+  "source": "https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet"
+}
