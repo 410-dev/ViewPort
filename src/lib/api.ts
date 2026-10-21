@@ -164,6 +164,7 @@ export interface KeyBindings {
 }
 
 export interface Settings {
+  revision: number;
   general: { locale: string; autosave_debounce_ms: number };
   grid: GridSettings;
   cache: CacheSettings;

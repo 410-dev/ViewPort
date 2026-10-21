@@ -13,6 +13,9 @@ const MOBILE: bool = cfg!(any(target_os = "android", target_os = "ios"));
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Settings {
+    /// Defaults changes applied to this file (see [`Settings::upgrade`]). Missing in older
+    /// files, so they read as 0.
+    pub revision: u32,
     pub general: GeneralSettings,
     pub cache: CacheSettings,
     pub stats: StatsSettings,
@@ -23,6 +26,26 @@ pub struct Settings {
     pub grid: GridSettings,
     pub shard: ShardSettings,
     pub keys: KeyBindings,
+}
+
+/// The latest [`Settings::revision`].
+pub const SETTINGS_REVISION: u32 = 1;
+
+impl Settings {
+    /// Brings a settings file up to new defaults where it still holds the old ones (values
+    /// the user changed are kept). Returns whether anything changed.
+    pub fn upgrade(&mut self) -> bool {
+        let before = self.clone();
+        if self.revision < 1 {
+            // Prefetch went from 3 ahead / 1 behind to 4 each way.
+            if (self.cache.prefetch_ahead, self.cache.prefetch_behind) == (3, 1) {
+                self.cache.prefetch_ahead = 4;
+                self.cache.prefetch_behind = 4;
+            }
+        }
+        self.revision = SETTINGS_REVISION;
+        *self != before
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -75,8 +98,8 @@ impl Default for CacheSettings {
             chunk_bytes: 256 * 1024,
             autoload_top_n: 30,
             autoload_ratio: 0.5,
-            prefetch_ahead: 3,
-            prefetch_behind: 1,
+            prefetch_ahead: 4,
+            prefetch_behind: 4,
             prefetch_workers: 2,
             max_item_bytes: GIB,
             stream_chunk_bytes: 4 * MIB,
@@ -728,5 +751,25 @@ impl Default for KeyBindings {
             zoom_reset: v(&["0"]),
             toggle_immersive: v(&["h"]),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upgrade_moves_old_defaults_only() {
+        let mut old = Settings::default();
+        old.revision = 0;
+        (old.cache.prefetch_ahead, old.cache.prefetch_behind) = (3, 1);
+        assert!(old.upgrade());
+        assert_eq!((old.cache.prefetch_ahead, old.cache.prefetch_behind, old.revision), (4, 4, SETTINGS_REVISION));
+
+        let mut custom = Settings { revision: 0, ..Default::default() };
+        (custom.cache.prefetch_ahead, custom.cache.prefetch_behind) = (2, 0);
+        custom.upgrade();
+        assert_eq!((custom.cache.prefetch_ahead, custom.cache.prefetch_behind), (2, 0));
+        assert!(!custom.upgrade());
     }
 }

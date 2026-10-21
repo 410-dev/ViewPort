@@ -550,6 +550,7 @@
     if (active)
       return onBack(() => {
         if (immersive.on) immersive.on = false;
+        else if (showInfo) showInfo = false;
         else close();
       });
   });
@@ -911,6 +912,14 @@
   {/if}
 
   {#if showInfo && id !== undefined && !immersive.on}
+    <!-- Tapping beside the panel closes it, and never reaches the picture or the arrows. -->
+    <div
+      class="side-scrim"
+      role="presentation"
+      onpointerdown={(e) => e.stopPropagation()}
+      onpointerup={(e) => e.stopPropagation()}
+      onclick={() => (showInfo = false)}
+    ></div>
     <div class="side" role="presentation" onpointerdown={(e) => e.stopPropagation()} onpointerup={(e) => e.stopPropagation()}>
       <InfoPanel ids={[id]} {onchanged} />
     </div>
@@ -1204,6 +1213,11 @@
   .seg-err {
     color: var(--danger);
     margin: 0;
+  }
+  .side-scrim {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
   }
   .side {
     position: absolute;

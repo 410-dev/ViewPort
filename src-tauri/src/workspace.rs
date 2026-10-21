@@ -111,10 +111,12 @@ impl Workspace {
                 Err(e) => return Err(e.into()),
             },
         };
-        let settings: Settings = match settings_text {
+        let mut settings: Settings = match settings_text {
             Some(t) => serde_json::from_str(&t)?,
             None => Settings::default(),
         };
+        // Kept in memory; written with the next settings save.
+        settings.upgrade();
         let bundle_db = bundle.path(vp_bundle::DB_FILE);
         if let Some(dir) = bundle_db.parent() {
             std::fs::create_dir_all(dir)?;
