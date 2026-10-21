@@ -39,9 +39,9 @@ fn decode_err(e: image::ImageError) -> ThumbError {
     }
 }
 
-/// Decodes `bytes`, applies EXIF orientation and scales to fit `max_edge_px`.
-/// Opaque images are encoded as JPEG, images with transparency as PNG.
-pub fn generate(bytes: &[u8], s: &ThumbnailSettings) -> Result<Thumb, ThumbError> {
+/// Decodes `bytes`, applies EXIF orientation and scales down to fit `max_edge_px`
+/// (smaller images are kept as they are).
+pub fn decode_scaled(bytes: &[u8], max_edge_px: u32) -> Result<DynamicImage, ThumbError> {
     let reader = ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
     if reader.format().is_none() {
         return Err(ThumbError::Unsupported);
@@ -50,11 +50,17 @@ pub fn generate(bytes: &[u8], s: &ThumbnailSettings) -> Result<Thumb, ThumbError
     let orientation = decoder.orientation().map_err(decode_err)?;
     let mut img = DynamicImage::from_decoder(decoder).map_err(decode_err)?;
     img.apply_orientation(orientation);
-
-    let max = s.max_edge_px.max(1);
+    let max = max_edge_px.max(1);
     if img.width() > max || img.height() > max {
         img = img.thumbnail(max, max);
     }
+    Ok(img)
+}
+
+/// Decodes `bytes`, applies EXIF orientation and scales to fit `max_edge_px`.
+/// Opaque images are encoded as JPEG, images with transparency as PNG.
+pub fn generate(bytes: &[u8], s: &ThumbnailSettings) -> Result<Thumb, ThumbError> {
+    let img = decode_scaled(bytes, s.max_edge_px)?;
     let (width, height) = (img.width(), img.height());
     let mut data = Vec::new();
     let mime = if img.color().has_alpha() {

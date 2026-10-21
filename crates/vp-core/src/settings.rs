@@ -26,6 +26,75 @@ pub struct Settings {
     pub grid: GridSettings,
     pub shard: ShardSettings,
     pub keys: KeyBindings,
+    pub analysis: AnalysisSettings,
+}
+
+/// What image analysis finds in this library and how it groups it. Model packs are named
+/// by id; an empty id uses the first installed pack of that kind.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AnalysisSettings {
+    /// Find and group faces in photos (people).
+    pub faces: bool,
+    /// Find and group characters in illustrations.
+    pub characters: bool,
+    /// Tag whole images (general tags and known character names).
+    pub tagger: bool,
+    pub face_detector: String,
+    pub face_embedder: String,
+    pub anime_detector: String,
+    pub anime_embedder: String,
+    pub tagger_pack: String,
+    /// Detections scoring below this are dropped.
+    pub detect_score: f32,
+    /// Overlapping detections above this IoU are merged.
+    pub nms_iou: f32,
+    /// Faces smaller than this (shorter edge, in analysed pixels) are ignored: too small to
+    /// tell people apart.
+    pub min_face_px: u32,
+    /// Two faces this similar (cosine) can start the same group.
+    pub group_similarity: f32,
+    /// A new face this similar to a named person joins them automatically.
+    pub assign_similarity: f32,
+    /// Smaller groups are not shown (one-off faces in the background).
+    pub min_group_size: u32,
+    /// Tagger scores at or above this become automatic tags.
+    pub tag_threshold: f32,
+    /// Tagger character scores at or above this become automatic character names.
+    pub character_threshold: f32,
+    /// Scores below this are not stored at all (keeps the database small).
+    pub keep_score: f32,
+    /// A character crop is the detected face grown by this factor (embedders of whole
+    /// characters want more than the face).
+    pub character_crop_scale: f32,
+    /// Edge of the face pictures shown in the people view.
+    pub face_crop_px: u32,
+}
+
+impl Default for AnalysisSettings {
+    fn default() -> Self {
+        Self {
+            faces: true,
+            characters: true,
+            tagger: false,
+            face_detector: String::new(),
+            face_embedder: String::new(),
+            anime_detector: String::new(),
+            anime_embedder: String::new(),
+            tagger_pack: String::new(),
+            detect_score: 0.6,
+            nms_iou: 0.4,
+            min_face_px: 32,
+            group_similarity: 0.45,
+            assign_similarity: 0.5,
+            min_group_size: 3,
+            tag_threshold: 0.35,
+            character_threshold: 0.85,
+            keep_score: 0.2,
+            character_crop_scale: 2.5,
+            face_crop_px: 128,
+        }
+    }
 }
 
 /// The latest [`Settings::revision`].
@@ -356,6 +425,7 @@ pub struct AppSettings {
     pub privacy: PrivacySettings,
     pub windows: WindowSettings,
     pub viewer: ViewerSettings,
+    pub ml: MlSettings,
 }
 
 impl Default for AppSettings {
@@ -370,6 +440,54 @@ impl Default for AppSettings {
             privacy: PrivacySettings::default(),
             windows: WindowSettings::default(),
             viewer: ViewerSettings::default(),
+            ml: MlSettings::default(),
+        }
+    }
+}
+
+/// Local image analysis (faces, characters, tags) on this device: where ONNX Runtime and
+/// the model packs are, and which hardware runs them. Neither is shipped with the app.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MlSettings {
+    /// ONNX Runtime library (`onnxruntime.dll` / `libonnxruntime.so` / `.dylib`) or the
+    /// folder holding it. Empty: the app folder, then `ORT_DYLIB_PATH`, then the system
+    /// search path. A CUDA build (onnxruntime-gpu) or a DirectML build (onnxruntime-directml)
+    /// decides which GPU paths below can work.
+    pub runtime_path: String,
+    /// Execution providers to try in order; the first that loads runs the models.
+    /// "cuda" (NVIDIA), "directml" (any GPU on Windows), "cpu".
+    pub providers: Vec<String>,
+    /// GPU index for CUDA / DirectML.
+    pub device_id: i32,
+    /// Extra folders holding model packs (each pack is a folder with `manifest.json`). The
+    /// app folder's `models/` and the config folder's `models/` are always searched.
+    pub model_dirs: Vec<String>,
+    /// Images are scaled down to this longer edge before analysis.
+    pub max_edge_px: u32,
+    /// CPU threads per model (0 = ONNX Runtime's choice).
+    pub threads: u32,
+    /// Analyse new items in the background after scans, while a bundle is open.
+    pub auto_analyze: bool,
+}
+
+impl Default for MlSettings {
+    fn default() -> Self {
+        let providers: &[&str] = if cfg!(windows) {
+            &["cuda", "directml", "cpu"]
+        } else if cfg!(target_os = "linux") {
+            &["cuda", "cpu"]
+        } else {
+            &["cpu"]
+        };
+        Self {
+            runtime_path: String::new(),
+            providers: providers.iter().map(|p| p.to_string()).collect(),
+            device_id: 0,
+            model_dirs: Vec::new(),
+            max_edge_px: 1280,
+            threads: 0,
+            auto_analyze: false,
         }
     }
 }

@@ -1,0 +1,27 @@
+[package]
+name = "vp-ml"
+description = "ViewPort local image analysis: model packs, face/character detection and embeddings, tagging, grouping"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+# ONNX Runtime inference (desktop). Without it everything that needs a model reports
+# `Unavailable`; packs, decoding and grouping still work.
+onnx = ["dep:ort"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+half = { version = "2", default-features = false }
+image = { version = "0.25.10", default-features = false }
+
+# ONNX Runtime is loaded at run time (`load-dynamic`): nothing is linked or bundled, the
+# user installs a CUDA build (onnxruntime-gpu) or a DirectML build (onnxruntime-directml).
+# DirectML exists only on Windows.
+[target.'cfg(windows)'.dependencies]
+ort = { version = "=2.0.0-rc.15", optional = true, default-features = false, features = ["std", "load-dynamic", "cuda", "directml"] }
+
+[target.'cfg(not(windows))'.dependencies]
+ort = { version = "=2.0.0-rc.15", optional = true, default-features = false, features = ["std", "load-dynamic", "cuda"] }
