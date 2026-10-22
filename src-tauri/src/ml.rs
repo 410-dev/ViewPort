@@ -729,6 +729,22 @@ pub async fn ml_assign_faces(app: AppHandle, faces: Vec<i64>, person: Option<i64
     people_change(&app, move |ws| Ok(ws.write_db.lock().unwrap().assign_faces(&faces, person)?)).await
 }
 
+/// Moves faces into a new person of `kind` named `name` (may be empty). Returns its id.
+#[tauri::command]
+pub async fn ml_new_person(app: AppHandle, kind: String, name: String, faces: Vec<i64>) -> CmdResult<i64> {
+    if FaceKind::parse(&kind).is_none() {
+        return Err(CmdError::new("invalid", "unknown face kind"));
+    }
+    people_change(&app, move |ws| {
+        let db = ws.write_db.lock().unwrap();
+        let id = db.create_person(&kind, &name, now_ms())?;
+        db.assign_faces(&faces, Some(id))?;
+        // Naming it like an existing person merges the two.
+        Ok(if name.trim().is_empty() { id } else { db.rename_person(id, &name)? })
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn ml_hide_person(app: AppHandle, id: i64, hidden: bool) -> CmdResult<()> {
     people_change(&app, move |ws| Ok(ws.write_db.lock().unwrap().set_person_hidden(id, hidden)?)).await

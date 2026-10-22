@@ -1294,31 +1294,98 @@ pub fn export_media(app: AppHandle, state: State<'_, AppState>, ids: Vec<i64>, d
         return Err(CmdError::new("not_found", "the destination is not a folder"));
     }
     std::thread::spawn(move || {
+        let jobs = ids
+            .iter()
+            .filter_map(|id| ws.read_db.lock().unwrap().media_location(*id).ok().flatten())
+            .map(|loc| (loc, dest.clone()))
+            .collect();
+        export_to(&app.state::<AppState>().drivers, &ws, "", jobs);
+    });
+    Ok(())
+}
+
+/// Exports every item inside folder `folder` of source `source_id` (any depth) into a new
+/// folder of the same name in `dest`, keeping the subfolders.
+#[tauri::command]
+pub fn export_folder(app: AppHandle, state: State<'_, AppState>, source_id: i64, folder: String, dest: String) -> CmdResult<()> {
+    let ws = workspace(&state)?;
+    let dest = PathBuf::from(dest);
+    if !dest.is_dir() {
+        return Err(CmdError::new("not_found", "the destination is not a folder"));
+    }
+    std::thread::spawn(move || {
         let registry = app.state::<AppState>().drivers.clone();
+        match folder_export_jobs(&ws, source_id, &folder, &dest) {
+            Ok((top, jobs)) => export_to(&registry, &ws, &top, jobs),
+            Err(e) => crate::tasks::begin("export", folder, crate::tasks::Unit::Items, None).fail(e.message),
+        }
+    });
+    Ok(())
+}
+
+/// What exporting `folder` into `dest` copies where: its name (the source's for the root)
+/// and each item with its target folder, below a new folder that is not taken yet.
+fn folder_export_jobs(ws: &Workspace, source_id: i64, folder: &str, dest: &Path) -> CmdResult<(String, Vec<(vp_db::MediaLocation, PathBuf)>)> {
+    let folder = folder.trim_matches('/');
+    let top = match folder.rsplit('/').next().filter(|s| !s.is_empty()) {
+        Some(name) => name.to_string(),
+        None => ws.read_db.lock().unwrap().source(source_id)?.map(|s| s.name).unwrap_or_default(),
+    };
+    let safe = crate::shards::safe_name(&top, "folder");
+    let mut root = dest.join(&safe);
+    let mut n = 2;
+    while root.exists() {
+        root = dest.join(format!("{safe} ({n})"));
+        n += 1;
+    }
+    let ids = ws.read_db.lock().unwrap().folder_media(source_id, folder)?;
+    let jobs = ids
+        .iter()
+        .filter_map(|id| ws.read_db.lock().unwrap().media_location(*id).ok().flatten())
+        .map(|loc| {
+            // Subfolders below `folder`, each made safe as a path component.
+            let inner = loc.rel_path.strip_prefix(folder).unwrap_or(&loc.rel_path).trim_start_matches('/');
+            let dir = match inner.rsplit_once('/') {
+                Some((parents, _)) => parents.split('/').fold(root.clone(), |p, c| p.join(crate::shards::safe_name(c, "folder"))),
+                None => root.clone(),
+            };
+            (loc, dir)
+        })
+        .collect();
+    Ok((top, jobs))
+}
+
+/// Copies each item into its folder (made as needed) as task `export`; a name already
+/// taken gets a number.
+fn export_to(registry: &vp_driver::DriverRegistry, ws: &Workspace, label: &str, jobs: Vec<(vp_db::MediaLocation, PathBuf)>) {
+    {
         let cancel = Arc::new(AtomicBool::new(false));
-        let task = crate::tasks::begin_with_cancel("export", "", crate::tasks::Unit::Bytes, None, Some(cancel.clone()));
-        let locs: Vec<_> = ids.iter().filter_map(|id| ws.read_db.lock().unwrap().media_location(*id).ok().flatten()).collect();
-        task.set(0, Some(locs.iter().map(|l| l.size).sum()));
+        let task = crate::tasks::begin_with_cancel("export", label, crate::tasks::Unit::Bytes, None, Some(cancel.clone()));
+        task.set(0, Some(jobs.iter().map(|(l, _)| l.size).sum()));
         let mut failed = 0usize;
         let mut buf = vec![0u8; 1024 * 1024];
-        for loc in locs {
+        for (loc, dir) in jobs {
             if cancel.load(Ordering::Relaxed) || ws.closed.load(Ordering::Relaxed) {
                 return task.cancelled();
             }
             let name = crate::shards::safe_name(&crate::workspace::file_name(&loc.rel_path), "file");
             task.detail(&name);
+            if std::fs::create_dir_all(&dir).is_err() {
+                failed += 1;
+                continue;
+            }
             let (stem, ext) = match name.rsplit_once('.') {
                 Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
                 _ => (name.clone(), String::new()),
             };
-            let mut target = dest.join(&name);
+            let mut target = dir.join(&name);
             let mut n = 2;
             while target.exists() {
-                target = dest.join(format!("{stem} ({n}){ext}"));
+                target = dir.join(format!("{stem} ({n}){ext}"));
                 n += 1;
             }
             let one = (|| -> CmdResult<()> {
-                let reader = ws.open_media(&registry, &loc)?;
+                let reader = ws.open_media(registry, &loc)?;
                 let mut out = std::fs::File::create(&target)?;
                 let mut off = 0u64;
                 while off < reader.len() {
@@ -1344,8 +1411,7 @@ pub fn export_media(app: AppHandle, state: State<'_, AppState>, ids: Vec<i64>, d
             }
         }
         if failed > 0 { task.fail(format!("{failed} files failed")) } else { task.finish() }
-    });
-    Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1414,6 +1480,23 @@ mod folder_tests {
             let t = image::load_from_memory(&data).unwrap();
             assert_eq!(t.width(), t.height(), "all four tiles");
         }
+
+        // Export: a new folder named like the exported one, subfolders kept; again → "(2)".
+        let out = tempfile::tempdir().unwrap();
+        let (top, jobs) = folder_export_jobs(&ws, src, "trip", out.path()).unwrap();
+        assert_eq!(top, "trip");
+        export_to(&registry, &ws, &top, jobs);
+        for f in ["trip/day1/a.jpg", "trip/day1/deep/b.jpg", "trip/c.jpg", "trip/phone.heic"] {
+            assert!(out.path().join(f).is_file(), "{f} exported");
+        }
+        assert_eq!(std::fs::read(out.path().join("trip/day1/a.jpg")).unwrap(), jpeg());
+        assert!(!out.path().join("trip/day1/notes.txt").exists(), "unlisted files stay");
+        let (_, jobs) = folder_export_jobs(&ws, src, "trip/day1", out.path()).unwrap();
+        export_to(&registry, &ws, "day1", jobs);
+        assert!(out.path().join("day1/deep/b.jpg").is_file());
+        let (_, jobs) = folder_export_jobs(&ws, src, "trip/day1", out.path()).unwrap();
+        export_to(&registry, &ws, "day1", jobs);
+        assert!(out.path().join("day1 (2)/a.jpg").is_file());
 
         // Rename: the folder moves as a whole (unlisted files too); items keep their ids.
         let r = relocate_folder(&ws, &registry, src, "trip/day1", "trip/first").unwrap();

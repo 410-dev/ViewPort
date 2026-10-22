@@ -210,7 +210,8 @@ name.vpshard/
   이름을 바꾸고, `consent.json`(라이선스·동의 시각) 다음 **manifest를 마지막에** 써서 받다 만 팩이 인식되지 않는다. 데스크톱만(`ureq`, rustls).
 - **UI**: 사이드바 "인물" → `people/PeopleView.svelte`(인물/캐릭터 탭, 분석 상태·시작, 그룹 카드, 합치기, 이름 붙이기, 얼굴별 "이 사람 아님",
   "사진 보기" = 해당 조건 검색, 얼굴 클릭·우클릭 메뉴 = "이미지 열기"(그 그룹 이미지들로 뷰어, 인물 창은 숨겼다가 복귀) /
-  "라이브러리에서 보기"(소스·폴더로 이동해 검색 후 선택하고 `Selection.revealing`으로 그리드·목록이 스크롤)). 설정 → 분석.
+  "라이브러리에서 보기"(소스·폴더로 이동해 검색 후 선택하고 `Selection.revealing`으로 그리드·목록이 스크롤) /
+  "다른 인물로 옮기기"(같은 종류 인물 목록에서 고르거나 새 이름 → `ml_new_person`, 확정된 얼굴로 기록) / "이 사람 아님"). 설정 → 분석.
   Windows는 ONNX Runtime 경로가 비어 있으면 시스템 검색으로 `System32\onnxruntime.dll`(Windows ML, CUDA 없음 → DirectML)이 잡힌다.
   NVIDIA GPU를 제대로 쓰려면 onnxruntime-gpu(CUDA) 빌드를 지정해야 한다.
 - 선택적 실제 환경 테스트: `VP_TEST_ORT=<ONNX Runtime 라이브러리> VP_TEST_MODELS=<모델 팩 폴더> [VP_TEST_IMAGE=<사진>] cargo test -p vp-ml --features onnx`.

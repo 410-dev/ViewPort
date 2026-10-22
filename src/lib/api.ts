@@ -547,6 +547,8 @@ export const api = {
   panic: () => invoke<void>("panic"),
   cancelTask: (id: number) => invoke<boolean>("cancel_task", { id }),
   exportMedia: (ids: number[], dest: string) => invoke<void>("export_media", { ids, dest }),
+  /** Copies a folder (with its subfolders) into a new folder of the same name in `dest`. */
+  exportFolder: (sourceId: number, folder: string, dest: string) => invoke<void>("export_folder", { sourceId, folder, dest }),
   /** Deletes the files of `ids` from their sources and forgets the items. */
   renameMedia: (id: number, name: string) => invoke<void>("rename_media", { id, name }),
   /** Moves items into `folder` of their own source (names kept). */
@@ -585,6 +587,8 @@ export const api = {
   mlMergePeople: (into: number, from: number[]) => invoke<void>("ml_merge_people", { into, from }),
   /** `person` null: "not this person". */
   mlAssignFaces: (faces: number[], person: number | null) => invoke<void>("ml_assign_faces", { faces, person }),
+  /** Moves faces into a new person (naming it like an existing one merges them); returns its id. */
+  mlNewPerson: (kind: FaceKind, name: string, faces: number[]) => invoke<number>("ml_new_person", { kind, name, faces }),
   mlHidePerson: (id: number, hidden: boolean) => invoke<void>("ml_hide_person", { id, hidden }),
   /** What the library shows, in order: analysed before the rest. */
   mlPrioritize: (ids: number[]) => invoke<void>("ml_prioritize", { ids }),

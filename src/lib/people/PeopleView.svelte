@@ -32,23 +32,49 @@
     onclose: () => void;
   } = $props();
 
-  /** A face's menu (right click): open its image or find it in the library. */
+  /** A face's menu (right click): open its image, find it in the library, or move it. */
   let menu = $state<{ x: number; y: number; face: FaceRow } | null>(null);
-  const menuItems = $derived<MenuItem[]>(
-    menu
-      ? [
-          {
-            label: t("people.openImage"),
-            icon: "image",
-            action: () => {
-              const f = menu!.face;
-              onopen(f.media_id, [...new Set(faces.map((x) => x.media_id))]);
-            },
-          },
-          { label: t("people.revealImage"), icon: "folder", action: () => onreveal(menu!.face.media_id) },
-        ]
-      : [],
-  );
+  // The menu closes before an item acts, so each item keeps its own face.
+  const menuItems = $derived.by<MenuItem[]>(() => {
+    const face = menu?.face;
+    if (!face) return [];
+    return [
+      { label: t("people.openImage"), icon: "image", action: () => onopen(face.media_id, [...new Set(faces.map((x) => x.media_id))]) },
+      { label: t("people.revealImage"), icon: "folder", action: () => onreveal(face.media_id) },
+      {
+        label: t("people.moveTo"),
+        icon: "users",
+        action: () => {
+          moving = face;
+          moveFilter = "";
+        },
+      },
+      { label: t("people.notThis"), icon: "x", danger: true, action: () => notThis(face) },
+    ];
+  });
+
+  /** "Move to another person": the face being moved, and the picker's filter / new name. */
+  let moving = $state<FaceRow | null>(null);
+  let moveFilter = $state("");
+  const moveTargets = $derived.by(() => {
+    const q = moveFilter.trim().toLowerCase();
+    return people.filter((p) => p.id !== open?.id && (!q || (p.name || t("people.unnamed")).toLowerCase().includes(q)));
+  });
+  $effect(() => {
+    if (moving) return onBack(() => (moving = null));
+  });
+
+  async function moveTo(person: number | null) {
+    const face = moving;
+    if (!face) return;
+    moving = null;
+    await run(async () => {
+      if (person == null) await api.mlNewPerson(kind, moveFilter.trim(), [face.id]);
+      else await api.mlAssignFaces([face.id], person);
+    });
+    faces = faces.filter((f) => f.id !== face.id);
+    refreshPeople();
+  }
 
   const PAGE = 200;
 
@@ -305,6 +331,47 @@
   <ContextMenu x={menu.x} y={menu.y} items={menuItems} onclose={() => (menu = null)} />
 {/if}
 
+{#if moving}
+  <div class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && (moving = null)}>
+    <div class="dialog move" role="dialog" aria-modal="true" aria-labelledby="move-title">
+      <header>
+        <span class="face mini"><img src={faceUrl(moving.id)} alt="" draggable="false" /></span>
+        <h2 id="move-title">{t("people.moveTo")}</h2>
+        <button class="icon-btn" aria-label={t("common.close")} onclick={() => (moving = null)}><Icon name="x" size={16} /></button>
+      </header>
+      <div class="move-body">
+        <!-- svelte-ignore a11y_autofocus -->
+        <input
+          class="input"
+          placeholder={t("people.moveFilter")}
+          bind:value={moveFilter}
+          autofocus
+          onkeydown={(e) => {
+            if (e.key !== "Enter" || e.isComposing) return;
+            const exact = moveTargets.find((p) => p.name && p.name.toLowerCase() === moveFilter.trim().toLowerCase());
+            moveTo(exact ? exact.id : moveTargets.length === 1 ? moveTargets[0].id : null);
+          }}
+        />
+        <button class="target new" onclick={() => moveTo(null)}>
+          <span class="face mini"><Icon name="plus" size={16} /></span>
+          <span class="pname">{moveFilter.trim() ? t("people.moveNewNamed", { name: moveFilter.trim() }) : t("people.moveNew")}</span>
+        </button>
+        <div class="targets">
+          {#each moveTargets as p (p.id)}
+            <button class="target" onclick={() => moveTo(p.id)}>
+              <span class="face mini">
+                {#if p.cover != null}<img src={faceUrl(p.cover)} alt="" loading="lazy" draggable="false" />{:else}<Icon name="users" size={16} />{/if}
+              </span>
+              <span class="pname" class:unnamed={!p.name}>{p.name || t("people.unnamed")}</span>
+              <span class="pcount tabular">{t("people.items", { n: p.items.toLocaleString() })}</span>
+            </button>
+          {/each}
+        </div>
+      </div>
+    </div>
+  </div>
+{/if}
+
 <style>
   .people {
     width: min(980px, 100%);
@@ -433,5 +500,49 @@
   .more {
     grid-column: 1 / -1;
     justify-self: center;
+  }
+  .move {
+    width: min(420px, 100%);
+    max-height: min(620px, 100%);
+  }
+  .move-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px 16px 16px;
+    min-height: 0;
+  }
+  .targets {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    overflow-y: auto;
+    min-height: 0;
+  }
+  .target {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 8px;
+    border: 0;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--fg);
+    text-align: left;
+  }
+  .target:hover,
+  .target:focus-visible {
+    background: var(--hover);
+  }
+  .target .pname {
+    flex: 1;
+    min-width: 0;
+  }
+  .target.new {
+    color: var(--accent);
+  }
+  .face.mini {
+    width: 36px;
+    flex-shrink: 0;
   }
 </style>

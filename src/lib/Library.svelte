@@ -629,6 +629,7 @@
         ]),
     { label: t("sel.rename"), icon: "pencil", action: folderAction((f) => (renaming = { folder: f, name: baseName(f.path), error: "" })) },
     { label: t("sel.move"), icon: "folder", action: folderAction((f) => (moving = { ids: [], folder: f, sourceId: f.sourceId, start: parentOf(f.path) })) },
+    { label: t("sel.export"), icon: "download", action: folderAction(exportFolder) },
     ...(hasShard ? [{ label: t("sel.copyTo"), icon: "copy" as const, action: folderAction((f) => startCopy([], [{ sourceId: f.sourceId, path: f.path }])) }] : []),
     { label: t("sel.delete"), icon: "trash", danger: true, action: folderAction((f) => (confirmFolderDelete = f)) },
   ]);
@@ -667,6 +668,11 @@
   async function exportSelected(list: number[]) {
     const dest = await pickFolder(t("panel.exportTo"));
     if (dest) api.exportMedia(list, dest).catch((e) => alert(asCmdError(e).message));
+  }
+
+  async function exportFolder(f: FolderRef) {
+    const dest = await pickFolder(t("panel.exportTo"));
+    if (dest) api.exportFolder(f.sourceId, f.path, dest).catch((e) => alert(asCmdError(e).message));
   }
 
   async function deleteConfirmed() {
