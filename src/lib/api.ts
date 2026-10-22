@@ -286,6 +286,9 @@ export interface AppSettings {
   export: {
     keep_dates: boolean;
   };
+  log: {
+    max_bytes: number;
+  };
 }
 
 // ---- image analysis (`ml.rs`)
@@ -575,10 +578,16 @@ export const api = {
   // Shard sources (src-tauri/src/shards.rs)
   shardStatus: () => invoke<ShardStatus[]>("shard_status"),
   inspectShard: (path: string) => invoke<ShardPeek>("inspect_shard", { path }),
-  createShard: (name: string, location: string | null, password: string | null, keyfile: string | null, remember: boolean) =>
-    invoke<SourceRow>("create_shard", { name, location, password, keyfile, remember }),
-  attachShard: (path: string, mode: ShardPlace, password: string | null, keyfile: string | null, remember: boolean) =>
-    invoke<SourceRow>("attach_shard", { path, mode, password, keyfile, remember }),
+  createShard: (name: string, location: string | null, password: string | null, keyfile: string | null, remember: boolean, propsInShard: boolean) =>
+    invoke<SourceRow>("create_shard", { name, location, password, keyfile, remember, propsInShard }),
+  attachShard: (path: string, mode: ShardPlace, password: string | null, keyfile: string | null, remember: boolean, propsInShard: boolean) =>
+    invoke<SourceRow>("attach_shard", { path, mode, password, keyfile, remember, propsInShard }),
+  shardSetProps: (sourceId: number, inShard: boolean) => invoke<SourceRow>("shard_set_props", { sourceId, inShard }),
+  mirrorList: () => invoke<MirrorRow[]>("mirror_list"),
+  mirrorSave: (id: number | null, sourceId: number, targetId: number, targetFolder: string, enabled: boolean, propagateDeletes: boolean) =>
+    invoke<number>("mirror_save", { id, sourceId, targetId, targetFolder, enabled, propagateDeletes }),
+  mirrorDelete: (id: number) => invoke<void>("mirror_delete", { id }),
+  mirrorSync: (id: number) => invoke<void>("mirror_sync", { id }),
   unlockShard: (sourceId: number, password: string, keyfile: string | null, remember: boolean) =>
     invoke<void>("unlock_shard", { sourceId, password, keyfile, remember }),
   lockShard: (sourceId: number) => invoke<void>("lock_shard", { sourceId }),
@@ -651,6 +660,8 @@ export interface ShardStatus {
   busy: boolean;
   chunk_bytes: number;
   stats: ShardStats | null;
+  /** Item properties are kept in the shard. */
+  props_in_shard: boolean;
 }
 
 export interface ShardPeek {
@@ -658,6 +669,21 @@ export interface ShardPeek {
   encrypted: boolean;
   requires_keyfile: boolean;
   shard_version: number;
+  /** It already keeps item properties; null while encrypted (unknown). */
+  has_props: boolean | null;
+}
+
+/** A source kept copied into a folder of another source (`mirror.rs`). */
+export interface MirrorRow {
+  id: number;
+  source_id: number;
+  target_id: number;
+  target_folder: string;
+  enabled: boolean;
+  propagate_deletes: boolean;
+  created_ms: number;
+  last_sync_ms: number | null;
+  last_result: string | null;
 }
 
 export interface VerifyReport {

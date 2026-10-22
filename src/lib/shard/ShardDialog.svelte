@@ -38,6 +38,9 @@
   let peek = $state<ShardPeek | null>(null);
   let place = $state<ShardPlace>("link");
 
+  /** Where item properties (favorites, tags, statistics, ...) are read and written. */
+  let propsInShard = $state(false);
+
   const others = $derived(sources.filter((s) => s.driver !== "shard"));
   const encrypted = $derived(tab === "create" ? encrypt : !!peek?.encrypted);
   const mismatch = $derived(tab === "create" && encrypt && password2 !== "" && password !== password2);
@@ -70,6 +73,8 @@
     error = null;
     try {
       peek = await api.inspectShard(p);
+      // A shard that already keeps them (another library chose so) keeps doing so.
+      propsInShard = peek.has_props ?? propsInShard;
     } catch (e) {
       error = errText(e);
     }
@@ -82,12 +87,12 @@
       const kf = keyfile || null;
       const rememberIt = bundle.locked && remember;
       if (tab === "create") {
-        const s = await api.createShard(name.trim(), elsewhere ? parent : null, encrypt ? password : null, encrypt ? kf : null, rememberIt);
+        const s = await api.createShard(name.trim(), elsewhere ? parent : null, encrypt ? password : null, encrypt ? kf : null, rememberIt, propsInShard);
         if (initial === "folder") await api.shardImport(s.id, [initialFolder], "", mode);
         if (initial === "source") await api.shardFromSource(Number(initialSource), s.id, "", mode);
         ondone(s);
       } else {
-        ondone(await api.attachShard(path, place, password || null, kf, rememberIt));
+        ondone(await api.attachShard(path, place, password || null, kf, rememberIt, propsInShard));
       }
     } catch (e) {
       error = errText(e);
@@ -203,6 +208,16 @@
           {/if}
         {/if}
       {/if}
+
+      <div class="field">
+        <span>{t("shard.props")}</span>
+        <div class="seg sm">
+          <button class:on={!propsInShard} onclick={() => (propsInShard = false)}>{t("shard.props.library")}</button>
+          <button class:on={propsInShard} onclick={() => (propsInShard = true)}>{t("shard.props.shard")}</button>
+        </div>
+        <p class="hint">{propsInShard ? t("shard.props.shardHint") : t("shard.props.libraryHint")}</p>
+        {#if tab === "attach" && peek?.has_props}<p class="hint"><Icon name="info" size={12} />{t("shard.props.found")}</p>{/if}
+      </div>
 
       {#if encrypted}
         {#if bundle.locked}

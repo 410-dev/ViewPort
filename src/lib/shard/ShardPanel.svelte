@@ -235,6 +235,25 @@
           </div>
         </section>
 
+        {#if status}
+          <section>
+            <h3>{t("shard.props")}</h3>
+            <div class="seg sm">
+              <button
+                class:on={!status.props_in_shard}
+                disabled={busy}
+                onclick={() => run(async () => void (await api.shardSetProps(source.id, false)))}>{t("shard.props.library")}</button
+              >
+              <button
+                class:on={status.props_in_shard}
+                disabled={busy || !canWrite}
+                onclick={() => run(async () => void (await api.shardSetProps(source.id, true)))}>{t("shard.props.shard")}</button
+              >
+            </div>
+            <p class="hint">{status.props_in_shard ? t("shard.props.shardHint") : t("shard.props.libraryHint")}</p>
+          </section>
+        {/if}
+
         <section>
           <h3>{t("shard.maintenance")}</h3>
           <div class="actions">

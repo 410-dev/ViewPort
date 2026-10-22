@@ -23,6 +23,7 @@
     onedit,
     onremove,
     oncopy,
+    onmirror,
     onrunsaved,
     oneditsaved,
     ondeletesaved,
@@ -56,6 +57,8 @@
     onremove: (s: SourceRow) => void;
     /** Copies a whole source to another one (only offered while the bundle has a shard). */
     oncopy?: (s: SourceRow) => void;
+    /** Keeps the source copied into another one (mirror settings). */
+    onmirror?: (s: SourceRow) => void;
     onrunsaved: (q: SavedQuery) => void;
     oneditsaved: (q: SavedQuery) => void;
     ondeletesaved: (q: SavedQuery) => void;
@@ -147,6 +150,9 @@
             <button class="icon-btn sm" title={t("side.rescan")} onclick={() => onrescan(s)}><Icon name="refresh" size={13} /></button>
             {#if oncopy}
               <button class="icon-btn sm" title={t("side.copySource")} onclick={() => oncopy(s)}><Icon name="copy" size={13} /></button>
+            {/if}
+            {#if onmirror}
+              <button class="icon-btn sm" title={t("side.mirror")} onclick={() => onmirror(s)}><Icon name="loop" size={13} /></button>
             {/if}
             <button class="icon-btn sm" title={t("common.edit")} onclick={() => onedit(s)}><Icon name="pencil" size={13} /></button>
             <button class="icon-btn sm" title={t("common.remove")} onclick={() => onremove(s)}><Icon name="trash" size={13} /></button>

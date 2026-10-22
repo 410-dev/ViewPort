@@ -626,3 +626,67 @@ fn faces_group_into_people_whose_names_are_searchable() {
     lib.db.forget_model("sface@1").unwrap();
     assert!(lib.db.faces_for_grouping("real", emb).unwrap().is_empty());
 }
+
+#[test]
+fn item_properties_travel_and_changes_are_tracked() {
+    let mut lib = library();
+    let before = lib.db.meta_counter().unwrap();
+    assert!(before > 0, "setting values counts as changes");
+    // Item 1 (source 1) changes; item 3 (source 2) does not show up for source 1.
+    lib.db.set_flag(1, "ignore_playback_warning", true).unwrap();
+    lib.db.record_view(1, OCT18, 5_000, 1e9).unwrap();
+    let changed = lib.db.meta_changed(1, before).unwrap();
+    assert_eq!(changed.iter().map(|c| c.media_id).collect::<Vec<_>>(), [1]);
+    assert_eq!(changed[0].rel_path, "trip/b10.jpg");
+    assert!(lib.db.meta_changed(2, before).unwrap().is_empty());
+
+    // The whole document moves to another item, a field it lacks here included.
+    let mut props = lib.db.item_props(1).unwrap();
+    assert_eq!(props.flags, ["ignore_playback_warning"]);
+    assert_eq!(props.stats.as_ref().unwrap().view_count, 1);
+    props.values.push(props::PropValue { field: "u.77".into(), int: None, real: None, text: Some("홍길동".into()), origin: "user".into() });
+    let mut fields = lib.db.prop_fields(props.values.iter().map(|v| v.field.clone())).unwrap();
+    fields.insert(
+        "u.77".into(),
+        props::PropField { names: serde_json::json!([["ko", "평가자"]]), aliases: serde_json::json!([]), ty: serde_json::json!({"type": "text"}) },
+    );
+    lib.db.apply_item_props(3, &props, &fields).unwrap();
+    let copied = lib.db.item_props(3).unwrap();
+    assert_eq!(copied.values, props.values);
+    assert_eq!((copied.flags, copied.stats), (props.flags.clone(), props.stats.clone()));
+    lib.reg = lib.db.field_registry().unwrap();
+    assert_eq!(lib.ids("평가자(홍길동)"), [3], "the missing field was created");
+
+    // Everything of a source counts as changed (properties start being kept elsewhere).
+    let now = lib.db.meta_counter().unwrap();
+    lib.db.set_meta_synced(1, now).unwrap();
+    assert!(lib.db.meta_changed(1, lib.db.meta_synced(1).unwrap()).unwrap().is_empty());
+    assert_eq!(lib.db.touch_meta(1).unwrap(), 3);
+    assert_eq!(lib.db.meta_changed(1, now).unwrap().len(), 3);
+}
+
+#[test]
+fn mirrors_track_what_they_copied() {
+    let lib = library();
+    let id = lib.db.save_mirror(None, 1, 2, "phone", true, true, 1).unwrap();
+    let item = mirror::MirrorItem {
+        rel_path: "trip/b2.jpg".into(),
+        target_path: "phone/trip/b2.jpg".into(),
+        size: 10,
+        modified_ms: Some(5),
+        target_size: 10,
+        target_modified_ms: Some(5),
+        meta_rev: 0,
+    };
+    lib.db.put_mirror_item(id, &item).unwrap();
+    assert_eq!(lib.db.mirror_items(id).unwrap()["trip/b2.jpg"], item);
+    // Same target: kept. Another target folder: starts over.
+    lib.db.save_mirror(Some(id), 1, 2, "phone", false, true, 1).unwrap();
+    assert_eq!(lib.db.mirror_items(id).unwrap().len(), 1);
+    assert!(!lib.db.mirror(id).unwrap().unwrap().enabled);
+    lib.db.save_mirror(Some(id), 1, 2, "elsewhere", true, true, 1).unwrap();
+    assert!(lib.db.mirror_items(id).unwrap().is_empty());
+    assert_eq!(lib.db.present_files(1).unwrap().len(), 3);
+    lib.db.delete_mirror(id).unwrap();
+    assert!(lib.db.mirrors().unwrap().is_empty());
+}

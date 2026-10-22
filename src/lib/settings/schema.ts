@@ -100,7 +100,10 @@ export const SECTIONS: Section[] = [
       {
         title: "set.log",
         note: "set.log.note",
-        fields: [{ kind: "custom", id: "log" }],
+        fields: [
+          { kind: "custom", id: "log" },
+          { kind: "number", ...app({ path: "log.max_bytes", label: "set.logMax" }), min: 1, max: 64, step: 1, scale: MB, unit: "MB" },
+        ],
       },
       {
         title: "set.export",
@@ -508,6 +511,9 @@ export const SECTIONS: Section[] = [
         fields: [
           { kind: "toggle", ...bundle({ path: "shard.verify_moves", label: "set.shardVerifyMoves", help: "set.shardVerifyMoves.help" }) },
           { kind: "toggle", ...bundle({ path: "shard.auto_compact", label: "set.shardAutoCompact" }) },
+          { kind: "number", ...bundle({ path: "shard.props_flush_secs", label: "set.shardPropsFlush", help: "set.shardPropsFlush.help" }), min: 1, step: 1, unit: "s" },
+          { kind: "number", ...bundle({ path: "mirror.check_secs", label: "set.mirrorCheck", help: "set.mirrorCheck.help" }), min: 5, step: 5, unit: "s" },
+          { kind: "number", ...bundle({ path: "mirror.resync_mins", label: "set.mirrorResync", help: "set.mirrorResync.help" }), min: 0, step: 5, unit: "min" },
           {
             kind: "number",
             ...bundle({ path: "shard.compact_garbage_ratio", label: "set.shardCompactRatio", help: "set.shardCompactRatio.help" }),

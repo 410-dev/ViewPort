@@ -37,6 +37,7 @@ fn retire(ws: Arc<Workspace>) -> bool {
     for cancel in ws.converts.lock().unwrap().values() {
         cancel.store(true, Ordering::Relaxed);
     }
+    crate::shard_props::flush_all(&ws);
     ws.flush();
     for _ in 0..100 {
         if Arc::strong_count(&ws) == 1 {
@@ -53,6 +54,8 @@ fn install(app: &AppHandle, state: &AppState, ws: Workspace) -> CmdResult<Bundle
     ws.start_background(state.drivers.clone());
     if ws.autosave() {
         crate::video::spawn_probe_backfill(app, ws.clone());
+        crate::shard_props::start(ws.clone());
+        crate::mirror::start(app, ws.clone());
     }
     let old = state.workspace.write().unwrap().replace(ws);
     // Extra windows belong to the previous bundle.
@@ -376,6 +379,12 @@ pub(crate) fn scan_now(app: &AppHandle, ws: Arc<Workspace>, source: SourceRow) -
         Err(e) => task.fail(e.clone()),
     }
     ws.scans.lock().unwrap().remove(&source.id);
+    if result.is_ok()
+        && ws.autosave()
+        && let Err(e) = crate::shard_props::import(&ws, &source)
+    {
+        crate::applog::warn("props", format!("could not take in properties of '{}': {}", source.name, e.message));
+    }
     if result.is_ok() && ws.autosave() {
         crate::video::spawn_probe_backfill(app, ws.clone());
     }

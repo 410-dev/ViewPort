@@ -10,7 +10,9 @@ mod ml;
 mod ml_store;
 mod platform;
 mod recent;
+mod mirror;
 mod secrets;
+mod shard_props;
 mod shards;
 mod tasks;
 mod thumbs;
@@ -152,6 +154,11 @@ pub fn run() {
             shards::shard_export,
             shards::copy_to_source,
             shards::copy_conflict_answer,
+            shards::shard_set_props,
+            mirror::mirror_list,
+            mirror::mirror_save,
+            mirror::mirror_delete,
+            mirror::mirror_sync,
             ml::ml_status,
             ml::ml_analyze,
             ml::ml_prioritize,

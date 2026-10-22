@@ -2,6 +2,8 @@
 
 pub mod collation;
 pub mod faces;
+pub mod mirror;
+pub mod props;
 pub mod schema;
 
 use std::path::Path;

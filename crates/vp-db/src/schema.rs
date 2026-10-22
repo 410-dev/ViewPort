@@ -281,6 +281,98 @@ const MIGRATIONS: &[&str] = &[
                OR lower(aliases) LIKE '%"자동 태그"%' OR lower(aliases) LIKE '%"auto tags"%'
         );
     "#,
+    // v8: item properties kept in shards, and source mirrors. Every change to an item's
+    // values, statistics, flags or loop segments bumps one counter and stamps the item
+    // with it (`meta_rev`), so whatever writes properties elsewhere (a shard, a mirror)
+    // only looks at what changed since its last pass (`meta_sync`, `mirror_item`).
+    r#"
+    CREATE TABLE meta_counter (id INTEGER PRIMARY KEY CHECK (id = 1), rev INTEGER NOT NULL);
+    INSERT INTO meta_counter (id, rev) VALUES (1, 0);
+    CREATE TABLE meta_rev (media_id INTEGER PRIMARY KEY, rev INTEGER NOT NULL);
+    CREATE INDEX meta_rev_rev ON meta_rev(rev);
+    -- Properties of a source written out up to this revision.
+    CREATE TABLE meta_sync (source_id INTEGER PRIMARY KEY, rev INTEGER NOT NULL);
+
+    CREATE TRIGGER meta_ext_ins AFTER INSERT ON ext_value BEGIN
+        UPDATE meta_counter SET rev = rev + 1;
+        INSERT INTO meta_rev (media_id, rev) VALUES (NEW.media_id, (SELECT rev FROM meta_counter))
+            ON CONFLICT (media_id) DO UPDATE SET rev = excluded.rev;
+    END;
+    CREATE TRIGGER meta_ext_upd AFTER UPDATE ON ext_value BEGIN
+        UPDATE meta_counter SET rev = rev + 1;
+        INSERT INTO meta_rev (media_id, rev) VALUES (NEW.media_id, (SELECT rev FROM meta_counter))
+            ON CONFLICT (media_id) DO UPDATE SET rev = excluded.rev;
+    END;
+    CREATE TRIGGER meta_ext_del AFTER DELETE ON ext_value BEGIN
+        UPDATE meta_counter SET rev = rev + 1;
+        INSERT INTO meta_rev (media_id, rev) VALUES (OLD.media_id, (SELECT rev FROM meta_counter))
+            ON CONFLICT (media_id) DO UPDATE SET rev = excluded.rev;
+    END;
+    CREATE TRIGGER meta_stats_ins AFTER INSERT ON media_stats BEGIN
+        UPDATE meta_counter SET rev = rev + 1;
+        INSERT INTO meta_rev (media_id, rev) VALUES (NEW.media_id, (SELECT rev FROM meta_counter))
+            ON CONFLICT (media_id) DO UPDATE SET rev = excluded.rev;
+    END;
+    CREATE TRIGGER meta_stats_upd AFTER UPDATE ON media_stats BEGIN
+        UPDATE meta_counter SET rev = rev + 1;
+        INSERT INTO meta_rev (media_id, rev) VALUES (NEW.media_id, (SELECT rev FROM meta_counter))
+            ON CONFLICT (media_id) DO UPDATE SET rev = excluded.rev;
+    END;
+    CREATE TRIGGER meta_flag_ins AFTER INSERT ON media_flag BEGIN
+        UPDATE meta_counter SET rev = rev + 1;
+        INSERT INTO meta_rev (media_id, rev) VALUES (NEW.media_id, (SELECT rev FROM meta_counter))
+            ON CONFLICT (media_id) DO UPDATE SET rev = excluded.rev;
+    END;
+    CREATE TRIGGER meta_flag_del AFTER DELETE ON media_flag BEGIN
+        UPDATE meta_counter SET rev = rev + 1;
+        INSERT INTO meta_rev (media_id, rev) VALUES (OLD.media_id, (SELECT rev FROM meta_counter))
+            ON CONFLICT (media_id) DO UPDATE SET rev = excluded.rev;
+    END;
+    CREATE TRIGGER meta_loop_ins AFTER INSERT ON loop_segment BEGIN
+        UPDATE meta_counter SET rev = rev + 1;
+        INSERT INTO meta_rev (media_id, rev) VALUES (NEW.media_id, (SELECT rev FROM meta_counter))
+            ON CONFLICT (media_id) DO UPDATE SET rev = excluded.rev;
+    END;
+    CREATE TRIGGER meta_loop_upd AFTER UPDATE ON loop_segment BEGIN
+        UPDATE meta_counter SET rev = rev + 1;
+        INSERT INTO meta_rev (media_id, rev) VALUES (NEW.media_id, (SELECT rev FROM meta_counter))
+            ON CONFLICT (media_id) DO UPDATE SET rev = excluded.rev;
+    END;
+    CREATE TRIGGER meta_loop_del AFTER DELETE ON loop_segment BEGIN
+        UPDATE meta_counter SET rev = rev + 1;
+        INSERT INTO meta_rev (media_id, rev) VALUES (OLD.media_id, (SELECT rev FROM meta_counter))
+            ON CONFLICT (media_id) DO UPDATE SET rev = excluded.rev;
+    END;
+    CREATE TRIGGER meta_rev_gone AFTER DELETE ON media BEGIN
+        DELETE FROM meta_rev WHERE media_id = OLD.id;
+    END;
+
+    -- A source copied into another (folder `target_folder` of `target_id`) and kept in step.
+    CREATE TABLE mirror (
+        id                INTEGER PRIMARY KEY,
+        source_id         INTEGER NOT NULL REFERENCES source(id) ON DELETE CASCADE,
+        target_id         INTEGER NOT NULL REFERENCES source(id) ON DELETE CASCADE,
+        target_folder     TEXT NOT NULL DEFAULT '',
+        enabled           INTEGER NOT NULL DEFAULT 1,
+        propagate_deletes INTEGER NOT NULL DEFAULT 1,
+        created_ms        INTEGER NOT NULL,
+        last_sync_ms      INTEGER,
+        last_result       TEXT
+    );
+    -- What a mirror copied: the source file as it was, and the copy as it was written. Only
+    -- these copies are ever replaced or deleted by the mirror.
+    CREATE TABLE mirror_item (
+        mirror_id          INTEGER NOT NULL REFERENCES mirror(id) ON DELETE CASCADE,
+        rel_path           TEXT NOT NULL,
+        target_path        TEXT NOT NULL,
+        size               INTEGER NOT NULL,
+        modified_ms        INTEGER,
+        target_size        INTEGER NOT NULL,
+        target_modified_ms INTEGER,
+        meta_rev           INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (mirror_id, rel_path)
+    );
+    "#,
 ];
 
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;

@@ -27,6 +27,25 @@ pub struct Settings {
     pub shard: ShardSettings,
     pub keys: KeyBindings,
     pub analysis: AnalysisSettings,
+    pub mirror: MirrorSettings,
+}
+
+/// Source mirrors: a source kept copied into another (e.g. a phone's photo folder into a
+/// shard on a USB drive that is only sometimes connected).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MirrorSettings {
+    /// How often the app looks whether a mirror's source and target are both there.
+    pub check_secs: u64,
+    /// While both stay connected, sync again after this long (0: only when the target
+    /// comes back, when the bundle opens, or by hand).
+    pub resync_mins: u64,
+}
+
+impl Default for MirrorSettings {
+    fn default() -> Self {
+        Self { check_secs: 30, resync_mins: 30 }
+    }
 }
 
 /// What image analysis finds in this library and how it groups it. Model packs are named
@@ -398,6 +417,9 @@ pub struct ShardSettings {
     pub auto_compact: bool,
     /// When moving files into a shard, read each back and compare before deleting the original.
     pub verify_moves: bool,
+    /// Shards that keep item properties get changes written this often (and when the
+    /// bundle closes).
+    pub props_flush_secs: u64,
 }
 
 impl Default for ShardSettings {
@@ -410,6 +432,7 @@ impl Default for ShardSettings {
             compact_garbage_ratio: 0.3,
             auto_compact: true,
             verify_moves: true,
+            props_flush_secs: 3,
         }
     }
 }

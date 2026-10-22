@@ -57,6 +57,15 @@ pub const INFO_FILE: &str = "info.json";
 pub const INDEX_FILE: &str = "index.vpidx";
 pub const LOCK_FILE: &str = "shard.lock";
 pub const SHARD_FORMAT_VERSION: u32 = 1;
+
+/// Folder for the app's own files inside a shard (item properties). Ordinary files, so
+/// older apps read the shard as before; the shard driver leaves the folder out of listings.
+pub const RESERVED_DIR: &str = ".viewport";
+
+/// Whether `path` is [`RESERVED_DIR`] or inside it.
+pub fn is_reserved(path: &str) -> bool {
+    path == RESERVED_DIR || path.strip_prefix(RESERVED_DIR).is_some_and(|r| r.starts_with('/'))
+}
 /// FAT32 cannot hold files of 4 GiB or more.
 pub const MAX_CHUNK_BYTES: u64 = u32::MAX as u64;
 pub const MIN_CHUNK_BYTES: u64 = 64 * 1024;
@@ -757,6 +766,13 @@ impl Shard {
         let path = norm(path)?;
         let item = self.index.read().unwrap().files.get(&path).cloned().ok_or(ShardError::NotFound(path))?;
         self.reader(Stream::Data, item)
+    }
+
+    /// The stored item's id (hex) at `path`: it stays with the file when the file is
+    /// renamed or moved, and changes when the file is replaced.
+    pub fn file_id(&self, path: &str) -> Option<String> {
+        let path = norm(path).ok()?;
+        self.index.read().unwrap().files.get(&path).map(|f| f.id.to_string())
     }
 
     pub fn exists(&self, path: &str) -> bool {

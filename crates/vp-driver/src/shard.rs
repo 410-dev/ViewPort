@@ -67,7 +67,8 @@ impl MediaDriver for ShardDriver {
     }
 
     fn list(&self, dir: &str) -> Result<Vec<Entry>> {
-        Ok(self.shard.list(dir)?.into_iter().map(entry).collect())
+        // The app's own files (item properties) are not part of the library.
+        Ok(self.shard.list(dir)?.into_iter().filter(|e| !vp_shard::is_reserved(&e.path)).map(entry).collect())
     }
 
     fn stat(&self, path: &str) -> Result<Entry> {

@@ -38,6 +38,7 @@
   import StatusBar from "./StatusBar.svelte";
   import HeifBanner from "./HeifBanner.svelte";
   import CopyConflict from "./CopyConflict.svelte";
+  import MirrorDialog from "./shard/MirrorDialog.svelte";
   import ContextMenu, { type MenuItem } from "./ui/ContextMenu.svelte";
   import Icon from "./ui/Icon.svelte";
   import ViewerShell from "./ViewerShell.svelte";
@@ -116,6 +117,8 @@
   const selectedIds = $derived([...selection.set]);
   const view = $derived(VIEWS.find((v) => v.key === ui().view_mode) ?? VIEWS[0]);
   const columns = $derived(columnsFor(ui().columns));
+  /** The source whose mirrors are being set up. */
+  let mirroring = $state<SourceRow | null>(null);
   /** Bumped when a new image decoder arrives: views remount and drop thumbnails they gave up on. */
   let decoderEpoch = $state(0);
 
@@ -477,6 +480,14 @@
 
   const menuItems = $derived<MenuItem[]>([
     { label: t("sel.info"), icon: "info", action: () => setPanel(true) },
+    {
+      label: t("sel.goToFolder"),
+      icon: "folder",
+      action: () => {
+        const id = selection.focus != null && selection.set.has(selection.focus) ? selection.focus : [...selection.set][0];
+        if (id != null) revealInLibrary(id);
+      },
+    },
     ...(selection.set.size === 1 ? [{ label: t("sel.rename"), icon: "pencil" as const, action: () => startRename([...selection.set][0]) }] : []),
     { label: t("sel.move"), icon: "folder", action: () => startMove([...selection.set]) },
     ...(hasShard ? [{ label: t("sel.copyTo"), icon: "copy" as const, action: () => startCopy([...selection.set], []) }] : []),
@@ -608,6 +619,17 @@
     selection.clear();
   }
 
+  /** Goes to the folder holding folder `f` (no search, no sorting) and selects `f` there. */
+  function revealFolder(f: FolderRef) {
+    showPeople = false;
+    selected = f.sourceId;
+    lastSource = f.sourceId;
+    folder = parentOf(f.path);
+    query = "";
+    sort = null;
+    selection.selectFolder(f);
+  }
+
   function folderAction(run: (f: FolderRef) => void) {
     return () => {
       if (selection.folder) run(selection.folder);
@@ -616,6 +638,7 @@
 
   const folderMenuItems = $derived<MenuItem[]>([
     { label: t("folder.open"), icon: "folder", action: folderAction(openFolder) },
+    { label: t("sel.goToFolder"), icon: "arrowUp", action: folderAction(revealFolder) },
     { label: t("sel.info"), icon: "info", action: () => setPanel(true) },
     ...(isMobile
       ? []
@@ -792,6 +815,7 @@
         onedit={(s) => (s.driver === "shard" ? (shardPanel = s.id) : (sourceDialog = { source: s }))}
         onremove={removeSource}
       oncopy={hasShard ? (s) => startCopy([], [{ sourceId: s.id, path: "" }]) : undefined}
+      onmirror={embedded ? undefined : (s) => (mirroring = s)}
         onrunsaved={(q) => (query = q.text)}
         oneditsaved={(q) => (modal = { editing: q })}
         ondeletesaved={deleteSaved}
@@ -1091,6 +1115,10 @@
 
 {#if !embedded}
   <CopyConflict />
+{/if}
+
+{#if mirroring}
+  <MirrorDialog source={mirroring} {sources} onclose={() => (mirroring = null)} />
 {/if}
 
 {#if showPeople}

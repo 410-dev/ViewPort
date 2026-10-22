@@ -36,10 +36,19 @@ struct ShardConfig {
     /// Master key (hex), only ever stored in an encrypted bundle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     key: Option<String>,
+    /// Item properties (values, favorites, statistics, ...) are kept in the shard itself
+    /// (`shard_props.rs`), so they go wherever the shard goes; otherwise only in the library.
+    #[serde(default)]
+    props_in_shard: bool,
 }
 
 fn config_of(source: &SourceRow) -> ShardConfig {
     serde_json::from_value(source.config.clone()).unwrap_or_default()
+}
+
+/// Whether `source` is a shard that keeps its items' properties itself.
+pub(crate) fn props_in_shard(source: &SourceRow) -> bool {
+    source.driver == DRIVER && config_of(source).props_in_shard
 }
 
 fn locked_error(source_id: i64, info: &ShardInfo) -> CmdError {
@@ -167,7 +176,7 @@ fn source(ws: &Workspace, id: i64) -> CmdResult<SourceRow> {
     Ok(s)
 }
 
-fn writable(ws: &Workspace, s: &SourceRow) -> CmdResult<Arc<Shard>> {
+pub(crate) fn writable(ws: &Workspace, s: &SourceRow) -> CmdResult<Arc<Shard>> {
     let shard = ws.shard(s)?;
     if !shard.is_writable() {
         let why = if shard.is_busy() { "another program is writing to the shard" } else { "the shard is open read-only" };
@@ -321,7 +330,7 @@ fn thumb_attrs(t: &vp_thumb::Thumb) -> serde_json::Map<String, serde_json::Value
     a
 }
 
-fn join_rel(a: &str, b: &str) -> String {
+pub(crate) fn join_rel(a: &str, b: &str) -> String {
     match (a.is_empty(), b.is_empty()) {
         (true, _) => b.into(),
         (_, true) => a.into(),
@@ -349,6 +358,8 @@ pub struct ShardStatus {
     pub busy: bool,
     pub chunk_bytes: u64,
     pub stats: Option<vp_shard::ShardStats>,
+    /// Item properties are kept in the shard.
+    pub props_in_shard: bool,
 }
 
 #[tauri::command]
@@ -375,6 +386,7 @@ pub async fn shard_status(app: AppHandle) -> CmdResult<Vec<ShardStatus>> {
                 busy: open.as_ref().is_some_and(|o| o.is_busy()),
                 chunk_bytes: info.as_ref().map(|i| i.chunk_bytes).unwrap_or(0),
                 stats: open.map(|o| o.stats()),
+                props_in_shard: cfg.props_in_shard,
             });
         }
         Ok(out)
@@ -388,6 +400,8 @@ pub struct ShardPeek {
     pub encrypted: bool,
     pub requires_keyfile: bool,
     pub shard_version: u32,
+    /// Item properties are kept in it (another library chose so); unknown while encrypted.
+    pub has_props: Option<bool>,
 }
 
 /// What `info.json` of a shard folder says, before attaching it.
@@ -396,12 +410,45 @@ pub async fn inspect_shard(path: String) -> CmdResult<ShardPeek> {
     blocking(move || {
         let p = PathBuf::from(&path);
         let info = Shard::read_info(&p)?;
+        let has_props = match info.encryption {
+            Some(_) => None,
+            None => Shard::open(&p, None, vp_shard::OpenOptions { writable: false, ..Default::default() })
+                .ok()
+                .map(|s| crate::shard_props::has_props(&s)),
+        };
         Ok(ShardPeek {
             name: if info.name.is_empty() { folder_stem(&p) } else { info.name.clone() },
             encrypted: info.encryption.is_some(),
             requires_keyfile: info.encryption.as_ref().is_some_and(|e| e.kdf.requires_keyfile),
             shard_version: info.shard_version,
+            has_props,
         })
+    })
+    .await
+}
+
+/// Keeps item properties in the shard (from now on, all of them written there first) or
+/// only in the library.
+#[tauri::command]
+pub async fn shard_set_props(app: AppHandle, source_id: i64, in_shard: bool) -> CmdResult<SourceRow> {
+    let ws = workspace(&app)?;
+    blocking(move || {
+        let s = source(&ws, source_id)?;
+        let mut cfg = config_of(&s);
+        if cfg.props_in_shard == in_shard {
+            return Ok(s);
+        }
+        cfg.props_in_shard = in_shard;
+        ws.write_db.lock().unwrap().update_source(source_id, &s.name, &s.root, &serde_json::to_value(cfg)?, s.enabled)?;
+        let s = source(&ws, source_id)?;
+        if in_shard {
+            // What the shard already holds (another library's) wins; everything else is
+            // written out.
+            crate::shard_props::import(&ws, &s)?;
+            ws.write_db.lock().unwrap().touch_meta(source_id)?;
+            crate::shard_props::flush(&ws, &s)?;
+        }
+        Ok(s)
     })
     .await
 }
@@ -418,6 +465,7 @@ pub async fn create_shard(
     password: Option<String>,
     keyfile: Option<String>,
     remember: bool,
+    props_in_shard: bool,
 ) -> CmdResult<SourceRow> {
     let ws = workspace(&app)?;
     blocking(move || {
@@ -444,7 +492,7 @@ pub async fn create_shard(
         };
         let key = Shard::create(&folder, &opts)?;
         let (root, in_bundle) = ws.shard_location(&folder);
-        let cfg = ShardConfig { in_bundle, key: key.as_ref().filter(|_| remember && ws.key.is_some()).map(|k| k.to_hex().to_string()) };
+        let cfg = ShardConfig { in_bundle, key: key.as_ref().filter(|_| remember && ws.key.is_some()).map(|k| k.to_hex().to_string()), props_in_shard };
         let id = ws.write_db.lock().unwrap().add_source(&NewSource { name, driver: DRIVER.into(), config: serde_json::to_value(cfg)?, root })?;
         if let Some(k) = key {
             ws.shard_keys.lock().unwrap().insert(id, k);
@@ -464,6 +512,7 @@ pub async fn attach_shard(
     password: Option<String>,
     keyfile: Option<String>,
     remember: bool,
+    props_in_shard: bool,
 ) -> CmdResult<SourceRow> {
     let ws = workspace(&app)?;
     let ws2 = ws.clone();
@@ -497,7 +546,7 @@ pub async fn attach_shard(
             (root, in_bundle) = ws.shard_location(&dest);
         }
         let name = if info.name.is_empty() { folder_stem(&src) } else { info.name.clone() };
-        let cfg = ShardConfig { in_bundle, key: key.as_ref().filter(|_| remember && ws.key.is_some()).map(|k| k.to_hex().to_string()) };
+        let cfg = ShardConfig { in_bundle, key: key.as_ref().filter(|_| remember && ws.key.is_some()).map(|k| k.to_hex().to_string()), props_in_shard };
         let id = ws.write_db.lock().unwrap().add_source(&NewSource { name, driver: DRIVER.into(), config: serde_json::to_value(cfg)?, root })?;
         if let Some(k) = key {
             ws.shard_keys.lock().unwrap().insert(id, k);
@@ -523,6 +572,10 @@ pub async fn unlock_shard(app: AppHandle, source_id: i64, password: String, keyf
         ws2.close_shard(source_id)?;
         ws2.remember_key(source_id, remember.then_some(&key))?;
         ws2.shard_keys.lock().unwrap().insert(source_id, key);
+        // Properties kept in the shard may have changed elsewhere since it was last open.
+        if ws2.autosave() {
+            crate::shard_props::import(&ws2, &s)?;
+        }
         Ok(())
     })
     .await?;
@@ -809,7 +862,7 @@ fn export_files(ws: &Workspace, shard: &Shard, paths: &[String], dest: &Path, ta
     for p in selected {
         let p = vp_shard::normalize_path(&p).ok_or_else(|| CmdError::new("invalid", "invalid path"))?;
         let base = p.rsplit_once('/').map(|(b, _)| b.to_string()).unwrap_or_default();
-        for (path, size) in shard.files_under(&p)? {
+        for (path, size) in shard.files_under(&p)?.into_iter().filter(|(path, _)| !vp_shard::is_reserved(path)) {
             let rel = if base.is_empty() { path.clone() } else { path[base.len() + 1..].to_string() };
             list.push((path, rel, size));
         }
@@ -868,14 +921,14 @@ pub struct FolderPick {
 }
 
 /// One file to copy: an item of the library and where it lands in the target.
-struct CopyJob {
-    id: i64,
-    source_id: i64,
-    rel: String,
-    target: String,
-    size: u64,
-    created_ms: Option<i64>,
-    modified_ms: Option<i64>,
+pub(crate) struct CopyJob {
+    pub(crate) id: i64,
+    pub(crate) source_id: i64,
+    pub(crate) rel: String,
+    pub(crate) target: String,
+    pub(crate) size: u64,
+    pub(crate) created_ms: Option<i64>,
+    pub(crate) modified_ms: Option<i64>,
 }
 
 /// Copies items (`ids`) and folders of the library into folder `dest` of source `to`, in
@@ -910,7 +963,7 @@ pub async fn copy_to_source(app: AppHandle, ids: Vec<i64>, folders: Vec<FolderPi
         let rescan = || {
             let _ = crate::commands::scan_now(&app, ws.clone(), target.clone());
         };
-        let result = copy_files(&ws, &registry, &target, jobs, Conflicts::Ask(app.clone()), &task, &cancel, rescan);
+        let result = copy_files(&ws, &registry, &target, jobs, Conflicts::Ask(app.clone()), &task, &cancel, rescan).map(|r| (r.failed, r.skipped));
         match result {
             Ok((0, 0)) => task.finish(),
             // Skipping is what the user chose: done, not failed.
@@ -1076,7 +1129,7 @@ fn ask_conflict(app: &AppHandle, mut facts: ConflictAsk, cancel: &AtomicBool, cl
 }
 
 /// Whether `a` in `da` and `b` in `db` have the same content.
-fn same_content(da: &dyn vp_driver::MediaDriver, a: &str, db: &dyn vp_driver::MediaDriver, b: &str) -> CmdResult<bool> {
+pub(crate) fn same_content(da: &dyn vp_driver::MediaDriver, a: &str, db: &dyn vp_driver::MediaDriver, b: &str) -> CmdResult<bool> {
     let (ra, rb) = (da.open(a)?, db.open(b)?);
     if ra.len() != rb.len() {
         return Ok(false);
@@ -1116,7 +1169,7 @@ fn free_name(out: &dyn vp_driver::MediaDriver, path: &str) -> String {
 /// Runs the copies (settling taken names by `conflicts`), then `rescan` (which adds the
 /// copies to the library) and records what followed them; returns `(failed, skipped)`.
 #[allow(clippy::too_many_arguments)]
-fn copy_files(
+pub(crate) fn copy_files(
     ws: &Workspace,
     registry: &vp_driver::DriverRegistry,
     to: &SourceRow,
@@ -1125,7 +1178,7 @@ fn copy_files(
     task: &Task,
     cancel: &AtomicBool,
     rescan: impl FnOnce(),
-) -> CmdResult<(usize, usize)> {
+) -> CmdResult<CopyReport> {
     let shard = if to.driver == DRIVER { Some(writable(ws, to)?) } else { None };
     let out = ws.driver(registry, to)?;
     let max_whole = ws.settings.read().unwrap().cache.max_item_bytes;
@@ -1266,7 +1319,15 @@ fn copy_files(
             db.set_variant(k.id, VARIANT_IN_SHARD, len, now_ms())?;
         }
     }
-    Ok((failed, skipped))
+    Ok(CopyReport { failed, skipped, copied })
+}
+
+/// What [`copy_files`] did.
+pub(crate) struct CopyReport {
+    pub(crate) failed: usize,
+    pub(crate) skipped: usize,
+    /// Each copied item and where its copy is (`CopyJob::target`, renamed if it was taken).
+    pub(crate) copied: Vec<(i64, String)>,
 }
 
 // ---------------------------------------------------------------- maintenance
@@ -1460,7 +1521,8 @@ mod copy_tests {
         let jobs = copy_jobs(ws, ids, folders, dest).unwrap();
         let task = tasks::begin("copy_to_source", "test", Unit::Bytes, None);
         let cancel = AtomicBool::new(false);
-        copy_files(ws, registry, &target, jobs, Conflicts::Fixed(on), &task, &cancel, || scan(ws, registry, to)).unwrap()
+        let r = copy_files(ws, registry, &target, jobs, Conflicts::Fixed(on), &task, &cancel, || scan(ws, registry, to)).unwrap();
+        (r.failed, r.skipped)
     }
 
     #[test]
