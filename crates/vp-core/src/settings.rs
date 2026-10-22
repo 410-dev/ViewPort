@@ -432,6 +432,22 @@ pub struct AppSettings {
     pub viewer: ViewerSettings,
     pub ml: MlSettings,
     pub decoders: DecoderSettings,
+    pub export: ExportSettings,
+}
+
+/// Exporting items and folders to another place on this device.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExportSettings {
+    /// Exported files (and folders) keep the original's modified and created dates
+    /// (created only where the system has one: Windows, macOS).
+    pub keep_dates: bool,
+}
+
+impl Default for ExportSettings {
+    fn default() -> Self {
+        Self { keep_dates: true }
+    }
 }
 
 /// Optional image decoders that are not shipped with the app (HEIF/HEIC: libheif).
@@ -471,6 +487,7 @@ impl Default for AppSettings {
             viewer: ViewerSettings::default(),
             ml: MlSettings::default(),
             decoders: DecoderSettings::default(),
+            export: ExportSettings::default(),
         }
     }
 }

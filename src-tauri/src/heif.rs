@@ -36,6 +36,9 @@ pub async fn heif_install(app: AppHandle) -> CmdResult<()> {
 
 pub use imp::{available, decode, init, note_needed};
 
+/// File extensions of HEIF images.
+pub const EXTENSIONS: [&str; 3] = ["heic", "heif", "hif"];
+
 /// Whether `bytes` start like a HEIF file (ISO BMFF `ftyp` with a HEIF brand).
 pub fn looks_like_heif(bytes: &[u8]) -> bool {
     if bytes.len() < 12 || &bytes[4..8] != b"ftyp" {
@@ -360,9 +363,13 @@ mod imp {
             }) {
                 Ok(()) => {
                     task.finish();
-                    // Images recorded as unreadable get another try.
+                    // Images recorded as unreadable get another try; HEIF ones even if a
+                    // decoder failed on them (FFmpeg cannot read some HEIF from a stream, and
+                    // encrypted shards never hand it a file).
                     if let Some(ws) = app.state::<crate::AppState>().workspace.read().unwrap().as_ref() {
-                        let _ = ws.write_db.lock().unwrap().reset_unsupported_image_thumbnails();
+                        let db = ws.write_db.lock().unwrap();
+                        let _ = db.reset_unsupported_image_thumbnails();
+                        let _ = db.reset_image_thumbnails_with_ext(&super::EXTENSIONS);
                     }
                     let _ = app.emit("heif-installed", ());
                 }
@@ -448,6 +455,11 @@ mod imp {
             let img = a.decode(&heic).unwrap();
             assert!(img.width() > 0 && img.height() > 0);
             assert!(a.decode(b"not an image at all").is_err());
+            // A file that did not get a thumbnail elsewhere (`VP_TEST_HEIC=<file>`).
+            if let Some(f) = std::env::var_os("VP_TEST_HEIC") {
+                let img = a.decode(&std::fs::read(f).unwrap()).unwrap();
+                eprintln!("VP_TEST_HEIC: {}x{}", img.width(), img.height());
+            }
         }
 
         /// Serves the files of `dir` by name on a local port.

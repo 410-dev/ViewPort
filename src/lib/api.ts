@@ -274,6 +274,9 @@ export interface AppSettings {
     heif_download_urls: string[];
     heif_offer: boolean;
   };
+  export: {
+    keep_dates: boolean;
+  };
 }
 
 // ---- image analysis (`ml.rs`)

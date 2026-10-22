@@ -198,6 +198,13 @@ fn rescan_marks_missing_and_invalidates_thumbs() {
     let brief = lib.db.media_brief(&[5, 2, 99]).unwrap();
     assert_eq!(brief.iter().map(|b| b.id).collect::<Vec<_>>(), [5, 2]);
     assert_eq!(brief[1].thumb.as_deref(), Some("failed"));
+
+    // A new HEIF decoder retries failed HEIF thumbnails, and only those.
+    assert_eq!(lib.db.reset_image_thumbnails_with_ext(&["heic"]).unwrap(), 0);
+    lib.db.conn().execute("UPDATE media SET ext = 'heic' WHERE id = 2", []).unwrap();
+    assert_eq!(lib.db.reset_image_thumbnails_with_ext(&["heic", "heif"]).unwrap(), 1);
+    assert!(lib.db.thumbnail(2).unwrap().is_none());
+    assert!(lib.db.thumbnail(1).unwrap().is_none_or(|t| t.status == ThumbStatus::Ok));
 }
 
 #[test]

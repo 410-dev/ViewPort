@@ -99,6 +99,9 @@ mod imp {
             if c.components().count() > 1 && !c.exists() {
                 continue;
             }
+            if let Some(dir) = c.parent().filter(|d| !d.as_os_str().is_empty()) {
+                dll_search_dir(dir);
+            }
             match ort::init_from(c).map_err(|e| e.to_string()).and_then(|b| b.build().map_err(|e| e.to_string())) {
                 Ok(env) => {
                     let _ = ENV.set((env, c.clone()));
@@ -113,6 +116,22 @@ mod imp {
     pub fn loaded() -> Option<PathBuf> {
         ENV.get().map(|(_, p)| p.clone())
     }
+
+    /// The CUDA provider loads cuDNN (`cudnn64_9.dll`, ...) by bare name only when a model
+    /// first runs, which does not search the provider's own folder: keeping cuDNN next to
+    /// `onnxruntime.dll` works once that folder is in the process's DLL search.
+    #[cfg(windows)]
+    fn dll_search_dir(dir: &Path) {
+        use std::os::windows::ffi::OsStrExt;
+        unsafe extern "system" {
+            fn SetDllDirectoryW(path: *const u16) -> i32;
+        }
+        let wide: Vec<u16> = dir.as_os_str().encode_wide().chain(Some(0)).collect();
+        unsafe { SetDllDirectoryW(wide.as_ptr()) };
+    }
+
+    #[cfg(not(windows))]
+    fn dll_search_dir(_dir: &Path) {}
 
     pub struct Model {
         session: Mutex<Session>,

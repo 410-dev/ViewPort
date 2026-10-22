@@ -1135,6 +1135,20 @@ impl Db {
         )?)
     }
 
+    /// Forgets every thumbnail that could not be made for images with one of `exts`
+    /// (lowercase), failed ones too: a new decoder for them (libheif) may read what the
+    /// previous ones could not.
+    pub fn reset_image_thumbnails_with_ext(&self, exts: &[&str]) -> Result<usize> {
+        let mut n = 0;
+        for ext in exts {
+            n += self.conn.execute(
+                "DELETE FROM thumbnail WHERE status <> 'ok' AND media_id IN (SELECT id FROM media WHERE kind = 'image' AND ext = ?1)",
+                [ext.to_ascii_lowercase()],
+            )?;
+        }
+        Ok(n)
+    }
+
     pub fn loop_segments(&self, media_id: i64) -> Result<Vec<LoopSegment>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT id, media_id, label, start_ms, end_ms, autoplay FROM loop_segment

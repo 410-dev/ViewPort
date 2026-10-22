@@ -1,5 +1,6 @@
 //! Tauri commands called by the UI.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1299,7 +1300,7 @@ pub fn export_media(app: AppHandle, state: State<'_, AppState>, ids: Vec<i64>, d
             .filter_map(|id| ws.read_db.lock().unwrap().media_location(*id).ok().flatten())
             .map(|loc| (loc, dest.clone()))
             .collect();
-        export_to(&app.state::<AppState>().drivers, &ws, "", jobs);
+        export_to(&app.state::<AppState>().drivers, &ws, "", jobs, Vec::new());
     });
     Ok(())
 }
@@ -1316,16 +1317,28 @@ pub fn export_folder(app: AppHandle, state: State<'_, AppState>, source_id: i64,
     std::thread::spawn(move || {
         let registry = app.state::<AppState>().drivers.clone();
         match folder_export_jobs(&ws, source_id, &folder, &dest) {
-            Ok((top, jobs)) => export_to(&registry, &ws, &top, jobs),
+            Ok(e) => export_to(&registry, &ws, &e.top, e.jobs, e.dirs),
             Err(e) => crate::tasks::begin("export", folder, crate::tasks::Unit::Items, None).fail(e.message),
         }
     });
     Ok(())
 }
 
-/// What exporting `folder` into `dest` copies where: its name (the source's for the root)
-/// and each item with its target folder, below a new folder that is not taken yet.
-fn folder_export_jobs(ws: &Workspace, source_id: i64, folder: &str, dest: &Path) -> CmdResult<(String, Vec<(vp_db::MediaLocation, PathBuf)>)> {
+/// Items to copy, each with the folder it goes to.
+type ExportJobs = Vec<(vp_db::MediaLocation, PathBuf)>;
+/// Folders made by an export, with the source folder each stands for (to copy its dates).
+type ExportDirs = Vec<(PathBuf, i64, String)>;
+
+struct FolderExport {
+    /// The exported folder's name (the source's for its root).
+    top: String,
+    jobs: ExportJobs,
+    dirs: ExportDirs,
+}
+
+/// What exporting `folder` into `dest` copies where, below a new folder that is not taken
+/// yet.
+fn folder_export_jobs(ws: &Workspace, source_id: i64, folder: &str, dest: &Path) -> CmdResult<FolderExport> {
     let folder = folder.trim_matches('/');
     let top = match folder.rsplit('/').next().filter(|s| !s.is_empty()) {
         Some(name) => name.to_string(),
@@ -1339,25 +1352,74 @@ fn folder_export_jobs(ws: &Workspace, source_id: i64, folder: &str, dest: &Path)
         n += 1;
     }
     let ids = ws.read_db.lock().unwrap().folder_media(source_id, folder)?;
+    let mut dirs: ExportDirs = vec![(root.clone(), source_id, folder.to_string())];
+    let mut seen: HashSet<PathBuf> = HashSet::from([root.clone()]);
     let jobs = ids
         .iter()
         .filter_map(|id| ws.read_db.lock().unwrap().media_location(*id).ok().flatten())
         .map(|loc| {
             // Subfolders below `folder`, each made safe as a path component.
             let inner = loc.rel_path.strip_prefix(folder).unwrap_or(&loc.rel_path).trim_start_matches('/');
-            let dir = match inner.rsplit_once('/') {
-                Some((parents, _)) => parents.split('/').fold(root.clone(), |p, c| p.join(crate::shards::safe_name(c, "folder"))),
-                None => root.clone(),
-            };
+            let mut dir = root.clone();
+            let mut rel = folder.to_string();
+            if let Some((parents, _)) = inner.rsplit_once('/') {
+                for c in parents.split('/') {
+                    dir = dir.join(crate::shards::safe_name(c, "folder"));
+                    rel = if rel.is_empty() { c.to_string() } else { format!("{rel}/{c}") };
+                    if seen.insert(dir.clone()) {
+                        dirs.push((dir.clone(), source_id, rel.clone()));
+                    }
+                }
+            }
             (loc, dir)
         })
         .collect();
-    Ok((top, jobs))
+    Ok(FolderExport { top, jobs, dirs })
+}
+
+/// The modified and created dates of `path` in its source, when the driver knows them.
+fn source_dates(ws: &Workspace, registry: &vp_driver::DriverRegistry, source_id: i64, path: &str) -> Option<(Option<i64>, Option<i64>)> {
+    let source = ws.read_db.lock().unwrap().source(source_id).ok()??;
+    let e = ws.driver(registry, &source).ok()?.stat(path).ok()?;
+    Some((e.modified_ms, e.created_ms))
+}
+
+/// Sets the modified (and accessed) and, where the system keeps one, created date of a
+/// file or folder.
+fn set_dates(path: &Path, modified_ms: Option<i64>, created_ms: Option<i64>) -> std::io::Result<()> {
+    let at = |ms: i64| u64::try_from(ms).ok().map(|ms| std::time::UNIX_EPOCH + std::time::Duration::from_millis(ms));
+    let mut times = std::fs::FileTimes::new();
+    if let Some(t) = modified_ms.and_then(at) {
+        times = times.set_modified(t).set_accessed(t);
+    }
+    #[cfg(windows)]
+    if let Some(t) = created_ms.and_then(at) {
+        use std::os::windows::fs::FileTimesExt;
+        times = times.set_created(t);
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(t) = created_ms.and_then(at) {
+        use std::os::macos::fs::FileTimesExt;
+        times = times.set_created(t);
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let _ = created_ms;
+    #[cfg(windows)]
+    let file = {
+        use std::os::windows::fs::OpenOptionsExt;
+        // FILE_WRITE_ATTRIBUTES; FILE_FLAG_BACKUP_SEMANTICS opens folders too.
+        std::fs::OpenOptions::new().access_mode(0x100).custom_flags(0x0200_0000).open(path)?
+    };
+    #[cfg(not(windows))]
+    let file = if path.is_dir() { std::fs::File::open(path)? } else { std::fs::OpenOptions::new().write(true).open(path)? };
+    file.set_times(times)
 }
 
 /// Copies each item into its folder (made as needed) as task `export`; a name already
-/// taken gets a number.
-fn export_to(registry: &vp_driver::DriverRegistry, ws: &Workspace, label: &str, jobs: Vec<(vp_db::MediaLocation, PathBuf)>) {
+/// taken gets a number. With `export.keep_dates` the copies, and then the folders in
+/// `dirs`, take the originals' dates.
+fn export_to(registry: &vp_driver::DriverRegistry, ws: &Workspace, label: &str, jobs: ExportJobs, dirs: ExportDirs) {
+    let keep_dates = crate::recent::cached_app_settings().export.keep_dates;
     {
         let cancel = Arc::new(AtomicBool::new(false));
         let task = crate::tasks::begin_with_cancel("export", label, crate::tasks::Unit::Bytes, None, Some(cancel.clone()));
@@ -1400,6 +1462,11 @@ fn export_to(registry: &vp_driver::DriverRegistry, ws: &Workspace, label: &str, 
                     off += got as u64;
                     task.add(got as u64);
                 }
+                drop(out);
+                if keep_dates && let Some((modified, created)) = source_dates(ws, registry, loc.source_id, &loc.rel_path) {
+                    // A date that cannot be set does not undo the copy.
+                    let _ = set_dates(&target, modified, created);
+                }
                 Ok(())
             })();
             if let Err(e) = one {
@@ -1408,6 +1475,16 @@ fn export_to(registry: &vp_driver::DriverRegistry, ws: &Workspace, label: &str, 
                     return task.cancelled();
                 }
                 failed += 1;
+            }
+        }
+        // Last: copying into a folder changes its modified date.
+        if keep_dates {
+            for (dir, source_id, rel) in dirs {
+                if dir.is_dir()
+                    && let Some((modified, created)) = source_dates(ws, registry, source_id, &rel)
+                {
+                    let _ = set_dates(&dir, modified, created);
+                }
             }
         }
         if failed > 0 { task.fail(format!("{failed} files failed")) } else { task.finish() }
@@ -1424,6 +1501,55 @@ mod folder_tests {
         let mut out = Vec::new();
         image::codecs::jpeg::JpegEncoder::new(&mut out).encode_image(&img).unwrap();
         out
+    }
+
+    /// A HEIF file that did not get a thumbnail, only with `VP_TEST_HEIC=<file>`: the
+    /// thumbnail and display copy paths, step by step.
+    #[test]
+    fn heic_from_env_gets_a_thumbnail() {
+        let Some(file) = std::env::var_os("VP_TEST_HEIC") else { return };
+        let bytes = std::fs::read(&file).unwrap();
+        eprintln!("built-in decoder: {:?}", vp_thumb::generate(&bytes, &Default::default()).err());
+        eprintln!("looks like HEIF: {}", crate::heif::looks_like_heif(&bytes));
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("Lib.vpbun");
+        let ws = Workspace::create(&root, "Lib").unwrap();
+        let media = root.join("media");
+        std::fs::create_dir_all(media.join("a")).unwrap();
+        std::fs::write(media.join("a/x.heic"), &bytes).unwrap();
+        let registry = DriverRegistry::with_builtin();
+        let (driver, rel) = ws.source_root_for(&media);
+        let src = ws
+            .write_db
+            .lock()
+            .unwrap()
+            .add_source(&NewSource { name: "media".into(), driver, config: serde_json::json!({}), root: rel })
+            .unwrap();
+        let source = ws.read_db.lock().unwrap().source(src).unwrap().unwrap();
+        let drv = ws.driver(&registry, &source).unwrap();
+        let settings = ws.settings.read().unwrap().scan.clone();
+        let cancel = AtomicBool::new(false);
+        vp_scan::Scanner { db: &ws.write_db, driver: drv.as_ref(), settings: &settings, source_id: src, include_nonmedia: false, now_ms: 1, cancel: &cancel }
+            .run(&mut |_| {})
+            .unwrap();
+        let id = ws.read_db.lock().unwrap().folder_media(src, "a").unwrap()[0];
+        let loc = ws.read_db.lock().unwrap().media_location(id).unwrap().unwrap();
+        eprintln!("kind {:?}, size {}, ffmpeg {:?}", loc.kind, loc.size, ws.ffmpeg().map(|f| f.ffmpeg));
+        if let Some(ff) = ws.ffmpeg() {
+            let r = ff.image(vp_media::Input::File(media.join("a/x.heic")));
+            eprintln!("ffmpeg file: {:?}", r.as_ref().map(|b| b.len()).map_err(|e| e.to_string()));
+            if let Ok(bmp) = r {
+                eprintln!("bmp decode: {:?}", vp_thumb::generate(&bmp, &Default::default()).map(|t| (t.width, t.height)).err());
+            }
+            // Shares and shards hand FFmpeg a stream instead of a file.
+            let reader = ws.open_media(&registry, &loc).unwrap();
+            let r = ff.image(vp_media::Input::Stream(Box::new(vp_driver::ReaderStream::new(reader))));
+            // Some HEIF files only open as a file (encrypted shards never give FFmpeg one).
+            eprintln!("ffmpeg stream: {:?}", r.as_ref().map(|b| b.len()).map_err(|e| e.to_string()));
+        }
+        let t = ws.thumbnail(&registry, id);
+        eprintln!("thumbnail: {:?}", t.as_ref().map(|o| o.as_ref().map(|(d, m)| (d.len(), m.clone()))).map_err(|e| e.message.clone()));
+        assert!(matches!(t, Ok(Some(_))));
     }
 
     /// Folder rename, move and delete on a local folder; HEIC thumbnails when FFmpeg is found.
@@ -1482,20 +1608,29 @@ mod folder_tests {
         }
 
         // Export: a new folder named like the exported one, subfolders kept; again → "(2)".
+        // The copies (and their folders) keep the originals' dates.
+        let old = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_500_000_000);
+        set_dates(&media.join("trip/day1/a.jpg"), Some(1_500_000_000_000), Some(1_400_000_000_000)).unwrap();
+        set_dates(&media.join("trip/day1/deep"), Some(1_500_000_000_000), None).unwrap();
         let out = tempfile::tempdir().unwrap();
-        let (top, jobs) = folder_export_jobs(&ws, src, "trip", out.path()).unwrap();
-        assert_eq!(top, "trip");
-        export_to(&registry, &ws, &top, jobs);
+        let e = folder_export_jobs(&ws, src, "trip", out.path()).unwrap();
+        assert_eq!(e.top, "trip");
+        export_to(&registry, &ws, &e.top, e.jobs, e.dirs);
         for f in ["trip/day1/a.jpg", "trip/day1/deep/b.jpg", "trip/c.jpg", "trip/phone.heic"] {
             assert!(out.path().join(f).is_file(), "{f} exported");
         }
         assert_eq!(std::fs::read(out.path().join("trip/day1/a.jpg")).unwrap(), jpeg());
         assert!(!out.path().join("trip/day1/notes.txt").exists(), "unlisted files stay");
-        let (_, jobs) = folder_export_jobs(&ws, src, "trip/day1", out.path()).unwrap();
-        export_to(&registry, &ws, "day1", jobs);
+        let copied = std::fs::metadata(out.path().join("trip/day1/a.jpg")).unwrap();
+        assert_eq!(copied.modified().unwrap(), old);
+        #[cfg(windows)]
+        assert_eq!(copied.created().unwrap(), std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_400_000_000));
+        assert_eq!(std::fs::metadata(out.path().join("trip/day1/deep")).unwrap().modified().unwrap(), old);
+        let e = folder_export_jobs(&ws, src, "trip/day1", out.path()).unwrap();
+        export_to(&registry, &ws, "day1", e.jobs, e.dirs);
         assert!(out.path().join("day1/deep/b.jpg").is_file());
-        let (_, jobs) = folder_export_jobs(&ws, src, "trip/day1", out.path()).unwrap();
-        export_to(&registry, &ws, "day1", jobs);
+        let e = folder_export_jobs(&ws, src, "trip/day1", out.path()).unwrap();
+        export_to(&registry, &ws, "day1", e.jobs, e.dirs);
         assert!(out.path().join("day1 (2)/a.jpg").is_file());
 
         // Rename: the folder moves as a whole (unlisted files too); items keep their ids.

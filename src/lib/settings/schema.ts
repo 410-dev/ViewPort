@@ -98,6 +98,10 @@ export const SECTIONS: Section[] = [
         ],
       },
       {
+        title: "set.export",
+        fields: [{ kind: "toggle", ...app({ path: "export.keep_dates", label: "set.exportKeepDates", help: "set.exportKeepDates.help" }) }],
+      },
+      {
         title: "set.stats",
         fields: [
           { kind: "number", ...bundle({ path: "stats.half_life_days", label: "set.halfLife", help: "set.halfLife.help" }), min: 1, step: 1, unit: "d" },

@@ -19,7 +19,8 @@ npm run tauri build -- --bundles msi   # Windows MSI (target/release/bundle/msi/
 ```
 
 - 선택적 실제 환경 테스트: `VP_TEST_FFMPEG=<ffmpeg 폴더>`, `VP_TEST_SMB='{"host":..,"share":..,"username":..,"password":..}'`,
-  `VP_TEST_ORT=<onnxruntime 라이브러리> VP_TEST_MODELS=<모델 팩 폴더>`(`cargo test -p vp-ml --features onnx`).
+  `VP_TEST_ORT=<onnxruntime 라이브러리> VP_TEST_MODELS=<모델 팩 폴더>`(`cargo test -p vp-ml --features onnx`),
+  `VP_TEST_HEIC=<썸네일이 안 되는 HEIF 파일>`(썸네일 경로를 단계별로 출력).
   환경 변수가 없으면 해당 테스트는 건너뛴다.
 - dev 프로필에서도 의존성은 `opt-level = 2`로 빌드한다(이미지 디코딩·SQLite가 너무 느려서). 첫 빌드는 오래 걸린다.
 - FFmpeg는 번들에 포함하지 않는다(GPL). 앱 폴더 → 설정 경로 → `PATH` 순으로 찾고, 없으면 영상 썸네일·길이·변환만 꺼진다.

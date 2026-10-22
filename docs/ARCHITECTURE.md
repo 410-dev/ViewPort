@@ -103,6 +103,9 @@ MyLibrary.vpbun/
 
 이미지·영상이 아닌 파일은 `nonmedia` 종류(`유형(기타 파일)`)로 기록한다. 샤드 소스는 항상, 다른 소스는
 `scan.include_nonmedia`일 때만. 미리보기·썸네일·뷰어에서는 제외되고(`unsupported` 썸네일), 내보내기(`export_media`)만 된다.
+내보내기는 항목(`export_media`)과 폴더(`export_folder`: 같은 이름의 새 폴더에 하위 구조 유지, 이름이 있으면 `(2)`)가 있고,
+`export.keep_dates`면 사본과 만든 폴더에 드라이버 `stat`의 수정·만든 날짜를 맞춘다(만든 날짜는 Windows·macOS만, 폴더는 복사가
+끝난 뒤에 — 안에 파일을 쓰면 폴더 수정 날짜가 바뀌므로).
 
 ## 드라이버 추상화
 
@@ -213,7 +216,9 @@ name.vpshard/
   "라이브러리에서 보기"(소스·폴더로 이동해 검색 후 선택하고 `Selection.revealing`으로 그리드·목록이 스크롤) /
   "다른 인물로 옮기기"(같은 종류 인물 목록에서 고르거나 새 이름 → `ml_new_person`, 확정된 얼굴로 기록) / "이 사람 아님"). 설정 → 분석.
   Windows는 ONNX Runtime 경로가 비어 있으면 시스템 검색으로 `System32\onnxruntime.dll`(Windows ML, CUDA 없음 → DirectML)이 잡힌다.
-  NVIDIA GPU를 제대로 쓰려면 onnxruntime-gpu(CUDA) 빌드를 지정해야 한다.
+  NVIDIA GPU를 제대로 쓰려면 onnxruntime-gpu(CUDA) 빌드를 지정해야 한다(CUDA 13은 `onnxruntime-win-x64-gpu_cuda13-*.zip` +
+  cuDNN 9 cuda13). CUDA 실행기는 첫 실행 때 cuDNN을 이름만으로 불러와 자기 폴더를 찾지 않으므로, `runtime::init`이
+  ONNX Runtime 폴더를 `SetDllDirectoryW`로 DLL 검색에 넣는다 → cuDNN DLL을 `onnxruntime.dll` 옆에 두면 PATH 수정 없이 된다.
 - 선택적 실제 환경 테스트: `VP_TEST_ORT=<ONNX Runtime 라이브러리> VP_TEST_MODELS=<모델 팩 폴더> [VP_TEST_IMAGE=<사진>] cargo test -p vp-ml --features onnx`.
 
 ## 썸네일
@@ -305,7 +310,9 @@ UI에 전달되며 작업별로 `progress.emit_interval_ms` 간격으로 제한�
   이미지(HEIF, AVIF 등)는 `Workspace::foreign_image`가 Android OS 디코더나 FFmpeg(`Ffmpeg::image`, 원본 크기 BMP → Rust로 축소)로
   푼다. 폰 사진처럼 타일 격자로 된 HEIF는 FFmpeg가 자체 필터 그래프로 이어 붙이므로 `-vf`를 함께 쓸 수 없고, 파이프 입력으로는
   열리지 않아 로컬이 아닌 소스는 `converted/`에 임시 파일을 만들었다 지운다(암호화된 샤드는 평문을 쓰지 않으므로 건너뜀).
-  디코더가 생기면 열 때 `unsupported`로 기록된 이미지 썸네일을 다시 시도한다.
+  디코더가 생기면 열 때 `unsupported`로 기록된 이미지 썸네일을 다시 시도한다. 단일 이미지 HEIC 중에도 FFmpeg가 파이프로는
+  못 여는 파일이 있어(파일로는 열림), 암호화된 샤드 안의 HEIC는 libheif 없이는 `failed`가 된다. libheif를 설치하면
+  HEIF 확장자(`heif::EXTENSIONS`)의 실패 기록까지 지워 다시 만든다.
 - **HEIF 디코더(libheif, `src-tauri/src/heif.rs`)**: `foreign_image`는 HEIF(`ftyp` 브랜드로 판별)를 먼저 libheif로 메모리에서
   푼다(공유 폴더·암호화된 샤드도 임시 파일 없이). 앱에 넣지 않고(LGPL, HEVC) 런타임에 `libloading`으로 연다. 찾는 순서:
   설정 폴더 `libs/libheif/`(받은 사본, 매니페스트 해시가 맞을 때만) → 실행 파일 옆(`libheif/heif.dll`, `heif.dll`) →
