@@ -1,0 +1,145 @@
+[
+  {
+    "id": "yunet",
+    "name": "YuNet",
+    "kind": "face_detector",
+    "summary": {
+      "ko": "사진 속 얼굴과 눈·코·입 위치를 찾습니다. 작고 빠릅니다(OpenCV Zoo).",
+      "en": "Finds faces in photos with eye, nose and mouth points. Small and fast (OpenCV Zoo)."
+    },
+    "license": { "name": "MIT", "url": "https://github.com/opencv/opencv_zoo/blob/main/models/face_detection_yunet/LICENSE" },
+    "homepage": "https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet",
+    "files": [
+      {
+        "url": "https://huggingface.co/opencv/face_detection_yunet/resolve/main/face_detection_yunet_2023mar.onnx",
+        "path": "face_detection_yunet_2023mar.onnx",
+        "size": 232589
+      }
+    ],
+    "manifest": {
+      "id": "yunet",
+      "name": "YuNet (OpenCV Zoo)",
+      "version": "2023mar",
+      "kind": "face_detector",
+      "format": "yunet",
+      "model": "face_detection_yunet_2023mar.onnx",
+      "input": { "width": 640, "height": 640, "layout": "nchw", "channels": "bgr", "scale": 1.0, "fit": "letterbox", "pad": [0, 0, 0] },
+      "license": { "name": "MIT", "url": "https://github.com/opencv/opencv_zoo/blob/main/models/face_detection_yunet/LICENSE" },
+      "source": "https://huggingface.co/opencv/face_detection_yunet"
+    }
+  },
+  {
+    "id": "sface",
+    "name": "SFace",
+    "kind": "face_embedder",
+    "summary": {
+      "ko": "얼굴을 128차원 특징값으로 바꿔 같은 사람끼리 묶을 수 있게 합니다(OpenCV Zoo).",
+      "en": "Turns a face into a 128-value identity vector so the same person can be grouped (OpenCV Zoo)."
+    },
+    "license": { "name": "Apache-2.0", "url": "https://github.com/opencv/opencv_zoo/blob/main/models/face_recognition_sface/LICENSE" },
+    "homepage": "https://github.com/opencv/opencv_zoo/tree/main/models/face_recognition_sface",
+    "files": [
+      {
+        "url": "https://huggingface.co/opencv/face_recognition_sface/resolve/main/face_recognition_sface_2021dec.onnx",
+        "path": "face_recognition_sface_2021dec.onnx",
+        "size": 38696353
+      }
+    ],
+    "manifest": {
+      "id": "sface",
+      "name": "SFace (OpenCV Zoo)",
+      "version": "2021dec",
+      "kind": "face_embedder",
+      "format": "embedding",
+      "model": "face_recognition_sface_2021dec.onnx",
+      "input": { "width": 112, "height": 112, "layout": "nchw", "channels": "rgb", "scale": 1.0, "fit": "stretch" },
+      "license": { "name": "Apache-2.0", "url": "https://github.com/opencv/opencv_zoo/blob/main/models/face_recognition_sface/LICENSE" },
+      "source": "https://huggingface.co/opencv/face_recognition_sface"
+    }
+  },
+  {
+    "id": "anime-face",
+    "name": "Anime face detection v1.4 (s)",
+    "kind": "anime_detector",
+    "summary": {
+      "ko": "일러스트·애니메이션풍 그림에서 캐릭터 얼굴을 찾습니다(deepghs, YOLOv8).",
+      "en": "Finds character faces in illustrations and anime-style art (deepghs, YOLOv8)."
+    },
+    "license": { "name": "MIT", "url": "https://huggingface.co/deepghs/anime_face_detection" },
+    "homepage": "https://huggingface.co/deepghs/anime_face_detection",
+    "files": [
+      {
+        "url": "https://huggingface.co/deepghs/anime_face_detection/resolve/main/face_detect_v1.4_s/model.onnx",
+        "path": "model.onnx",
+        "size": 44583229
+      }
+    ],
+    "manifest": {
+      "id": "anime-face",
+      "name": "Anime face detection (deepghs, YOLOv8)",
+      "version": "v1.4_s",
+      "kind": "anime_detector",
+      "format": "yolo",
+      "model": "model.onnx",
+      "input": { "width": 640, "height": 640, "layout": "nchw", "channels": "rgb", "scale": 0.00392156862, "fit": "letterbox", "pad": [114, 114, 114] },
+      "license": { "name": "MIT", "url": "https://huggingface.co/deepghs/anime_face_detection" },
+      "source": "https://huggingface.co/deepghs/anime_face_detection"
+    }
+  },
+  {
+    "id": "ccip",
+    "name": "CCIP character features",
+    "kind": "anime_embedder",
+    "summary": {
+      "ko": "캐릭터 그림을 특징값으로 바꿔 같은 캐릭터끼리 묶을 수 있게 합니다(deepghs).",
+      "en": "Turns a character picture into a vector so the same character can be grouped (deepghs)."
+    },
+    "license": { "name": "OpenRAIL", "url": "https://huggingface.co/deepghs/ccip_onnx" },
+    "homepage": "https://huggingface.co/deepghs/ccip_onnx",
+    "files": [
+      {
+        "url": "https://huggingface.co/deepghs/ccip_onnx/resolve/main/ccip-caformer-24-randaug-pruned/model_feat.onnx",
+        "path": "model_feat.onnx",
+        "size": 150248245
+      }
+    ],
+    "manifest": {
+      "id": "ccip",
+      "name": "CCIP character features (deepghs)",
+      "version": "caformer-24-randaug-pruned",
+      "kind": "anime_embedder",
+      "format": "embedding",
+      "model": "model_feat.onnx",
+      "input": { "width": 384, "height": 384, "layout": "nchw", "channels": "rgb", "scale": 0.00392156862, "mean": [0.5, 0.5, 0.5], "std": [0.5, 0.5, 0.5], "fit": "stretch", "pad": [255, 255, 255] },
+      "license": { "name": "OpenRAIL", "url": "https://huggingface.co/deepghs/ccip_onnx" },
+      "source": "https://huggingface.co/deepghs/ccip_onnx"
+    }
+  },
+  {
+    "id": "wd-tagger",
+    "name": "WD ViT Tagger v3",
+    "kind": "tagger",
+    "summary": {
+      "ko": "이미지 전체에 태그와 알려진 캐릭터 이름을 붙입니다(SmilingWolf).",
+      "en": "Tags whole images, including known character names (SmilingWolf)."
+    },
+    "license": { "name": "Apache-2.0", "url": "https://huggingface.co/SmilingWolf/wd-vit-tagger-v3" },
+    "homepage": "https://huggingface.co/SmilingWolf/wd-vit-tagger-v3",
+    "files": [
+      { "url": "https://huggingface.co/SmilingWolf/wd-vit-tagger-v3/resolve/main/model.onnx", "path": "model.onnx", "size": 378536310 },
+      { "url": "https://huggingface.co/SmilingWolf/wd-vit-tagger-v3/resolve/main/selected_tags.csv", "path": "selected_tags.csv", "size": 0 }
+    ],
+    "manifest": {
+      "id": "wd-tagger",
+      "name": "WD ViT Tagger v3 (SmilingWolf)",
+      "version": "v3",
+      "kind": "tagger",
+      "format": "wd_tagger",
+      "model": "model.onnx",
+      "labels": "selected_tags.csv",
+      "input": { "width": 448, "height": 448, "layout": "nhwc", "channels": "bgr", "scale": 1.0, "fit": "pad_square", "pad": [255, 255, 255] },
+      "license": { "name": "Apache-2.0", "url": "https://huggingface.co/SmilingWolf/wd-vit-tagger-v3" },
+      "source": "https://huggingface.co/SmilingWolf/wd-vit-tagger-v3"
+    }
+  }
+]

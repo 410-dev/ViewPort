@@ -50,6 +50,8 @@ tempfile = "3"
 tauri-plugin-global-shortcut = "2"
 # Image analysis runs models on desktop GPUs; phones only show its results.
 vp-ml = { workspace = true, features = ["onnx"] }
+# Model downloads (desktop).
+ureq = { version = "3.5", default-features = false, features = ["rustls"] }
 
 # OS credential stores for driver secrets (network passwords never go into the bundle).
 [target.'cfg(windows)'.dependencies]

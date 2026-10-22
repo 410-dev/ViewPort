@@ -36,7 +36,7 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> CmdResult<T> + Send + '
 
 /// Where model packs are looked for: the app folder's `models/`, the config folder's
 /// `models/`, then `ml.model_dirs`.
-fn model_dirs(app: &AppHandle) -> Vec<PathBuf> {
+pub(crate) fn model_dirs(app: &AppHandle) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(d) = std::env::current_exe().ok().and_then(|p| p.parent().map(|p| p.join("models"))) {
         dirs.push(d);

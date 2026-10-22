@@ -5,6 +5,7 @@ mod error;
 mod media;
 mod media_server;
 mod ml;
+mod ml_store;
 mod platform;
 mod recent;
 mod secrets;
@@ -142,6 +143,8 @@ pub fn run() {
             ml::ml_status,
             ml::ml_analyze,
             ml::ml_prioritize,
+            ml_store::ml_catalog,
+            ml_store::ml_download,
             ml::ml_retry_failed,
             ml::ml_regroup,
             ml::ml_people,
