@@ -108,36 +108,55 @@ impl Loaded {
         Ok(Self { pack: pack.clone(), model, labels })
     }
 
-    fn detect(&self, img: &RgbImage, o: &Options) -> Result<Vec<Detection>> {
+    /// Runs the model on each image (scaled to its input), up to `max` at once.
+    fn run_images(&self, imgs: &[&RgbImage], max: usize) -> Vec<(Result<runtime::Outputs>, prep::Placement)> {
+        let (tensors, places): (Vec<_>, Vec<_>) = imgs.iter().map(|img| prep::to_tensor(img, &self.pack.manifest.input)).unzip();
+        self.model.run_many(tensors, max).into_iter().zip(places).collect()
+    }
+
+    fn detect_many(&self, imgs: &[&RgbImage], o: &Options, max: usize) -> Vec<Result<Vec<Detection>>> {
         let spec = &self.pack.manifest.input;
-        let (t, place) = prep::to_tensor(img, spec);
-        let out = self.model.run(t)?;
-        let raw = match self.pack.manifest.format {
-            pack::OutputFormat::Yunet => detect::decode_yunet(&out, spec.width, spec.height, o.detect_score),
-            pack::OutputFormat::Yolo => match largest(&out) {
-                Some((shape, data)) => detect::decode_yolo(shape, data, o.detect_score),
-                None => Vec::new(),
-            },
-            other => return Err(Error::Pack(format!("{}: {other:?} is not a detector format", self.pack.manifest.id))),
-        };
-        Ok(detect::finish(raw, &place, img.width(), img.height(), o.nms_iou, o.min_face_px))
+        let runs = self.run_images(imgs, max);
+        imgs.iter()
+            .zip(runs)
+            .map(|(img, (out, place))| {
+                let out = out?;
+                let raw = match self.pack.manifest.format {
+                    pack::OutputFormat::Yunet => detect::decode_yunet(&out, spec.width, spec.height, o.detect_score),
+                    pack::OutputFormat::Yolo => match largest(&out) {
+                        Some((shape, data)) => detect::decode_yolo(shape, data, o.detect_score),
+                        None => Vec::new(),
+                    },
+                    other => return Err(Error::Pack(format!("{}: {other:?} is not a detector format", self.pack.manifest.id))),
+                };
+                Ok(detect::finish(raw, &place, img.width(), img.height(), o.nms_iou, o.min_face_px))
+            })
+            .collect()
     }
 
-    /// A unit vector for an image already cropped for this embedder.
-    fn embed(&self, crop: &RgbImage) -> Result<Vec<f32>> {
-        let (t, _) = prep::to_tensor(crop, &self.pack.manifest.input);
-        let out = self.model.run(t)?;
-        let (_, data) = largest(&out).ok_or_else(|| Error::Model("the embedder gave no output".into()))?;
-        let mut v = data.to_vec();
-        cluster::normalize(&mut v);
-        Ok(v)
+    /// A unit vector for each image already cropped for this embedder.
+    fn embed_many(&self, crops: &[&RgbImage], max: usize) -> Vec<Result<Vec<f32>>> {
+        self.run_images(crops, max)
+            .into_iter()
+            .map(|(out, _)| {
+                let out = out?;
+                let (_, data) = largest(&out).ok_or_else(|| Error::Model("the embedder gave no output".into()))?;
+                let mut v = data.to_vec();
+                cluster::normalize(&mut v);
+                Ok(v)
+            })
+            .collect()
     }
 
-    fn tag(&self, img: &RgbImage, keep: f32) -> Result<Vec<TagScore>> {
-        let (t, _) = prep::to_tensor(img, &self.pack.manifest.input);
-        let out = self.model.run(t)?;
-        let (_, data) = largest(&out).ok_or_else(|| Error::Model("the tagger gave no output".into()))?;
-        Ok(tagger::decode(&self.labels, data, keep))
+    fn tag_many(&self, imgs: &[&RgbImage], keep: f32, max: usize) -> Vec<Result<Vec<TagScore>>> {
+        self.run_images(imgs, max)
+            .into_iter()
+            .map(|(out, _)| {
+                let out = out?;
+                let (_, data) = largest(&out).ok_or_else(|| Error::Model("the tagger gave no output".into()))?;
+                Ok(tagger::decode(&self.labels, data, keep))
+            })
+            .collect()
     }
 }
 
@@ -196,42 +215,75 @@ impl Engine {
     /// Faces of `kind` in `img`. Photos are aligned on their landmarks for the embedder;
     /// characters are cropped around the face, grown by `crop_scale`.
     pub fn faces(&self, kind: FaceKind, img: &RgbImage, o: &Options) -> Result<Vec<Found>> {
+        self.faces_many(kind, &[img], o, 1).pop().unwrap_or_else(|| Ok(Vec::new()))
+    }
+
+    /// [`Self::faces`] for several images, each model running up to `max` inputs at once
+    /// (the faces of every image go to the embedder together). One result per image.
+    pub fn faces_many(&self, kind: FaceKind, imgs: &[&RgbImage], o: &Options, max: usize) -> Vec<Result<Vec<Found>>> {
         let (det, emb) = match kind {
             FaceKind::Real => (&self.face_detector, &self.face_embedder),
             FaceKind::Anime => (&self.anime_detector, &self.anime_embedder),
         };
-        let Some(det) = det else { return Ok(Vec::new()) };
-        let (w, h) = (img.width().max(1) as f32, img.height().max(1) as f32);
-        let mut found = Vec::new();
-        for d in det.detect(img, o)? {
-            let face_box = [d.x, d.y, d.w, d.h];
-            let aligned = d.landmarks.as_ref().and_then(|l| align::align(img, l, 112));
-            let crop = match &aligned {
-                Some(a) => image::imageops::resize(a, o.crop_px, o.crop_px, image::imageops::FilterType::Triangle),
-                None => prep::square_crop(img, face_box, 1.3, o.crop_px, [0, 0, 0]),
-            };
-            let embedding = match emb {
-                None => None,
-                Some(e) => {
-                    let spec = &e.pack.manifest.input;
-                    let input = match (kind, &aligned) {
-                        (FaceKind::Real, Some(a)) => a.clone(),
-                        (FaceKind::Real, None) => prep::square_crop(img, face_box, 1.0, spec.width, [0, 0, 0]),
-                        (FaceKind::Anime, _) => prep::square_crop(img, face_box, o.crop_scale, spec.width, spec.pad),
-                    };
-                    Some(e.embed(&input)?)
+        let Some(det) = det else { return imgs.iter().map(|_| Ok(Vec::new())).collect() };
+        // Faces with their crops; embedder inputs alongside, as (image, face) pairs.
+        let mut results: Vec<Result<Vec<Found>>> = Vec::with_capacity(imgs.len());
+        let mut inputs: Vec<RgbImage> = Vec::new();
+        let mut owners: Vec<(usize, usize)> = Vec::new();
+        for (i, (img, dets)) in imgs.iter().zip(det.detect_many(imgs, o, max)).enumerate() {
+            let dets = match dets {
+                Ok(d) => d,
+                Err(e) => {
+                    results.push(Err(e));
+                    continue;
                 }
             };
-            found.push(Found { kind, bbox: [d.x / w, d.y / h, d.w / w, d.h / h], score: d.score, embedding, crop });
+            let (w, h) = (img.width().max(1) as f32, img.height().max(1) as f32);
+            let mut found = Vec::with_capacity(dets.len());
+            for d in dets {
+                let face_box = [d.x, d.y, d.w, d.h];
+                let aligned = d.landmarks.as_ref().and_then(|l| align::align(img, l, 112));
+                let crop = match &aligned {
+                    Some(a) => image::imageops::resize(a, o.crop_px, o.crop_px, image::imageops::FilterType::Triangle),
+                    None => prep::square_crop(img, face_box, 1.3, o.crop_px, [0, 0, 0]),
+                };
+                if let Some(e) = emb {
+                    let spec = &e.pack.manifest.input;
+                    inputs.push(match (kind, aligned) {
+                        (FaceKind::Real, Some(a)) => a,
+                        (FaceKind::Real, None) => prep::square_crop(img, face_box, 1.0, spec.width, [0, 0, 0]),
+                        (FaceKind::Anime, _) => prep::square_crop(img, face_box, o.crop_scale, spec.width, spec.pad),
+                    });
+                    owners.push((i, found.len()));
+                }
+                found.push(Found { kind, bbox: [d.x / w, d.y / h, d.w / w, d.h / h], score: d.score, embedding: None, crop });
+            }
+            results.push(Ok(found));
         }
-        Ok(found)
+        if let Some(e) = emb {
+            let refs: Vec<&RgbImage> = inputs.iter().collect();
+            for ((i, f), v) in owners.into_iter().zip(e.embed_many(&refs, max)) {
+                // An embedder failing on a face fails its image, as with one image at a time.
+                match (v, &mut results[i]) {
+                    (Ok(v), Ok(found)) => found[f].embedding = Some(v),
+                    (Err(err), r @ Ok(_)) => *r = Err(err),
+                    (_, Err(_)) => {}
+                }
+            }
+        }
+        results
     }
 
     /// Tags of the whole image scoring at least `keep`.
     pub fn tags(&self, img: &RgbImage, keep: f32) -> Result<Vec<TagScore>> {
+        self.tags_many(&[img], keep, 1).pop().unwrap_or_else(|| Ok(Vec::new()))
+    }
+
+    /// [`Self::tags`] for several images, up to `max` at once. One result per image.
+    pub fn tags_many(&self, imgs: &[&RgbImage], keep: f32, max: usize) -> Vec<Result<Vec<TagScore>>> {
         match &self.tagger {
-            Some(t) => t.tag(img, keep),
-            None => Ok(Vec::new()),
+            Some(t) => t.tag_many(imgs, keep, max),
+            None => imgs.iter().map(|_| Ok(Vec::new())).collect(),
         }
     }
 }
@@ -273,5 +325,30 @@ mod tests {
             }
         }
         eprintln!("tags: {:?}", engine.tags(&img, 0.35).unwrap().iter().take(10).collect::<Vec<_>>());
+
+        // Batches give what one image at a time gives.
+        for m in engine.models() {
+            eprintln!("{} batches: {}", m.pack.manifest.key(), m.model.batches());
+        }
+        let imgs = [&img, &img, &img];
+        for kind in [FaceKind::Real, FaceKind::Anime] {
+            let one = engine.faces(kind, &img, &o).unwrap();
+            for r in engine.faces_many(kind, &imgs, &o, 8) {
+                let many = r.unwrap();
+                assert_eq!(many.len(), one.len());
+                for (a, b) in many.iter().zip(&one) {
+                    assert!((a.score - b.score).abs() < 1e-3);
+                    if let (Some(x), Some(y)) = (&a.embedding, &b.embedding) {
+                        assert!(cluster::dot(x, y) > 0.999);
+                    }
+                }
+            }
+        }
+        let one = engine.tags(&img, 0.35).unwrap();
+        for r in engine.tags_many(&imgs, 0.35, 8) {
+            let many = r.unwrap();
+            assert_eq!(many.len(), one.len());
+            assert!(many.iter().zip(&one).all(|(a, b)| a.name == b.name && (a.score - b.score).abs() < 1e-3));
+        }
     }
 }

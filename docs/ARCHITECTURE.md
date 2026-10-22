@@ -181,9 +181,15 @@ name.vpshard/
 - **실행**(`vp-ml::runtime`): `ort`의 `load-dynamic` — ONNX Runtime도 포함하지 않고 실행 중에 불러온다(`ml.runtime_path` → 앱 폴더 →
   `ORT_DYLIB_PATH` → 시스템 경로). 모델마다 `ml.providers` 순서(기본 Windows `cuda, directml, cpu`, Linux `cuda, cpu`)로 시도해
   처음 되는 장치를 쓴다. DirectML은 Windows 빌드에만 컴파일된다. 휴대폰 빌드는 `onnx` 기능을 끄고(결과 보기·이름 붙이기만) 빌드한다.
-- **파이프라인**(`src-tauri/src/ml.rs`, 작업 `analyze`): 읽기 스레드가 원본을 읽어 `ml.max_edge_px`로 줄여 디코딩해 두고(HEIF는 OS/FFmpeg),
-  추론 스레드가 실사 검출(YuNet: 다섯 점) → 112×112 템플릿 정렬(Umeyama) → 특징값, 애니 검출(YOLO) → 얼굴 상자를
+- **파이프라인**(`src-tauri/src/ml.rs`, 작업 `analyze`): 배정 스레드가 순서(아래 '보이는 것 먼저')대로 항목을 고르고, 디코딩
+  워커 `ml.decode_workers`개(0 = 코어 절반)가 병렬로 원본을 읽어 `ml.max_edge_px`로 줄여 디코딩해 둔다(HEIF는 libheif/OS/FFmpeg, 워커가
+  여럿이면 순서가 조금 섞임). 카메라 사진 디코딩이 GPU보다 느려서 이 단계가 병목이다.
+  추론 스레드는 그때까지 준비된 이미지를 `ml.batch_size`장까지 한 묶음으로 가져가, 실사 검출(YuNet: 다섯 점) → 112×112 템플릿 정렬(Umeyama) → 특징값, 애니 검출(YOLO) → 얼굴 상자를
   `analysis.character_crop_scale`배 키운 정사각형 → 특징값, 태거(이미지 전체)를 돌린다. 항목마다 아직 안 돌린 모델만 돌린다(`ml_done`).
+  - **배치**: 입력의 첫 차원이 동적(-1)인 모델(`Model::batches`, 예: YOLO 애니 검출·CCIP·WD 태거)은 묶음의 입력을 쌓아(`runtime::stack`)
+    한 번에 돌리고 출력을 첫 차원으로 나눈다(`split`). 묶음 안 모든 얼굴은 임베더에 함께 들어간다. 출력이 배치 차원으로 시작하지
+    않으면 그 모델의 배치를 끄고, 배치 실행이 실패하면(잘못된 입력, GPU 메모리 부족) 그 묶음만 한 장씩 다시 돌린다.
+    고정 배치 1 모델(YuNet, SFace)은 한 장씩.
   얼굴 그림(`analysis.face_crop_px`)은 썸네일 팩에 넣고(잠긴 번들이면 봉인) `vpthumb://localhost/face-<id>`로 보여 준다.
   끝나면(긴 작업은 2000장마다) 다시 묶고 자동 값을 갱신한다. `ml.auto_analyze`면 스캔 뒤에 자동으로 시작한다.
 - **저장**(스키마 v7): `ml_model`(팩 `id@version` — 모델이 다르면 특징값을 섞지 않음), `ml_done`, `face`(위치는 이미지 대비 비율,
@@ -196,14 +202,17 @@ name.vpshard/
   사용자가 직접 넣은 같은 값은 건드리지도, 중복하지도 않는다. 그래서 `인물(김철수)`, `캐릭터(miku)`, `자동 태그(long hair)`가 그대로 검색된다.
 - **소스별 범위**(`analysis.source_modes`, 소스 id → `auto`/`real`/`anime`/`off`): 작업은 소스를 범위별 그룹으로 나눠 그룹마다 필요한
   모델만 돌린다(`off`는 태거도 안 돌림). 연결되지 않은 소스와 잠긴 샤드는 "실패"가 아니라 대기다.
-- **보이는 것 먼저**: 라이브러리가 보여 주는 결과(순서대로, `ml.priority_items`개)를 `ml_prioritize`로 알리고, 읽기 스레드는 항목마다
+- **보이는 것 먼저**: 라이브러리가 보여 주는 결과(순서대로, `ml.priority_items`개)를 `ml_prioritize`로 알리고, 배정 스레드는 항목마다
   이 목록을 먼저 확인한다. 한 작업 안에서 같은 항목은 한 번만 읽는다.
 - **실패 재시도**: 읽지 못했거나 모델 오류가 난 항목은 `ml_done.ok = 0`으로 남고, `ml_retry_failed`가 지운 뒤 다시 분석한다.
 - **모델 받기**(`ml_store.rs`, 카탈로그 `models/catalog.json`을 앱에 포함): 각 모델의 배포처 URL·크기·라이선스·manifest. UI가 라이선스
   단계(전문 열기 + 동의 체크)를 거친 뒤 동의한 라이선스 이름과 함께 요청해야 받는다. 설정 폴더 `models/<id>/`에 `.part`로 받아
   이름을 바꾸고, `consent.json`(라이선스·동의 시각) 다음 **manifest를 마지막에** 써서 받다 만 팩이 인식되지 않는다. 데스크톱만(`ureq`, rustls).
 - **UI**: 사이드바 "인물" → `people/PeopleView.svelte`(인물/캐릭터 탭, 분석 상태·시작, 그룹 카드, 합치기, 이름 붙이기, 얼굴별 "이 사람 아님",
-  "사진 보기" = 해당 조건 검색). 설정 → 분석.
+  "사진 보기" = 해당 조건 검색, 얼굴 클릭·우클릭 메뉴 = "이미지 열기"(그 그룹 이미지들로 뷰어, 인물 창은 숨겼다가 복귀) /
+  "라이브러리에서 보기"(소스·폴더로 이동해 검색 후 선택하고 `Selection.revealing`으로 그리드·목록이 스크롤)). 설정 → 분석.
+  Windows는 ONNX Runtime 경로가 비어 있으면 시스템 검색으로 `System32\onnxruntime.dll`(Windows ML, CUDA 없음 → DirectML)이 잡힌다.
+  NVIDIA GPU를 제대로 쓰려면 onnxruntime-gpu(CUDA) 빌드를 지정해야 한다.
 - 선택적 실제 환경 테스트: `VP_TEST_ORT=<ONNX Runtime 라이브러리> VP_TEST_MODELS=<모델 팩 폴더> [VP_TEST_IMAGE=<사진>] cargo test -p vp-ml --features onnx`.
 
 ## 썸네일

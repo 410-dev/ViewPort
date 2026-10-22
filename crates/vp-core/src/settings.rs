@@ -501,6 +501,12 @@ pub struct MlSettings {
     pub auto_analyze: bool,
     /// How many items of what the library shows (in its order) are analysed before the rest.
     pub priority_items: u32,
+    /// Threads reading and decoding images ahead of the models (0 = half the CPU cores).
+    /// Decoding camera photos is usually what keeps a fast GPU waiting.
+    pub decode_workers: u32,
+    /// Images (and faces) given to a model in one run, for models that take batches.
+    /// Larger batches keep a GPU busier and use more of its memory. 1 = one at a time.
+    pub batch_size: u32,
 }
 
 impl Default for MlSettings {
@@ -521,6 +527,8 @@ impl Default for MlSettings {
             threads: 0,
             auto_analyze: false,
             priority_items: 500,
+            decode_workers: 0,
+            batch_size: 16,
         }
     }
 }

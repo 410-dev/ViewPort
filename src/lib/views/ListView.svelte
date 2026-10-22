@@ -32,12 +32,24 @@
   });
   $effect(() => want(rows.filter((r) => r.id !== undefined).map((r) => r.id!)));
 
-  function scrollToIndex(index: number) {
+  function scrollToIndex(index: number, centre = false) {
     const top = (index + folders.length) * rowPx;
     const view = height - HEAD;
-    if (top < el.scrollTop) el.scrollTop = top;
+    if (centre) el.scrollTop = Math.max(0, top - (view - rowPx) / 2);
+    else if (top < el.scrollTop) el.scrollTop = top;
     else if (top + rowPx > el.scrollTop + view) el.scrollTop = top + rowPx - view;
   }
+
+  // Declared after the reset above, so a revealed item wins over scrolling to the top.
+  $effect(() => {
+    const id = selection.revealing;
+    if (id == null || !el || height === 0) return;
+    const i = ids.indexOf(id);
+    if (i < 0) return;
+    scrollToIndex(i, true);
+    scrollTop = el.scrollTop;
+    selection.revealing = null;
+  });
 
   function onKey(e: KeyboardEvent) {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {

@@ -52,12 +52,24 @@
     wantFolders(visible.flatMap((v) => (v.folder ? [v.folder] : [])), sampleCount);
   });
 
-  function scrollToIndex(index: number) {
+  function scrollToIndex(index: number, centre = false) {
     const row = Math.floor((index + folders.length) / cols);
     const top = row * rowH;
-    if (top < el.scrollTop) el.scrollTop = top;
+    if (centre) el.scrollTop = Math.max(0, top - (height - rowH) / 2);
+    else if (top < el.scrollTop) el.scrollTop = top;
     else if (top + rowH > el.scrollTop + height) el.scrollTop = top + rowH - height;
   }
+
+  // Declared after the reset above, so a revealed item wins over scrolling to the top.
+  $effect(() => {
+    const id = selection.revealing;
+    if (id == null || !el || height === 0) return;
+    const i = ids.indexOf(id);
+    if (i < 0) return;
+    scrollToIndex(i, true);
+    scrollTop = el.scrollTop;
+    selection.revealing = null;
+  });
 
   function onKey(e: KeyboardEvent) {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {

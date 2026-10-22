@@ -267,6 +267,8 @@ export interface AppSettings {
     threads: number;
     auto_analyze: boolean;
     priority_items: number;
+    decode_workers: number;
+    batch_size: number;
   };
   decoders: {
     heif_download_urls: string[];

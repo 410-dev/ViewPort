@@ -37,9 +37,43 @@ pub fn candidates(configured: &str, app_dir: Option<&Path>) -> Vec<PathBuf> {
 /// Output tensors of one run, by name.
 pub type Outputs = std::collections::HashMap<String, (Vec<i64>, Vec<f32>)>;
 
+/// One input of `tensors.len()` items, each of batch 1 and the same shape; `None` if they
+/// differ.
+pub fn stack(tensors: &[Tensor]) -> Option<Tensor> {
+    let first = tensors.first()?;
+    if first.shape.first() != Some(&1) || tensors.iter().any(|t| t.shape != first.shape) {
+        return None;
+    }
+    let mut shape = first.shape.clone();
+    shape[0] = tensors.len() as i64;
+    let mut data = Vec::with_capacity(first.data.len() * tensors.len());
+    for t in tensors {
+        data.extend_from_slice(&t.data);
+    }
+    Some(Tensor { shape, data })
+}
+
+/// Splits the outputs of a batch of `n` into `n` outputs of batch 1; `None` when an output
+/// does not lead with the batch dimension (the model cannot be run in batches).
+pub fn split(out: Outputs, n: usize) -> Option<Vec<Outputs>> {
+    let mut items = vec![Outputs::new(); n];
+    for (name, (shape, data)) in out {
+        if shape.first() != Some(&(n as i64)) || data.len() % n != 0 {
+            return None;
+        }
+        let mut one = shape.clone();
+        one[0] = 1;
+        for (item, chunk) in items.iter_mut().zip(data.chunks_exact(data.len() / n.max(1))) {
+            item.insert(name.clone(), (one.clone(), chunk.to_vec()));
+        }
+    }
+    Some(items)
+}
+
 #[cfg(feature = "onnx")]
 mod imp {
     use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Mutex, OnceLock};
 
     use ort::environment::Environment;
@@ -84,6 +118,9 @@ mod imp {
         session: Mutex<Session>,
         input: String,
         pub provider: String,
+        /// The input's batch dimension is free, so several items run at once. Cleared when
+        /// a batched run shows otherwise (outputs without the batch dimension).
+        batch: AtomicBool,
     }
 
     fn builder(env: &Environment, provider: &str, device: i32, threads: u32) -> Result<ort::session::builder::SessionBuilder, String> {
@@ -121,7 +158,14 @@ mod imp {
                             Some(n) => n.to_string(),
                             None => s.inputs().first().map(|i| i.name().to_string()).ok_or_else(|| Error::Model("the model has no input".into()))?,
                         };
-                        return Ok(Self { session: Mutex::new(s), input, provider: p.to_string() });
+                        // A dynamic (negative) leading dimension takes any batch size.
+                        let batch = s
+                            .inputs()
+                            .iter()
+                            .find(|i| i.name() == input)
+                            .and_then(|i| i.dtype().tensor_shape().and_then(|sh| sh.first().copied()))
+                            .is_some_and(|d| d < 0);
+                        return Ok(Self { session: Mutex::new(s), input, provider: p.to_string(), batch: AtomicBool::new(batch) });
                     }
                     Err(e) => errors.push(format!("{p}: {e}")),
                 }
@@ -141,6 +185,38 @@ mod imp {
                 }
             }
             Ok(out)
+        }
+
+        /// Whether several items can run at once.
+        pub fn batches(&self) -> bool {
+            self.batch.load(Ordering::Relaxed)
+        }
+
+        /// Runs every tensor (each of batch 1), at most `max` per run when the model takes
+        /// batches. One result per tensor: a batch that fails is retried item by item, so a
+        /// bad input (or running out of GPU memory) only costs that item.
+        pub fn run_many(&self, tensors: Vec<Tensor>, max: usize) -> Vec<Result<Outputs, Error>> {
+            if tensors.len() < 2 || max < 2 || !self.batches() {
+                return tensors.into_iter().map(|t| self.run(t)).collect();
+            }
+            let mut results = Vec::with_capacity(tensors.len());
+            let mut rest = tensors;
+            while !rest.is_empty() {
+                let tail = rest.split_off(rest.len().min(max));
+                let chunk = std::mem::replace(&mut rest, tail);
+                let n = chunk.len();
+                let batched = super::stack(&chunk).and_then(|t| self.run(t).ok()).map(|out| super::split(out, n));
+                match batched {
+                    Some(Some(items)) => results.extend(items.into_iter().map(Ok)),
+                    other => {
+                        if matches!(other, Some(None)) {
+                            self.batch.store(false, Ordering::Relaxed);
+                        }
+                        results.extend(chunk.into_iter().map(|t| self.run(t)));
+                    }
+                }
+            }
+            results
         }
     }
 }
@@ -172,6 +248,14 @@ mod imp {
         pub fn run(&self, _t: Tensor) -> Result<Outputs, Error> {
             Err(Error::Unavailable)
         }
+
+        pub fn batches(&self) -> bool {
+            false
+        }
+
+        pub fn run_many(&self, tensors: Vec<Tensor>, _max: usize) -> Vec<Result<Outputs, Error>> {
+            tensors.into_iter().map(|_| Err(Error::Unavailable)).collect()
+        }
     }
 }
 
@@ -179,6 +263,34 @@ pub use imp::{Model, init, loaded};
 
 /// Whether this build can run models at all (`onnx` feature).
 pub const SUPPORTED: bool = cfg!(feature = "onnx");
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn t(shape: &[i64], v: f32) -> Tensor {
+        Tensor { shape: shape.to_vec(), data: vec![v; shape.iter().product::<i64>() as usize] }
+    }
+
+    #[test]
+    fn stacks_items_and_splits_outputs_back() {
+        let s = stack(&[t(&[1, 3, 2, 2], 1.0), t(&[1, 3, 2, 2], 2.0)]).unwrap();
+        assert_eq!(s.shape, vec![2, 3, 2, 2]);
+        assert_eq!((s.data[0], s.data[12]), (1.0, 2.0));
+        assert!(stack(&[t(&[1, 3, 2, 2], 1.0), t(&[1, 3, 4, 4], 1.0)]).is_none(), "shapes must match");
+        assert!(stack(&[t(&[2, 3], 1.0)]).is_none(), "items are batch 1");
+
+        let mut out = Outputs::new();
+        out.insert("emb".into(), (vec![2, 4], vec![1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0]));
+        let items = split(out, 2).unwrap();
+        assert_eq!(items[1]["emb"], (vec![1, 4], vec![2.0; 4]));
+
+        // An output without the batch dimension: the model does not batch.
+        let mut out = Outputs::new();
+        out.insert("x".into(), (vec![1, 8], vec![0.0; 8]));
+        assert!(split(out, 2).is_none());
+    }
+}
 
 /// Providers this build knows, for the settings UI.
 pub fn known_providers() -> &'static [&'static str] {

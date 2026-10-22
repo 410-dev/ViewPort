@@ -6,6 +6,7 @@
   import { quoteParam } from "../query";
   import { onSync } from "../sync";
   import { tasks } from "../tasks.svelte";
+  import ContextMenu, { type MenuItem } from "../ui/ContextMenu.svelte";
   import Icon from "../ui/Icon.svelte";
   import ModelStore from "./ModelStore.svelte";
 
@@ -14,7 +15,40 @@
    * correct. Names become values of the built-in people / characters fields, so "show
    * photos" is just a search.
    */
-  let { onshow, onclose }: { onshow: (query: string) => void; onclose: () => void } = $props();
+  let {
+    onshow,
+    onopen,
+    onreveal,
+    onclose,
+    hidden = false,
+  }: {
+    /** Kept open but not drawn (while the viewer shows one of its images). */
+    hidden?: boolean;
+    onshow: (query: string) => void;
+    /** Opens the viewer at `id` within `list`. */
+    onopen: (id: number, list: number[]) => void;
+    /** Shows `id` in its folder in the library. */
+    onreveal: (id: number) => void;
+    onclose: () => void;
+  } = $props();
+
+  /** A face's menu (right click): open its image or find it in the library. */
+  let menu = $state<{ x: number; y: number; face: FaceRow } | null>(null);
+  const menuItems = $derived<MenuItem[]>(
+    menu
+      ? [
+          {
+            label: t("people.openImage"),
+            icon: "image",
+            action: () => {
+              const f = menu!.face;
+              onopen(f.media_id, [...new Set(faces.map((x) => x.media_id))]);
+            },
+          },
+          { label: t("people.revealImage"), icon: "folder", action: () => onreveal(menu!.face.media_id) },
+        ]
+      : [],
+  );
 
   const PAGE = 200;
 
@@ -29,7 +63,7 @@
   let error = $state("");
 
   $effect(() => {
-    if (!store) return onBack(() => (open ? (open = null) : onclose()));
+    if (!store && !hidden) return onBack(() => (open ? (open = null) : onclose()));
   });
 
   async function refreshStatus() {
@@ -147,7 +181,7 @@
   );
 </script>
 
-<div class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
+<div class="scrim" role="presentation" style:display={hidden ? "none" : null} onclick={(e) => e.target === e.currentTarget && onclose()}>
   <div class="dialog people" role="dialog" aria-modal="true" aria-labelledby="people-title">
     <header>
       {#if open}
@@ -239,8 +273,17 @@
       {#if error}<p class="err small">{error}</p>{/if}
       <div class="body grid faces">
         {#each faces as f (f.id)}
-          <div class="card">
-            <span class="face"><img src={faceUrl(f.id)} alt="" loading="lazy" draggable="false" /></span>
+          <div
+            class="card"
+            role="presentation"
+            oncontextmenu={(e) => {
+              e.preventDefault();
+              menu = { x: e.clientX, y: e.clientY, face: f };
+            }}
+          >
+            <button class="face" title={t("people.faceHint")} onclick={(e) => (menu = { x: e.clientX, y: e.clientY, face: f })}
+              ><img src={faceUrl(f.id)} alt="" loading="lazy" draggable="false" /></button
+            >
             <button class="pick danger" title={t("people.notThis")} aria-label={t("people.notThis")} onclick={() => notThis(f)}>
               <Icon name="x" size={13} />
             </button>
@@ -256,6 +299,10 @@
 
 {#if store}
   <ModelStore onclose={() => (store = false)} onchanged={refreshStatus} />
+{/if}
+
+{#if menu}
+  <ContextMenu x={menu.x} y={menu.y} items={menuItems} onclose={() => (menu = null)} />
 {/if}
 
 <style>

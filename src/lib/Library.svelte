@@ -196,6 +196,8 @@
   });
 
   let searchSeq = 0;
+  /** Selected and scrolled to once a search lists it (`revealInLibrary`). */
+  let revealAfterSearch: number | null = null;
   async function runSearch(reset: boolean) {
     const seq = ++searchSeq;
     try {
@@ -206,9 +208,33 @@
       queryError = null;
       selection.retain(r.ids);
       if (reset) resetKey++;
+      const reveal = revealAfterSearch;
+      if (reveal != null && r.ids.includes(reveal)) {
+        revealAfterSearch = null;
+        selection.set.clear();
+        selection.set.add(reveal);
+        selection.focus = reveal;
+        selection.revealing = reveal;
+      }
     } catch (e) {
       if (seq === searchSeq) queryError = asCmdError(e).message;
     }
+  }
+
+  /** Goes to item `id`'s folder (no search, no sorting) and selects it there. */
+  async function revealInLibrary(id: number) {
+    const b = (await api.mediaBrief([id]).catch(() => []))[0];
+    if (!b) return;
+    showPeople = false;
+    revealAfterSearch = id;
+    const same = selected === b.source_id && folder === b.folder && !query && !sort;
+    selected = b.source_id;
+    lastSource = b.source_id;
+    folder = b.folder;
+    query = "";
+    sort = null;
+    // Otherwise the changes above start a search.
+    if (same) runSearch(false);
   }
 
   // svelte-ignore state_referenced_locally
@@ -1058,6 +1084,9 @@
 
 {#if showPeople}
   <PeopleView
+    hidden={viewing != null}
+    onopen={openViewer}
+    onreveal={revealInLibrary}
     onclose={() => (showPeople = false)}
     onshow={(q) => {
       // A person's photos: everything with their name, in every source.

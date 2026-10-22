@@ -21,6 +21,8 @@ export interface FolderRef {
 export class Selection {
   readonly set = new SvelteSet<number>();
   focus = $state<number | null>(null);
+  /** An item to scroll into view once the view lists it (cleared by the view). */
+  revealing = $state<number | null>(null);
   /** Where the selection's context menu is open (the library draws it), or null. */
   menu = $state<{ x: number; y: number } | null>(null);
   /** A selected folder: folders are selected one at a time, never together with items. */

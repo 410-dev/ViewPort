@@ -4,8 +4,9 @@
 //! people on a phone too. Face pictures go into the thumbnail packs (sealed in a locked
 //! bundle), not the database.
 //!
-//! One job at a time: a reader thread decodes images ahead while the models run, so the
-//! GPU does not wait for the disk. After the job (and after every change to people) the
+//! One job at a time: a dispatcher picks the items in order, decode workers (`ml.decode_workers`)
+//! read and decode them ahead in parallel, and the models take what is ready in batches
+//! (`ml.batch_size`), so the GPU waits neither for the disk nor for the CPU. After the job (and after every change to people) the
 //! automatic `x.people` / `x.characters` / `x.auto_tags` values are rewritten.
 
 use std::collections::{HashMap, HashSet};
@@ -351,6 +352,19 @@ fn counts(ws: &Workspace, s: &vp_core::settings::AnalysisSettings, models: &Mode
     Ok(total)
 }
 
+/// One image of a batch on its way through the models.
+struct Analysed {
+    id: i64,
+    mode: Mode,
+    img: Option<RgbImage>,
+    /// Models that already ran on it.
+    done: HashSet<i64>,
+    models_run: Vec<i64>,
+    ok: bool,
+    faces: Vec<NewFace>,
+    tags: Option<(i64, Vec<(String, i64, f32)>)>,
+}
+
 /// Items the library shows, in its order: analysed before the rest (`ml_prioritize`).
 static PRIORITY: Mutex<Vec<i64>> = Mutex::new(Vec::new());
 
@@ -397,20 +411,49 @@ fn run(app: &AppHandle, ws: &Arc<Workspace>, task: &tasks::Task, cancel: &Atomic
         crop_px: settings.face_crop_px.clamp(32, 512),
     };
 
-    // Reader thread: decodes ahead into a small queue. What the library shows goes first
-    // (checked before every item), then each group of sources in id order.
-    let (tx, rx) = std::sync::mpsc::sync_channel::<(i64, Mode, Option<RgbImage>)>(4);
+    // Dispatcher: picks the items in order into a queue of jobs. What the library shows goes
+    // first (checked before every item), then each group of sources in id order. Decode
+    // workers take jobs and hand decoded images to the models; with several workers, items
+    // finish slightly out of order.
+    let batch_max = device.batch_size.max(1) as usize;
+    let workers = match device.decode_workers {
+        0 => std::thread::available_parallelism().map(|n| (n.get() / 2).max(1)).unwrap_or(2),
+        n => n as usize,
+    };
+    let (job_tx, job_rx) = std::sync::mpsc::sync_channel::<(i64, Mode)>(workers * 2);
+    let (tx, rx) = std::sync::mpsc::sync_channel::<(i64, Mode, Option<RgbImage>)>(batch_max + workers);
+    let stop = Arc::new(AtomicBool::new(false));
+    let decoders: Vec<_> = {
+        let job_rx = Arc::new(Mutex::new(job_rx));
+        let drivers = app.state::<AppState>().drivers.clone();
+        let max_edge = device.max_edge_px.max(64);
+        (0..workers)
+            .map(|_| {
+                let (ws, drivers, job_rx, tx, stop) = (ws.clone(), drivers.clone(), job_rx.clone(), tx.clone(), stop.clone());
+                std::thread::spawn(move || {
+                    loop {
+                        let job = job_rx.lock().unwrap_or_else(|e| e.into_inner()).recv();
+                        let Ok((id, mode)) = job else { return };
+                        if stop.load(Ordering::Relaxed) || ws.closed.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        if tx.send((id, mode, decode(&ws, &drivers, id, max_edge))).is_err() {
+                            return;
+                        }
+                    }
+                })
+            })
+            .collect()
+    };
+    drop(tx);
     let reader = {
         let ws = ws.clone();
-        let drivers = app.state::<AppState>().drivers.clone();
         let models = models.clone();
         let settings = settings.clone();
-        let stop = Arc::new(AtomicBool::new(false));
         let stop2 = stop.clone();
         let waiting: HashSet<i64> = waiting_sources(&ws).into_iter().collect();
         let handle = std::thread::spawn(move || {
             let mut sent: HashSet<i64> = HashSet::new();
-            let max_edge = device.max_edge_px.max(64);
             // false: stop reading.
             let send = |id: i64, mode: Mode, sent: &mut HashSet<i64>| -> bool {
                 if stop2.load(Ordering::Relaxed) || ws.closed.load(Ordering::Relaxed) {
@@ -419,7 +462,7 @@ fn run(app: &AppHandle, ws: &Arc<Workspace>, task: &tasks::Task, cancel: &Atomic
                 if !sent.insert(id) {
                     return true;
                 }
-                tx.send((id, mode, decode(&ws, &drivers, id, max_edge))).is_ok()
+                job_tx.send((id, mode)).is_ok()
             };
             let priority = |sent: &mut HashSet<i64>| -> bool {
                 for id in take_priority() {
@@ -465,29 +508,45 @@ fn run(app: &AppHandle, ws: &Arc<Workspace>, task: &tasks::Task, cancel: &Atomic
     let result = (|| -> CmdResult<()> {
         let mut since_regroup = 0usize;
         let mut failed = 0usize;
-        for (id, mode, img) in rx.iter() {
+        // Whatever is decoded when the models are free, up to `batch_max` images.
+        while let Ok(first) = rx.recv() {
+            let mut batch = vec![first];
+            while batch.len() < batch_max {
+                match rx.try_recv() {
+                    Ok(x) => batch.push(x),
+                    Err(_) => break,
+                }
+            }
             if cancel.load(Ordering::Relaxed) || ws.closed.load(Ordering::Relaxed) {
                 return Err(cancelled());
             }
-            let done: HashSet<i64> = ws.read_db.lock().unwrap().models_done(id)?.into_iter().collect();
-            let pending = |models: &[i64]| !models.is_empty() && models.iter().any(|m| !done.contains(m));
-            let mut models_run = Vec::new();
-            let mut faces = Vec::new();
-            let mut tags = None;
-            let mut ok = img.is_some();
-            if let Some(img) = &img {
-                for (kind, wanted, emb, det) in
-                    [(FaceKind::Real, models.real_for(mode), face_emb, face_det), (FaceKind::Anime, models.anime_for(mode), anime_emb, anime_det)]
-                {
-                    if !pending(wanted) {
-                        continue;
-                    }
-                    let owner = emb.or(det).unwrap_or_default();
+            let mut items = Vec::with_capacity(batch.len());
+            for (id, mode, img) in batch {
+                let done: HashSet<i64> = ws.read_db.lock().unwrap().models_done(id)?.into_iter().collect();
+                items.push(Analysed { id, mode, ok: img.is_some(), img, done, models_run: Vec::new(), faces: Vec::new(), tags: None });
+            }
+
+            for (kind, emb, det) in [(FaceKind::Real, face_emb, face_det), (FaceKind::Anime, anime_emb, anime_det)] {
+                let wanted = |mode: Mode| if kind == FaceKind::Real { models.real_for(mode) } else { models.anime_for(mode) };
+                let todo: Vec<usize> = (0..items.len())
+                    .filter(|&i| {
+                        let w = wanted(items[i].mode);
+                        items[i].img.is_some() && !w.is_empty() && w.iter().any(|m| !items[i].done.contains(m))
+                    })
+                    .collect();
+                if todo.is_empty() {
+                    continue;
+                }
+                let owner = emb.or(det).unwrap_or_default();
+                let imgs: Vec<&RgbImage> = todo.iter().filter_map(|&i| items[i].img.as_ref()).collect();
+                let results = engine.faces_many(kind, &imgs, &opts, batch_max);
+                for (i, r) in todo.into_iter().zip(results) {
+                    let item = &mut items[i];
                     // A model failing on one image is that image's problem, not the job's.
-                    match engine.faces(kind, img, &opts) {
+                    match r {
                         Ok(found) => {
                             for f in found {
-                                faces.push(NewFace {
+                                item.faces.push(NewFace {
                                     model_id: owner,
                                     kind: kind.as_str().into(),
                                     bbox: f.bbox,
@@ -497,32 +556,46 @@ fn run(app: &AppHandle, ws: &Arc<Workspace>, task: &tasks::Task, cancel: &Atomic
                                 });
                             }
                         }
-                        Err(_) => ok = false,
+                        Err(_) => item.ok = false,
                     }
-                    models_run.extend(wanted.iter().copied());
+                    item.models_run.extend(wanted(item.mode).iter().copied());
                 }
-                if let Some(t) = models.tagger_for(mode).filter(|t| !done.contains(t)) {
-                    match engine.tags(img, settings.keep_score) {
-                        Ok(found) => tags = Some((t, found.into_iter().map(|s| (s.name, s.category.code(), s.score)).collect::<Vec<_>>())),
-                        Err(_) => ok = false,
+            }
+            let todo: Vec<(usize, i64)> = (0..items.len())
+                .filter(|&i| items[i].img.is_some())
+                .filter_map(|i| models.tagger_for(items[i].mode).filter(|t| !items[i].done.contains(t)).map(|t| (i, t)))
+                .collect();
+            if !todo.is_empty() {
+                let imgs: Vec<&RgbImage> = todo.iter().filter_map(|&(i, _)| items[i].img.as_ref()).collect();
+                let results = engine.tags_many(&imgs, settings.keep_score, batch_max);
+                for ((i, t), r) in todo.into_iter().zip(results) {
+                    let item = &mut items[i];
+                    match r {
+                        Ok(found) => item.tags = Some((t, found.into_iter().map(|s| (s.name, s.category.code(), s.score)).collect())),
+                        Err(_) => item.ok = false,
                     }
-                    models_run.push(t);
+                    item.models_run.push(t);
                 }
-            } else {
-                // Unreadable here: marked (as failed, so "retry" can bring it back).
-                models_run = models.for_mode(mode).into_iter().filter(|m| !done.contains(m)).collect();
             }
-            if models_run.is_empty() {
-                continue;
+
+            for item in items {
+                let mut models_run = item.models_run;
+                if item.img.is_none() {
+                    // Unreadable here: marked (as failed, so "retry" can bring it back).
+                    models_run = models.for_mode(item.mode).into_iter().filter(|m| !item.done.contains(m)).collect();
+                }
+                if models_run.is_empty() {
+                    continue;
+                }
+                if !item.ok {
+                    failed += 1;
+                    task.detail(format!("{} · {failed} failed", used.join(", ")));
+                }
+                let tags_ref = item.tags.as_ref().map(|(m, t)| (*m, t.as_slice()));
+                ws.write_db.lock().unwrap().record_analysis(item.id, &models_run, item.ok, &item.faces, tags_ref, now_ms())?;
+                task.add(1);
+                since_regroup += 1;
             }
-            if !ok {
-                failed += 1;
-                task.detail(format!("{} · {failed} failed", used.join(", ")));
-            }
-            let tags_ref = tags.as_ref().map(|(m, t)| (*m, t.as_slice()));
-            ws.write_db.lock().unwrap().record_analysis(id, &models_run, ok, &faces, tags_ref, now_ms())?;
-            task.add(1);
-            since_regroup += 1;
             // Groups show up while a long job is still running.
             if since_regroup >= 2000 {
                 since_regroup = 0;
@@ -535,6 +608,9 @@ fn run(app: &AppHandle, ws: &Arc<Workspace>, task: &tasks::Task, cancel: &Atomic
     reader.1.store(true, Ordering::Relaxed);
     drop(rx);
     let _ = reader.0.join();
+    for d in decoders {
+        let _ = d.join();
+    }
     if let Some(t) = models.tagger {
         ws.write_db.lock().unwrap().sync_tag_values(t, settings.tag_threshold, settings.character_threshold)?;
     }
