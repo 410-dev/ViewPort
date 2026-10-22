@@ -170,17 +170,41 @@ impl Workspace {
         quality: u8,
     ) -> CmdResult<Option<vp_thumb::Thumb>> {
         let s = vp_core::settings::ThumbnailSettings { max_edge_px: max_edge, quality, ..Default::default() };
+        // What was tried, for the log when nothing works.
+        let mut tried = Vec::new();
+        let heif = bytes.is_some_and(crate::heif::looks_like_heif);
         // libheif decodes in memory, so it also reads shares and encrypted shards directly.
-        if let Some(b) = bytes.filter(|b| crate::heif::looks_like_heif(b))
-            && let Some(Ok(img)) = crate::heif::decode(b)
-        {
-            return Ok(vp_thumb::from_image(img, &s).ok());
+        if let Some(b) = bytes.filter(|_| heif) {
+            match crate::heif::decode(b) {
+                Some(Ok(img)) => match vp_thumb::from_image(img, &s) {
+                    Ok(t) => return Ok(Some(t)),
+                    Err(e) => tried.push(format!("libheif decoded, encoding failed: {e}")),
+                },
+                Some(Err(e)) => tried.push(e),
+                None => tried.push("no libheif".into()),
+            }
         }
-        let result = self.foreign_image_external(drivers, id, loc, bytes, &s)?;
-        if result.is_none() && bytes.is_some_and(crate::heif::looks_like_heif) {
-            crate::heif::note_needed();
+        let result = self.foreign_image_external(drivers, id, loc, bytes, &s, &mut tried);
+        if !matches!(result, Ok(Some(_))) {
+            if heif {
+                crate::heif::note_needed();
+            }
+            let head = bytes.map(|b| b.iter().take(32).map(|x| format!("{x:02x}")).collect::<String>()).unwrap_or_default();
+            if let Err(e) = &result {
+                tried.push(e.message.clone());
+            }
+            crate::applog::warn(
+                "decode",
+                format!(
+                    "no image from item {id} (source {}, {}, {} bytes, heif: {heif}, starts {head}): {}",
+                    loc.source_id,
+                    loc.rel_path,
+                    loc.size,
+                    tried.join("; ")
+                ),
+            );
         }
-        Ok(result)
+        result
     }
 
     /// [`Self::foreign_image`] through the OS decoder or FFmpeg.
@@ -191,29 +215,45 @@ impl Workspace {
         loc: &MediaLocation,
         bytes: Option<&[u8]>,
         s: &vp_core::settings::ThumbnailSettings,
+        tried: &mut Vec<String>,
     ) -> CmdResult<Option<vp_thumb::Thumb>> {
         let (max_edge, quality) = (s.max_edge_px, s.quality);
         let ff = self.ffmpeg();
         if ff.is_none() && !crate::platform::media_available() {
+            tried.push("no FFmpeg".into());
             return Ok(None);
         }
-        let scale = |data: &[u8]| vp_thumb::generate(data, s).ok();
+        let scale = |data: &[u8], how: &str, tried: &mut Vec<String>| match vp_thumb::generate(data, s) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                tried.push(format!("{how}: decoded image unreadable: {e}"));
+                None
+            }
+        };
         let source =
             self.read_db.lock().unwrap().source(loc.source_id)?.ok_or_else(|| CmdError::new("not_found", "source"))?;
         let driver = self.driver(drivers, &source)?;
         if let Some(path) = driver.local_path(&loc.rel_path) {
             let Some(ff) = ff else { return Ok(None) };
-            return Ok(ff.image(Input::File(path)).ok().and_then(|bmp| scale(&bmp)));
+            return Ok(match ff.image(Input::File(path)) {
+                Ok(bmp) => scale(&bmp, "FFmpeg (file)", tried),
+                Err(e) => {
+                    tried.push(format!("FFmpeg (file): {e}"));
+                    None
+                }
+            });
         }
         // Elsewhere (shares, shards): FFmpeg reads simple files from a pipe, but tiled HEIF
-        // (phone photos) and the OS decoder need a file. Contents of encrypted shards are
-        // never written out in the clear.
-        if let Some(ff) = &ff
-            && let Ok(bmp) = ff.image(Input::Stream(Box::new(ReaderStream::new(driver.open(&loc.rel_path)?))))
-        {
-            return Ok(scale(&bmp));
+        // (phone photos), some single-image HEIF and the OS decoder need a file. Contents of
+        // encrypted shards are never written out in the clear.
+        if let Some(ff) = &ff {
+            match ff.image(Input::Stream(Box::new(ReaderStream::new(driver.open(&loc.rel_path)?)))) {
+                Ok(bmp) => return Ok(scale(&bmp, "FFmpeg (stream)", tried)),
+                Err(e) => tried.push(format!("FFmpeg (stream): {e}")),
+            }
         }
         if self.shard_for(loc.source_id)?.is_some_and(|s| s.is_encrypted()) {
+            tried.push("encrypted shard: no temporary file".into());
             return Ok(None);
         }
         let dir = self.bundle.root.join(CONVERTED_DIR);
@@ -232,7 +272,13 @@ impl Workspace {
             return Ok(Some(vp_thumb::Thumb { data: s.data, width: s.width, height: s.height, mime }));
         }
         let Some(ff) = ff else { return Ok(None) };
-        Ok(ff.image(Input::File(temp.0.clone())).ok().and_then(|bmp| scale(&bmp)))
+        Ok(match ff.image(Input::File(temp.0.clone())) {
+            Ok(bmp) => scale(&bmp, "FFmpeg (temporary file)", tried),
+            Err(e) => {
+                tried.push(format!("FFmpeg (temporary file): {e}"));
+                None
+            }
+        })
     }
 
     /// The converted copy of `id`: a file in the bundle, or kept by the item's shard.

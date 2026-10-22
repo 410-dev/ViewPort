@@ -433,6 +433,22 @@ pub struct AppSettings {
     pub ml: MlSettings,
     pub decoders: DecoderSettings,
     pub export: ExportSettings,
+    pub log: LogSettings,
+}
+
+/// The app's log file (`viewport.log` in the config folder), for diagnosing problems.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LogSettings {
+    /// When the log grows past this, it becomes `viewport.old.log` (replacing the previous
+    /// one) and a new log starts.
+    pub max_bytes: u64,
+}
+
+impl Default for LogSettings {
+    fn default() -> Self {
+        Self { max_bytes: 4 * MIB }
+    }
 }
 
 /// Exporting items and folders to another place on this device.
@@ -488,6 +504,7 @@ impl Default for AppSettings {
             ml: MlSettings::default(),
             decoders: DecoderSettings::default(),
             export: ExportSettings::default(),
+            log: LogSettings::default(),
         }
     }
 }

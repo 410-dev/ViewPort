@@ -23,7 +23,7 @@ export type Field =
   | (Base & { kind: "list"; placeholder?: string })
   | (Base & { kind: "color" })
   | (Base & { kind: "columns" })
-  | { kind: "custom"; id: "cache" | "ffmpeg" | "heif" | "lock" | "analysis_sources"; label?: Key };
+  | { kind: "custom"; id: "cache" | "ffmpeg" | "heif" | "log" | "lock" | "analysis_sources"; label?: Key };
 
 export interface Group {
   title?: Key;
@@ -96,6 +96,11 @@ export const SECTIONS: Section[] = [
           { kind: "toggle", ...app({ path: "hide_missing_recent", label: "start.hideMissing" }) },
           { kind: "number", ...bundle({ path: "general.autosave_debounce_ms", label: "set.autosaveDelay" }), min: 0, step: 100, unit: "ms" },
         ],
+      },
+      {
+        title: "set.log",
+        note: "set.log.note",
+        fields: [{ kind: "custom", id: "log" }],
       },
       {
         title: "set.export",

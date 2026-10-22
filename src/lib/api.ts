@@ -101,6 +101,15 @@ export interface HeifStatus {
   needed: boolean;
   /** Download size in bytes. */
   size: number;
+  /** Why it did not load from where it should have been. */
+  load_errors: string[];
+}
+
+/** The end of the app's log file (`applog.rs`). */
+export interface LogInfo {
+  path: string;
+  text: string;
+  bytes: number;
 }
 
 export interface SearchResult {
@@ -520,6 +529,11 @@ export const api = {
   ffmpegStatus: () => invoke<FfmpegStatus>("ffmpeg_status"),
   heifStatus: () => invoke<HeifStatus>("heif_status"),
   heifInstall: () => invoke<void>("heif_install"),
+  /** Makes failed HEIF thumbnails again; returns how many. */
+  heifRetryFailed: () => invoke<number>("heif_retry_failed"),
+  logRead: (maxBytes?: number) => invoke<LogInfo>("log_read", { maxBytes }),
+  logOpen: (folder: boolean) => invoke<void>("log_open", { folder }),
+  logClear: () => invoke<void>("log_clear"),
   convertMedia: (ids: number[]) => invoke<void>("convert_media", { ids }),
   cancelConvert: (id: number) => invoke<void>("cancel_convert", { id }),
   incompatibleVideos: () => invoke<number[]>("incompatible_videos"),

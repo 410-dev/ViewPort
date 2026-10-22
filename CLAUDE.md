@@ -50,6 +50,10 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
 
 ### src-tauri
 - `lib.rs`: `AppState`(열린 `Workspace` 하나, `DriverRegistry`), 커맨드 등록, 커스텀 URI 스킴 등록.
+- `applog.rs`: 앱 로그 파일(설정 폴더 `viewport.log`, `log.max_bytes`에서 `viewport.old.log`로 교체). 사용자가 설정 '일반 › 로그'에서
+  복사·열기한다. 진단에 필요한 실패(디코더 로드, 썸네일 실패 사유와 시도한 경로)는 `applog::warn`/`info`로 남긴다.
+- 테스트 실행 파일도 Common Controls v6 매니페스트가 필요하다(`build.rs`가 `windows-app-manifest.xml`을 모든 링크 대상에 넣음).
+  없으면 `TaskDialogIndirect` 때문에 테스트가 시작조차 못 한다(0xc0000139).
 - `windows.rs`(보조 창, 화면 가리기, 트레이, 전역 복원 단축키), `audio.rs`(마스터 음량), `tasks.rs`(진행 상황 레지스트리).
   메인 창은 하드웨어 가속 설정을 WebView 인자에 반영하려고 `tauri.conf.json`이 아닌 코드에서 만든다.
   창을 만드는 커맨드는 반드시 `async`여야 한다(동기 커맨드는 메인 스레드에서 돌아 Windows WebView2가 교착 → 빈 창).

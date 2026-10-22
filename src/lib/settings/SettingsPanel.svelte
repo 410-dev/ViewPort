@@ -143,6 +143,24 @@
     await api.heifInstall().catch(() => {});
     refreshHeif();
   }
+  let heifRetried = $state<number | null>(null);
+  async function retryHeif() {
+    heifRetried = await api.heifRetryFailed().catch(() => null);
+  }
+
+  // ---- log
+  let logCopied = $state(false);
+  let logError = $state("");
+  async function copyLog() {
+    logError = "";
+    try {
+      const log = await api.logRead();
+      await navigator.clipboard.writeText(`${log.path}\n\n${log.text}`);
+      logCopied = true;
+    } catch (e) {
+      logError = asCmdError(e).message;
+    }
+  }
 
   // ---- lock
   let lockPw = $state("");
@@ -290,8 +308,20 @@
                             <div class="status warn"><Icon name="alert" size={14} /><span>{t("ffmpeg.missing")}</span></div>
                           {/if}
                         {:else if f.id === "heif"}
+                          {#if heif?.load_errors.length}
+                            <div class="status warn"><Icon name="alert" size={14} /><span>{heif.load_errors.join(" · ")}</span></div>
+                          {/if}
                           {#if heif?.available}
                             <div class="status ok"><Icon name="check" size={14} /><span>libheif {heif.version ?? ""} · {heif.path}</span></div>
+                            <div class="status">
+                              {#if heif.installable}
+                                <button class="btn sm" disabled={heif.installing} onclick={installHeif}
+                                  >{heif.installing ? t("heif.installing") : t("heif.reinstall")}</button
+                                >
+                              {/if}
+                              <button class="btn sm" onclick={retryHeif}>{t("heif.retry")}</button>
+                              {#if heifRetried != null}<span class="grow">{t("heif.retried", { n: heifRetried })}</span>{/if}
+                            </div>
                           {:else if heif?.installable}
                             <div class="status warn">
                               <Icon name="alert" size={14} />
@@ -303,6 +333,14 @@
                           {:else if heif}
                             <div class="status warn"><Icon name="alert" size={14} /><span>{t("heif.system")}</span></div>
                           {/if}
+                        {:else if f.id === "log"}
+                          <div class="status">
+                            <button class="btn sm" onclick={copyLog}>{logCopied ? t("log.copied") : t("log.copy")}</button>
+                            <button class="btn sm" onclick={() => api.logOpen(false).catch((e) => (logError = asCmdError(e).message))}>{t("log.open")}</button>
+                            <button class="btn sm ghost" onclick={() => api.logOpen(true).catch((e) => (logError = asCmdError(e).message))}>{t("log.folder")}</button>
+                            <button class="btn sm ghost" onclick={() => api.logClear().then(() => (logCopied = false))}>{t("log.clear")}</button>
+                          </div>
+                          {#if logError}<div class="status warn"><Icon name="alert" size={14} /><span>{logError}</span></div>{/if}
                         {:else if f.id === "analysis_sources"}
                           {#each sources as s (s.id)}
                             <div class="source-mode">

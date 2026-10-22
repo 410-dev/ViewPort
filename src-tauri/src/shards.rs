@@ -1010,6 +1010,7 @@ pub enum OnConflict {
 /// How a copy settles conflicts: one rule, or asking the user (`copy-conflict` events,
 /// answered by `copy_conflict_answer`).
 pub(crate) enum Conflicts {
+    #[cfg_attr(not(test), allow(dead_code))]
     Fixed(OnConflict),
     Ask(AppHandle),
 }

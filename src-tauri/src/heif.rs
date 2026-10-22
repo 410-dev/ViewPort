@@ -21,6 +21,8 @@ pub struct HeifStatus {
     pub needed: bool,
     /// Download size in bytes.
     pub size: u64,
+    /// Why it did not load from where it should have been (wrong or missing files).
+    pub load_errors: Vec<String>,
 }
 
 #[tauri::command]
@@ -28,10 +30,38 @@ pub async fn heif_status() -> CmdResult<HeifStatus> {
     tauri::async_runtime::spawn_blocking(imp::status).await.map_err(|e| CmdError::new("internal", e))
 }
 
-/// Downloads and installs the decoder in the background (task `download_heif`).
+/// Downloads and installs the decoder in the background (task `download_heif`); again
+/// when it is already there (the files are checked and replaced).
 #[tauri::command]
 pub async fn heif_install(app: AppHandle) -> CmdResult<()> {
     imp::install(app)
+}
+
+/// Forgets every thumbnail of a HEIF image that could not be made, so they are made again
+/// (with whichever decoder is there now). Returns how many.
+#[tauri::command]
+pub async fn heif_retry_failed(app: AppHandle) -> CmdResult<usize> {
+    use tauri::{Emitter, Manager};
+    let ws = app.state::<crate::AppState>().workspace.read().unwrap().clone().ok_or_else(|| CmdError::new("no_bundle", "no bundle is open"))?;
+    let n = tauri::async_runtime::spawn_blocking(move || -> CmdResult<usize> {
+        let n = ws.write_db.lock().unwrap().reset_image_thumbnails_with_ext(&EXTENSIONS)?;
+        crate::applog::info("heif", format!("{n} HEIF thumbnails will be made again (decoder: {})", describe()));
+        Ok(n)
+    })
+    .await
+    .map_err(|e| CmdError::new("internal", e))??;
+    // Library views drop the thumbnails they gave up on, as after an install.
+    let _ = app.emit("heif-installed", ());
+    Ok(n)
+}
+
+/// The HEIF decoders this device has, for the log.
+pub fn describe() -> String {
+    let s = imp::status();
+    match (s.available, s.version) {
+        (true, Some(v)) => format!("libheif {v}"),
+        _ => "no libheif".into(),
+    }
 }
 
 pub use imp::{available, decode, init, note_needed};
@@ -239,9 +269,11 @@ mod imp {
     struct Loaded {
         tried: bool,
         api: Option<Arc<Api>>,
+        /// Why the places it should have been did not work.
+        errors: Vec<String>,
     }
 
-    static LOADED: Mutex<Loaded> = Mutex::new(Loaded { tried: false, api: None });
+    static LOADED: Mutex<Loaded> = Mutex::new(Loaded { tried: false, api: None, errors: Vec::new() });
     static INSTALL_DIR: OnceLock<PathBuf> = OnceLock::new();
     static NEEDED: AtomicBool = AtomicBool::new(false);
     static INSTALLING: AtomicBool = AtomicBool::new(false);
@@ -249,18 +281,39 @@ mod imp {
 
     pub fn init(app: &AppHandle) {
         if let Ok(dir) = app.path().app_config_dir() {
-            let _ = INSTALL_DIR.set(dir.join("libs").join("libheif"));
+            let dir = dir.join("libs").join("libheif");
+            // Files a reinstall moved aside while they were loaded.
+            for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                if e.file_name().to_string_lossy().contains(".old-") {
+                    let _ = std::fs::remove_file(e.path());
+                }
+            }
+            let _ = INSTALL_DIR.set(dir);
         }
         let _ = APP.set(app.clone());
     }
 
     /// Whether every manifest file in `dir` is present and matches its hash.
+    #[cfg(test)]
     fn verified(dir: &Path, m: &Manifest) -> bool {
-        m.files.iter().all(|f| {
+        check(dir, m).is_ok()
+    }
+
+    /// Why `dir` does not hold the manifest's files, if it does not.
+    fn check(dir: &Path, m: &Manifest) -> Result<(), String> {
+        for f in &m.files {
             let p = dir.join(&f.name);
-            std::fs::metadata(&p).is_ok_and(|md| md.len() == f.size)
-                && std::fs::read(&p).is_ok_and(|b| hex(&Sha256::digest(&b)) == f.sha256)
-        })
+            match std::fs::metadata(&p) {
+                Err(_) => return Err(format!("{} is missing", f.name)),
+                Ok(md) if md.len() != f.size => return Err(format!("{} has {} bytes, expected {}", f.name, md.len(), f.size)),
+                Ok(_) => {}
+            }
+            let hash = std::fs::read(&p).map(|b| hex(&Sha256::digest(&b))).map_err(|e| format!("{}: {e}", f.name))?;
+            if hash != f.sha256 {
+                return Err(format!("{} does not match its SHA-256", f.name));
+            }
+        }
+        Ok(())
     }
 
     fn hex(bytes: &[u8]) -> String {
@@ -269,12 +322,15 @@ mod imp {
 
     /// Where libheif may be, in order: the downloaded copy (checked against the manifest),
     /// next to the executable, then the system's library.
-    fn candidates() -> Vec<PathBuf> {
+    fn candidates(errors: &mut Vec<String>) -> Vec<PathBuf> {
         let mut out = Vec::new();
-        if let (Some(dir), Some(m)) = (INSTALL_DIR.get(), manifest())
-            && verified(dir, &m)
-        {
-            out.push(dir.join(&m.library));
+        if let (Some(dir), Some(m)) = (INSTALL_DIR.get(), manifest()) {
+            match check(dir, &m) {
+                Ok(()) => out.push(dir.join(&m.library)),
+                // Not installed is not worth reporting.
+                Err(e) if dir.exists() => errors.push(format!("{}: {e}", dir.display())),
+                Err(_) => {}
+            }
         }
         let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf));
         if cfg!(windows) {
@@ -299,7 +355,27 @@ mod imp {
         let mut l = LOADED.lock().unwrap_or_else(|e| e.into_inner());
         if !l.tried {
             l.tried = true;
-            l.api = candidates().iter().find_map(|p| Api::load(p).ok()).map(Arc::new);
+            let mut errors = Vec::new();
+            for p in candidates(&mut errors) {
+                // A bare name or missing file is only a place it might have been.
+                let explicit = p.components().count() > 1;
+                if explicit && !p.exists() {
+                    continue;
+                }
+                match Api::load(&p) {
+                    Ok(a) => {
+                        crate::applog::info("heif", format!("libheif {} loaded from {}", a.version, p.display()));
+                        l.api = Some(Arc::new(a));
+                        break;
+                    }
+                    Err(e) if explicit => errors.push(format!("{}: {e}", p.display())),
+                    Err(_) => {}
+                }
+            }
+            if l.api.is_none() {
+                crate::applog::info("heif", format!("libheif not loaded{}", if errors.is_empty() { String::new() } else { format!(": {}", errors.join("; ")) }));
+            }
+            l.errors = errors;
         }
         l.api.clone()
     }
@@ -343,6 +419,7 @@ mod imp {
             installing: INSTALLING.load(Ordering::Relaxed),
             needed: NEEDED.load(Ordering::Relaxed),
             size: m.map(|m| m.files.iter().map(|f| f.size).sum()).unwrap_or(0),
+            load_errors: LOADED.lock().unwrap_or_else(|e| e.into_inner()).errors.clone(),
         }
     }
 
@@ -356,12 +433,19 @@ mod imp {
         std::thread::spawn(move || {
             let total = m.files.iter().map(|f| f.size).sum();
             let task = tasks::begin("download_heif", format!("libheif {}", m.version), Unit::Bytes, Some(total));
+            crate::applog::info("heif", format!("installing libheif {} into {} from {}", m.version, dir.display(), urls.join(", ")));
             let result = fetch_all(&m, &urls, &dir, &task);
             INSTALLING.store(false, Ordering::Relaxed);
             match result.and_then(|()| {
-                if reload() { Ok(()) } else { Err(CmdError::new("heif", "the downloaded decoder did not load")) }
+                if reload() {
+                    Ok(())
+                } else {
+                    let why = LOADED.lock().unwrap_or_else(|e| e.into_inner()).errors.join("; ");
+                    Err(CmdError::new("heif", format!("the downloaded decoder did not load: {why}")))
+                }
             }) {
                 Ok(()) => {
+                    crate::applog::info("heif", format!("installed; {}", super::describe()));
                     task.finish();
                     // Images recorded as unreadable get another try; HEIF ones even if a
                     // decoder failed on them (FFmpeg cannot read some HEIF from a stream, and
@@ -373,7 +457,10 @@ mod imp {
                     }
                     let _ = app.emit("heif-installed", ());
                 }
-                Err(e) => task.fail(e.message),
+                Err(e) => {
+                    crate::applog::warn("heif", format!("install failed: {}", e.message));
+                    task.fail(e.message);
+                }
             }
         });
         Ok(())
@@ -399,13 +486,23 @@ mod imp {
                 Ok(()) => {
                     std::fs::create_dir_all(dir)?;
                     for (f, data) in files {
+                        let target = dir.join(&f.name);
                         let part = dir.join(format!("{}.part", f.name));
                         std::fs::write(&part, data)?;
-                        std::fs::rename(&part, dir.join(&f.name))?;
+                        // A loaded DLL cannot be replaced or deleted on Windows, but it can be
+                        // moved aside (removed at the next start).
+                        if target.exists() && std::fs::remove_file(&target).is_err() {
+                            std::fs::rename(&target, dir.join(format!("{}.old-{}", f.name, crate::workspace::now_ms())))?;
+                        }
+                        std::fs::rename(&part, &target)?;
                     }
+                    crate::applog::info("heif", format!("downloaded {} files from {base}", m.files.len()));
                     return Ok(());
                 }
-                Err(e) => last = e,
+                Err(e) => {
+                    crate::applog::warn("heif", format!("download from {base} failed: {}", e.message));
+                    last = e;
+                }
             }
         }
         Err(last)
@@ -528,7 +625,16 @@ mod imp {
     }
     pub fn note_needed() {}
     pub fn status() -> HeifStatus {
-        HeifStatus { available: false, version: None, path: None, installable: false, installing: false, needed: false, size: 0 }
+        HeifStatus {
+            available: false,
+            version: None,
+            path: None,
+            installable: false,
+            installing: false,
+            needed: false,
+            size: 0,
+            load_errors: Vec::new(),
+        }
     }
     pub fn install(_app: tauri::AppHandle) -> CmdResult<()> {
         Err(CmdError::new("unsupported", "the OS decodes HEIF on this device"))

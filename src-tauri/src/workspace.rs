@@ -615,6 +615,10 @@ impl Workspace {
             };
         }
         if loc.size > settings.max_source_bytes {
+            crate::applog::info(
+                "thumbs",
+                format!("item {media_id} ({}) is larger than thumbnails.max_source_bytes; no thumbnail", loc.rel_path),
+            );
             record(ThumbRow::without_data(ThumbStatus::Unsupported))?;
             return Ok(None);
         }
@@ -661,12 +665,13 @@ impl Workspace {
                 Ok(Some((t.data, t.mime.into())))
             }
             Err(vp_thumb::ThumbError::Io(e)) => Err(e.into()),
-            Err(vp_thumb::ThumbError::Unsupported) => {
-                record(ThumbRow::without_data(ThumbStatus::Unsupported))?;
-                Ok(None)
-            }
-            Err(_) => {
-                record(ThumbRow::without_data(ThumbStatus::Failed))?;
+            Err(e) => {
+                let status = if matches!(e, vp_thumb::ThumbError::Unsupported) { ThumbStatus::Unsupported } else { ThumbStatus::Failed };
+                crate::applog::warn(
+                    "thumbs",
+                    format!("item {media_id} ({}, source {}) recorded as {status:?}: {e}", loc.rel_path, loc.source_id),
+                );
+                record(ThumbRow::without_data(status))?;
                 Ok(None)
             }
         }

@@ -111,7 +111,8 @@ pub fn spawn_backfill(app: AppHandle, ws: Arc<Workspace>) {
                     let _permit = permit;
                     // A read error (e.g. a disconnected share) is recorded as a failed
                     // thumbnail, so the loop always makes progress.
-                    if ws.thumbnail(&drivers, id).is_err() {
+                    if let Err(e) = ws.thumbnail(&drivers, id) {
+                        crate::applog::warn("thumbs", format!("item {id}: {} (recorded as failed)", e.message));
                         let row = vp_db::ThumbRow::without_data(vp_db::ThumbStatus::Failed);
                         let _ = ws.write_db.lock().unwrap().set_thumbnail(id, &row);
                     }
