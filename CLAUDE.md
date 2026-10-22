@@ -99,7 +99,33 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
 - 모바일(Android): 파일·폴더 선택은 항상 `pick.svelte.ts`를 쓴다(`@tauri-apps/plugin-dialog`의 `open`/`save` 직접 호출 금지).
   새 오버레이·대화 상자는 열려 있는 동안 `back.svelte.ts`의 `onBack`으로 닫기를 등록한다. 호버로만 보이는 컨트롤은
   `@media (hover: none)`에서 항상 보이게 한다. 저장소 경로를 하드코딩하지 않는다(`/storage/emulated/0`은 보안 폴더·작업 프로필에서 다름 → `storage_roots`). 네이티브 기능은 `platform.rs` ↔ `gen/android/.../ViewPortPlugin.kt`.
-  APK: `npm run tauri android build -- --apk --debug --target aarch64` (`ANDROID_HOME`, `NDK_HOME`, Android Studio JBR).
+  APK 빌드는 아래 'APK 빌드 요령'을 따른다.
+
+### APK 빌드 요령 (Windows)
+
+환경 변수 네 개를 같은 셸에서 맞춘 뒤 빌드한다(PowerShell):
+
+```powershell
+$sdk = "$env:LOCALAPPDATA\Android\Sdk"
+$env:ANDROID_HOME = $sdk
+$env:NDK_HOME = "$sdk\ndk\30.0.16248370"                      # 설치된 NDK 버전 폴더
+$env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr" # 시스템 JDK(Zulu 17 등) 말고 Android Studio JBR
+New-Item -ItemType Directory -Force C:\gtmp | Out-Null
+$env:JAVA_TOOL_OPTIONS = "-Djdk.net.unixdomain.tmpdir=C:\gtmp"
+npm run tauri android build -- --apk --target aarch64          # 릴리즈. 디버그는 --debug 추가
+```
+
+- **`Unable to establish loopback connection`**(Gradle 실패)은 JDK가 내부 통신용 Unix 도메인 소켓을 임시 폴더에 못 만들어서
+  난다(긴 경로·8.3 단축 이름 `HOYOUN~1`·공백). 위처럼 `jdk.net.unixdomain.tmpdir`을 짧은 경로로 주면 된다. Claude Code에서
+  돌릴 때는 명령 샌드박스도 로컬 소켓을 막으므로 샌드박스 밖에서 실행해야 한다.
+- Rust 부분(`target/aarch64-linux-android/release`)은 첫 빌드에 수 분 걸리고 이후에는 캐시된다. Gradle 단계만 실패했으면 같은
+  명령을 다시 돌리면 빠르다.
+- **릴리즈 서명**: `gen/android/keystore.properties`(git 제외)가 키스토어 경로·비밀번호·별칭을 담고, `app/build.gradle.kts`가
+  있으면 릴리즈 빌드를 그 키로 서명한다(없으면 서명 안 된 APK). 키스토어는 저장소 밖 `%USERPROFILE%\.viewport\signing\
+  viewport-release.jks`(별칭 `viewport`, CN=ViewPort). **이 파일과 비밀번호를 잃으면 같은 앱으로 업데이트할 수 없으니 백업한다.**
+  새로 만들거나 덮어쓰지 않는다.
+- 결과물: `src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk`. 서명 확인:
+  `& "$sdk\build-tools\36.0.0\apksigner.bat" verify --print-certs <apk>`(인증서 SHA-256 `619e672c…e9a24d6f`).
 - 미디어 종류는 `image`/`video`/`nonmedia`. `nonmedia`(기타 파일)는 미리보기·뷰어에 넣지 않고 내보내기만 한다.
 - 이미지를 화면에 그릴 때는 원본 `mediaUrl` 대신 `displayUrl(brief, viewer.display_max_px)`를 쓴다(큰 이미지는 축소 사본).
 - 글꼴: 한국어 고정폭 글꼴을 쓰지 않는다. 기본은 시스템 고딕, 사용자가 설정에서 바꾼다(`ui.font_ui`, `ui.font_editor`).
