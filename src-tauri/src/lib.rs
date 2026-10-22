@@ -2,6 +2,7 @@ mod archive;
 mod audio;
 mod commands;
 mod error;
+mod heif;
 mod media;
 mod media_server;
 mod ml;
@@ -50,6 +51,7 @@ pub fn run() {
                 secrets::init(dir);
             }
             tasks::init(app.handle());
+            heif::init(app.handle());
             // Android plays media over loopback HTTP (see media_server.rs).
             #[cfg(target_os = "android")]
             media_server::start(app.handle())?;
@@ -100,6 +102,8 @@ pub fn run() {
             commands::save_query,
             commands::delete_saved_query,
             commands::ffmpeg_status,
+            heif::heif_status,
+            heif::heif_install,
             commands::convert_media,
             commands::cancel_convert,
             commands::incompatible_videos,

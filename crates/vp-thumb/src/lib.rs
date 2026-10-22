@@ -50,17 +50,28 @@ pub fn decode_scaled(bytes: &[u8], max_edge_px: u32) -> Result<DynamicImage, Thu
     let orientation = decoder.orientation().map_err(decode_err)?;
     let mut img = DynamicImage::from_decoder(decoder).map_err(decode_err)?;
     img.apply_orientation(orientation);
+    Ok(fit(img, max_edge_px))
+}
+
+/// Scales `img` down to fit `max_edge_px` (smaller images are kept as they are).
+pub fn fit(img: DynamicImage, max_edge_px: u32) -> DynamicImage {
     let max = max_edge_px.max(1);
-    if img.width() > max || img.height() > max {
-        img = img.thumbnail(max, max);
-    }
-    Ok(img)
+    if img.width() > max || img.height() > max { img.thumbnail(max, max) } else { img }
 }
 
 /// Decodes `bytes`, applies EXIF orientation and scales to fit `max_edge_px`.
 /// Opaque images are encoded as JPEG, images with transparency as PNG.
 pub fn generate(bytes: &[u8], s: &ThumbnailSettings) -> Result<Thumb, ThumbError> {
-    let img = decode_scaled(bytes, s.max_edge_px)?;
+    encode(decode_scaled(bytes, s.max_edge_px)?, s)
+}
+
+/// Scales an image decoded elsewhere (e.g. by libheif) to fit `max_edge_px` and encodes
+/// it like [`generate`].
+pub fn from_image(img: DynamicImage, s: &ThumbnailSettings) -> Result<Thumb, ThumbError> {
+    encode(fit(img, s.max_edge_px), s)
+}
+
+fn encode(img: DynamicImage, s: &ThumbnailSettings) -> Result<Thumb, ThumbError> {
     let (width, height) = (img.width(), img.height());
     let mut data = Vec::new();
     let mime = if img.color().has_alpha() {

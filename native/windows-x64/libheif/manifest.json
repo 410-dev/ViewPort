@@ -1,0 +1,27 @@
+{
+    "version":  "1.23.6",
+    "library":  "heif.dll",
+    "vcpkg":  "bd8298ae219367a606c74c6c25dc50cc6d66eca8",
+    "files":  [
+                  {
+                      "name":  "COPYING.libde265.txt",
+                      "size":  50018,
+                      "sha256":  "ceb44cd6eb6320ea2ef3b99528d907ec923e288655f7444d13969f360a6b5ac4"
+                  },
+                  {
+                      "name":  "COPYING.libheif.txt",
+                      "size":  44366,
+                      "sha256":  "fa81ce652315b013359d6e8e4744335f31a50c7c192907176d3632f78a3b4596"
+                  },
+                  {
+                      "name":  "heif.dll",
+                      "size":  1460736,
+                      "sha256":  "162ec4b4c91ede1449443dd5ca86eb54389ea34a30560d350ed94255e3fadde3"
+                  },
+                  {
+                      "name":  "libde265.dll",
+                      "size":  377344,
+                      "sha256":  "1c1e8faa4188887134cc99d1bc19003c256ca8446d51c4b455c59feaef5dc286"
+                  }
+              ]
+}

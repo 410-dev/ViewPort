@@ -52,6 +52,9 @@ tauri-plugin-global-shortcut = "2"
 vp-ml = { workspace = true, features = ["onnx"] }
 # Model downloads (desktop).
 ureq = { version = "3.5", default-features = false, features = ["rustls"] }
+# Optional HEIF decoder (libheif), loaded at run time and checked against its manifest.
+libloading = "0.9"
+sha2 = "0.11.1"
 
 # OS credential stores for driver secrets (network passwords never go into the bundle).
 [target.'cfg(windows)'.dependencies]

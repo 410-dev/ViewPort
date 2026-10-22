@@ -156,9 +156,10 @@ impl Workspace {
         Ok(None)
     }
 
-    /// Decodes an image the built-in decoder cannot read (HEIF/HEIC, AVIF, ...) with the
-    /// OS decoder (Android) or FFmpeg, scaled to fit `max_edge`. `bytes` is the file when
-    /// the caller has already read it. Callers try the OS decoder on local paths first.
+    /// Decodes an image the built-in decoder cannot read (HEIF/HEIC, AVIF, ...) with
+    /// libheif (when installed), the OS decoder (Android) or FFmpeg, scaled to fit
+    /// `max_edge`. `bytes` is the file when the caller has already read it. Callers try the
+    /// OS decoder on local paths first.
     pub fn foreign_image(
         &self,
         drivers: &DriverRegistry,
@@ -168,14 +169,35 @@ impl Workspace {
         max_edge: u32,
         quality: u8,
     ) -> CmdResult<Option<vp_thumb::Thumb>> {
+        let s = vp_core::settings::ThumbnailSettings { max_edge_px: max_edge, quality, ..Default::default() };
+        // libheif decodes in memory, so it also reads shares and encrypted shards directly.
+        if let Some(b) = bytes.filter(|b| crate::heif::looks_like_heif(b))
+            && let Some(Ok(img)) = crate::heif::decode(b)
+        {
+            return Ok(vp_thumb::from_image(img, &s).ok());
+        }
+        let result = self.foreign_image_external(drivers, id, loc, bytes, &s)?;
+        if result.is_none() && bytes.is_some_and(crate::heif::looks_like_heif) {
+            crate::heif::note_needed();
+        }
+        Ok(result)
+    }
+
+    /// [`Self::foreign_image`] through the OS decoder or FFmpeg.
+    fn foreign_image_external(
+        &self,
+        drivers: &DriverRegistry,
+        id: i64,
+        loc: &MediaLocation,
+        bytes: Option<&[u8]>,
+        s: &vp_core::settings::ThumbnailSettings,
+    ) -> CmdResult<Option<vp_thumb::Thumb>> {
+        let (max_edge, quality) = (s.max_edge_px, s.quality);
         let ff = self.ffmpeg();
         if ff.is_none() && !crate::platform::media_available() {
             return Ok(None);
         }
-        let scale = |data: &[u8]| {
-            let s = vp_core::settings::ThumbnailSettings { max_edge_px: max_edge, quality, ..Default::default() };
-            vp_thumb::generate(data, &s).ok()
-        };
+        let scale = |data: &[u8]| vp_thumb::generate(data, s).ok();
         let source =
             self.read_db.lock().unwrap().source(loc.source_id)?.ok_or_else(|| CmdError::new("not_found", "source"))?;
         let driver = self.driver(drivers, &source)?;

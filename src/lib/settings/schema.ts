@@ -23,7 +23,7 @@ export type Field =
   | (Base & { kind: "list"; placeholder?: string })
   | (Base & { kind: "color" })
   | (Base & { kind: "columns" })
-  | { kind: "custom"; id: "cache" | "ffmpeg" | "lock" | "analysis_sources"; label?: Key };
+  | { kind: "custom"; id: "cache" | "ffmpeg" | "heif" | "lock" | "analysis_sources"; label?: Key };
 
 export interface Group {
   title?: Key;
@@ -69,6 +69,9 @@ export const DESKTOP_ONLY = new Set([
   "hardware.video_encode",
   "hardware.encoders",
   "playback.ffmpeg_path",
+  // Phones decode HEIF with the OS.
+  "decoders.heif_offer",
+  "decoders.heif_download_urls",
 ]);
 
 export const SECTIONS: Section[] = [
@@ -322,6 +325,14 @@ export const SECTIONS: Section[] = [
           { kind: "toggle", ...app({ path: "viewer.fit_screen", label: "set.fitScreen", help: "set.fitScreen.help" }) },
           { kind: "number", ...app({ path: "viewer.display_quality", label: "set.displayQuality" }), min: 1, max: 100, step: 1 },
           { kind: "list", ...app({ path: "viewer.convert_image_extensions", label: "set.convertImageExt", help: "set.convertImageExt.help" }) },
+        ],
+      },
+      {
+        title: "set.heif",
+        fields: [
+          { kind: "custom", id: "heif" },
+          { kind: "toggle", ...app({ path: "decoders.heif_offer", label: "set.heifOffer", help: "set.heifOffer.help" }) },
+          { kind: "list", ...app({ path: "decoders.heif_download_urls", label: "set.heifUrls", help: "set.heifUrls.help" }) },
         ],
       },
     ],

@@ -5283,8 +5283,10 @@ version = "0.1.0"
 dependencies = [
  "image",
  "keyring",
+ "libloading 0.9.0",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

@@ -89,6 +89,20 @@ export interface FfmpegStatus {
   version: string | null;
 }
 
+/** Optional HEIF/HEIC decoder (libheif, `heif.rs`). */
+export interface HeifStatus {
+  available: boolean;
+  version: string | null;
+  path: string | null;
+  /** The app can download it on this device (Windows). */
+  installable: boolean;
+  installing: boolean;
+  /** An image could not be shown without it since the app started. */
+  needed: boolean;
+  /** Download size in bytes. */
+  size: number;
+}
+
 export interface SearchResult {
   ids: number[];
   elapsed_ms: number;
@@ -253,6 +267,10 @@ export interface AppSettings {
     threads: number;
     auto_analyze: boolean;
     priority_items: number;
+  };
+  decoders: {
+    heif_download_urls: string[];
+    heif_offer: boolean;
   };
 }
 
@@ -495,6 +513,8 @@ export const api = {
   deleteSavedQuery: (id: number) => invoke<void>("delete_saved_query", { id }),
   checkQuery: (src: string, locale: string) => invoke<QueryCheck>("check_query", { src, locale }),
   ffmpegStatus: () => invoke<FfmpegStatus>("ffmpeg_status"),
+  heifStatus: () => invoke<HeifStatus>("heif_status"),
+  heifInstall: () => invoke<void>("heif_install"),
   convertMedia: (ids: number[]) => invoke<void>("convert_media", { ids }),
   cancelConvert: (id: number) => invoke<void>("cancel_convert", { id }),
   incompatibleVideos: () => invoke<number[]>("incompatible_videos"),
@@ -628,7 +648,12 @@ export interface CompactReport {
 export const onAudio = (f: (e: AudioState) => void): Promise<UnlistenFn> => listen<AudioState>("audio", (e) => f(e.payload));
 export const onAppSettings = (f: () => void): Promise<UnlistenFn> => listen("app-settings", () => f());
 
-export const onTask = (f: (e: TaskInfo) => void): Promise<UnlistenFn> => listen<TaskInfo>("task", (e) => f(e.payload));
+/** An image could not be shown for want of the HEIF decoder (sent once per run). */
+export const onHeifNeeded = (f: () => void): Promise<UnlistenFn> => listen("heif-needed", () => f());
+/** The HEIF decoder was downloaded and loads. */
+export const onHeifInstalled = (f: () => void): Promise<UnlistenFn> => listen("heif-installed", () => f());
+
+export const onTask =(f: (e: TaskInfo) => void): Promise<UnlistenFn> => listen<TaskInfo>("task", (e) => f(e.payload));
 
 export const onScan = (f: (e: ScanEvent) => void): Promise<UnlistenFn> =>
   listen<ScanEvent>("scan-progress", (e) => f(e.payload));

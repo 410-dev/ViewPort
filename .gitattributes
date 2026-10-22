@@ -2,3 +2,5 @@
 *.png binary
 *.ico binary
 *.icns binary
+# Downloaded by the app and checked against SHA-256: keep the bytes exactly as built.
+native/** binary

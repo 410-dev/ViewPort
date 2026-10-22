@@ -150,7 +150,7 @@ impl Workspace {
             n => n as usize,
         };
         let ffmpeg = crate::video::locate(&settings.playback.ffmpeg_path);
-        if (ffmpeg.is_some() || crate::platform::media_available()) && !manual {
+        if (ffmpeg.is_some() || crate::platform::media_available() || crate::heif::available()) && !manual {
             // Retry thumbnails that failed while no video (or HEIF) decoder was available.
             write_db.lock().unwrap().reset_video_thumbnails()?;
             write_db.lock().unwrap().reset_unsupported_image_thumbnails()?;
@@ -639,7 +639,9 @@ impl Workspace {
                     // HEIF/HEIC, AVIF and other formats the built-in decoder lacks. A file
                     // no decoder reads counts as failed, not unsupported (those are retried).
                     Err(e @ (vp_thumb::ThumbError::Unsupported | vp_thumb::ThumbError::Decode(_))) => {
-                        let decodable = self.ffmpeg().is_some() || crate::platform::media_available();
+                        let decodable = self.ffmpeg().is_some()
+                            || crate::platform::media_available()
+                            || (crate::heif::looks_like_heif(&bytes) && crate::heif::available());
                         match self.foreign_image(registry, media_id, &loc, Some(&bytes), settings.max_edge_px, settings.quality)? {
                             Some(t) => Ok(t),
                             None if decodable => Err(vp_thumb::ThumbError::Decode(e.to_string())),

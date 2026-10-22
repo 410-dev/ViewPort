@@ -36,6 +36,7 @@
   import SourceDialog from "./SourceDialog.svelte";
   import MoveDialog from "./MoveDialog.svelte";
   import StatusBar from "./StatusBar.svelte";
+  import HeifBanner from "./HeifBanner.svelte";
   import ContextMenu, { type MenuItem } from "./ui/ContextMenu.svelte";
   import Icon from "./ui/Icon.svelte";
   import ViewerShell from "./ViewerShell.svelte";
@@ -114,6 +115,8 @@
   const selectedIds = $derived([...selection.set]);
   const view = $derived(VIEWS.find((v) => v.key === ui().view_mode) ?? VIEWS[0]);
   const columns = $derived(columnsFor(ui().columns));
+  /** Bumped when a new image decoder arrives: views remount and drop thumbnails they gave up on. */
+  let decoderEpoch = $state(0);
 
   // ---- data
   async function refreshSources() {
@@ -808,6 +811,7 @@
           {#if ids.length === 0 && folders.length === 0 && view.key !== "tree"}
             <div class="empty"><Icon name="search" size={30} stroke={1.3} /><p>{t("lib.noResults")}</p></div>
           {:else}
+            {#key decoderEpoch}
             <view.component
               {ids}
               {folders}
@@ -826,6 +830,7 @@
               onopenwindow={openViewerWindow}
               onfolder={(p) => (folder = p)}
             />
+            {/key}
           {/if}
         {/if}
       </div>
@@ -852,7 +857,17 @@
       </div>
     {/if}
 
-    <div class="status"><StatusBar count={ids.length} {elapsed} selected={selection.set.size} /></div>
+    <div class="status">
+      <HeifBanner
+        oninstalled={() => {
+          // Thumbnails that could not be made before get another try.
+          invalidate();
+          broadcast("media");
+          decoderEpoch++;
+        }}
+      />
+      <StatusBar count={ids.length} {elapsed} selected={selection.set.size} />
+    </div>
   </div>
 </div>
 

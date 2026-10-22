@@ -4,7 +4,18 @@
   import { onBack } from "../back.svelte";
   import { pickFile } from "../pick.svelte";
   import { onDestroy, onMount, untrack } from "svelte";
-  import { api, asCmdError, type AppSettings, type BundleSummary, type CacheStats, type FfmpegStatus, type Settings, type SourceRow } from "../api";
+  import {
+    api,
+    asCmdError,
+    onTask,
+    type AppSettings,
+    type BundleSummary,
+    type CacheStats,
+    type FfmpegStatus,
+    type HeifStatus,
+    type Settings,
+    type SourceRow,
+  } from "../api";
   import { fmtBytes } from "../format";
   import { LOCALES, QUERY_LOCALES, t, type Key } from "../i18n.svelte";
   import { applyPrefs, prefs } from "../prefs.svelte";
@@ -57,7 +68,10 @@
     ? ALL_SECTIONS.map((s) => ({
         ...s,
         groups: s.groups
-          .map((g) => ({ ...g, fields: g.fields.filter((f) => !("path" in f && DESKTOP_ONLY.has(f.path))) }))
+          .map((g) => ({
+            ...g,
+            fields: g.fields.filter((f) => !("path" in f && DESKTOP_ONLY.has(f.path)) && !(f.kind === "custom" && f.id === "heif")),
+          }))
           .filter((g) => g.fields.length),
       })).filter((s) => s.groups.length)
     : ALL_SECTIONS;
@@ -109,15 +123,26 @@
   let sources = $state<SourceRow[]>([]);
   api.listSources().then((l) => (sources = l)).catch(() => {});
   let ffmpeg = $state<FfmpegStatus | null>(null);
+  let heif = $state<HeifStatus | null>(null);
   let incompatible = $state<number[]>([]);
   let convertStarted = $state(false);
   const timer = setInterval(() => api.cacheStats().then((s) => (stats = s)).catch(() => {}), 1000);
+  const refreshHeif = () => api.heifStatus().then((h) => (heif = h)).catch(() => {});
   onMount(() => {
     api.cacheStats().then((s) => (stats = s)).catch(() => {});
     api.ffmpegStatus().then((f) => (ffmpeg = f)).catch(() => {});
     api.incompatibleVideos().then((ids) => (incompatible = ids)).catch(() => {});
+    refreshHeif();
+    // The download ends as a task (done or failed).
+    const off = onTask((task) => task.kind === "download_heif" && task.state !== "running" && refreshHeif());
+    return () => off.then((f) => f());
   });
   onDestroy(() => clearInterval(timer));
+  async function installHeif() {
+    if (heif) heif.installing = true;
+    await api.heifInstall().catch(() => {});
+    refreshHeif();
+  }
 
   // ---- lock
   let lockPw = $state("");
@@ -263,6 +288,20 @@
                             <div class="status ok"><Icon name="check" size={14} /><span>{t("ffmpeg.osMedia")}</span></div>
                           {:else if ffmpeg}
                             <div class="status warn"><Icon name="alert" size={14} /><span>{t("ffmpeg.missing")}</span></div>
+                          {/if}
+                        {:else if f.id === "heif"}
+                          {#if heif?.available}
+                            <div class="status ok"><Icon name="check" size={14} /><span>libheif {heif.version ?? ""} · {heif.path}</span></div>
+                          {:else if heif?.installable}
+                            <div class="status warn">
+                              <Icon name="alert" size={14} />
+                              <span class="grow">{t("heif.missing")}</span>
+                              <button class="btn sm primary" disabled={heif.installing} onclick={installHeif}
+                                >{heif.installing ? t("heif.installing") : t("heif.install", { size: fmtBytes(heif.size) })}</button
+                              >
+                            </div>
+                          {:else if heif}
+                            <div class="status warn"><Icon name="alert" size={14} /><span>{t("heif.system")}</span></div>
                           {/if}
                         {:else if f.id === "analysis_sources"}
                           {#each sources as s (s.id)}

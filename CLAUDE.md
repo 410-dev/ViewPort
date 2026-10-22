@@ -23,6 +23,8 @@ npm run tauri build -- --bundles msi   # Windows MSI (target/release/bundle/msi/
   환경 변수가 없으면 해당 테스트는 건너뛴다.
 - dev 프로필에서도 의존성은 `opt-level = 2`로 빌드한다(이미지 디코딩·SQLite가 너무 느려서). 첫 빌드는 오래 걸린다.
 - FFmpeg는 번들에 포함하지 않는다(GPL). 앱 폴더 → 설정 경로 → `PATH` 순으로 찾고, 없으면 영상 썸네일·길이·변환만 꺼진다.
+- HEIF 디코더(libheif)도 번들에 넣지 않는다. Windows용 DLL은 `scripts/build-libheif.ps1`로 `native/windows-x64/libheif/`에
+  만들어 커밋하고, 앱은 그 매니페스트(빌드 시 내장)와 해시가 맞는 파일만 받아 쓴다(`heif.rs`). DLL을 바꾸면 앱도 다시 빌드.
 
 ## 구조
 

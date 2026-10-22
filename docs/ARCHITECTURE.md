@@ -296,6 +296,18 @@ UI에 전달되며 작업별로 `progress.emit_interval_ms` 간격으로 제한�
   푼다. 폰 사진처럼 타일 격자로 된 HEIF는 FFmpeg가 자체 필터 그래프로 이어 붙이므로 `-vf`를 함께 쓸 수 없고, 파이프 입력으로는
   열리지 않아 로컬이 아닌 소스는 `converted/`에 임시 파일을 만들었다 지운다(암호화된 샤드는 평문을 쓰지 않으므로 건너뜀).
   디코더가 생기면 열 때 `unsupported`로 기록된 이미지 썸네일을 다시 시도한다.
+- **HEIF 디코더(libheif, `src-tauri/src/heif.rs`)**: `foreign_image`는 HEIF(`ftyp` 브랜드로 판별)를 먼저 libheif로 메모리에서
+  푼다(공유 폴더·암호화된 샤드도 임시 파일 없이). 앱에 넣지 않고(LGPL, HEVC) 런타임에 `libloading`으로 연다. 찾는 순서:
+  설정 폴더 `libs/libheif/`(받은 사본, 매니페스트 해시가 맞을 때만) → 실행 파일 옆(`libheif/heif.dll`, `heif.dll`) →
+  시스템 라이브러리(macOS Homebrew `libheif.1.dylib`, Linux `libheif.so.1`). 모바일은 OS 디코더를 쓰므로 해당 없음.
+  - Windows 빌드는 `scripts/build-libheif.ps1`(vcpkg 커밋 고정, `libheif[core,libde265]` — 기본 기능 `hevc`는 GPL x265
+    인코더라 뺌)이 `native/windows-x64/libheif/`에 DLL·라이선스·`manifest.json`(이름·크기·SHA-256)을 쓴다. 이 폴더는 저장소에
+    커밋하고, 매니페스트는 앱 빌드에 `include_str!`로 들어간다. DLL을 다시 빌드하면 앱도 다시 빌드해야 받을 수 있다.
+  - 받기: `AppSettings.decoders.heif_download_urls`(기본 저장소 `main`의 raw 경로)를 순서대로 시도해 매니페스트의 파일을
+    모두 받고 해시를 확인한 뒤에야 설정 폴더로 옮긴다. 진행은 작업 `download_heif`. 성공하면 `unsupported` 이미지 썸네일을
+    지우고 `heif-installed` 이벤트 → 라이브러리가 보기를 다시 마운트한다.
+  - 제안: 디코더가 없어 HEIF를 못 풀면 `heif-needed` 이벤트(실행당 한 번) → 라이브러리 하단 배너(`HeifBanner.svelte`,
+    설치 / 다시 묻지 않기 = `decoders.heif_offer`). 설정 '뷰어 › HEIF 디코더'에서도 상태 확인·설치.
 
 ## 영상
 

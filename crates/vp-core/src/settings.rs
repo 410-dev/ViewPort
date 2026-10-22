@@ -431,6 +431,30 @@ pub struct AppSettings {
     pub windows: WindowSettings,
     pub viewer: ViewerSettings,
     pub ml: MlSettings,
+    pub decoders: DecoderSettings,
+}
+
+/// Optional image decoders that are not shipped with the app (HEIF/HEIC: libheif).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DecoderSettings {
+    /// Folders the Windows HEIF decoder is downloaded from, tried in order. Each holds the
+    /// files named in the manifest the app was built with (`native/windows-x64/libheif/`),
+    /// and only files matching its SHA-256 are installed.
+    pub heif_download_urls: Vec<String>,
+    /// Offer to download the HEIF decoder when an image needs it.
+    pub heif_offer: bool,
+}
+
+impl Default for DecoderSettings {
+    fn default() -> Self {
+        Self {
+            heif_download_urls: vec![
+                "https://raw.githubusercontent.com/410-dev/ViewPort/main/native/windows-x64/libheif/".into(),
+            ],
+            heif_offer: true,
+        }
+    }
 }
 
 impl Default for AppSettings {
@@ -446,6 +470,7 @@ impl Default for AppSettings {
             windows: WindowSettings::default(),
             viewer: ViewerSettings::default(),
             ml: MlSettings::default(),
+            decoders: DecoderSettings::default(),
         }
     }
 }
@@ -542,7 +567,7 @@ pub struct ViewerSettings {
     /// the same copies.
     pub fit_screen_step_px: u32,
     /// Image formats the WebView cannot show (HEIF/HEIC): they are always shown as a JPEG
-    /// copy, decoded by the OS (Android) or FFmpeg.
+    /// copy, decoded by libheif (when installed), the OS (Android) or FFmpeg.
     pub convert_image_extensions: Vec<String>,
 }
 
