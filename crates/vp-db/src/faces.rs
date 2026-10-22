@@ -92,6 +92,11 @@ impl std::ops::AddAssign for AnalysisCounts {
     }
 }
 
+/// Wall-clock time, for telling which of two libraries changed something last.
+pub(crate) fn now() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+}
+
 /// `json_each` input for a list of ids.
 fn json_ids(ids: &[i64]) -> String {
     serde_json::to_string(ids).unwrap_or_else(|_| "[]".into())
@@ -240,19 +245,39 @@ impl Db {
 
     /// Replaces the unnamed groups of `kind`: `assign` puts faces in named people (by id) or
     /// in new unnamed groups (by group number); faces not listed are left as they are
-    /// unless they were in an old unnamed group.
+    /// unless they were in an old unnamed group. A new group takes over the old unnamed
+    /// group it shares the most faces with (keeping its id, uid and hidden state), so
+    /// regrouping does not change groups other libraries or devices know.
     pub fn apply_grouping(&self, kind: &str, to_people: &[(i64, i64)], to_groups: &[(i64, usize)], now_ms: i64) -> Result<()> {
+        use std::collections::HashMap;
         self.batch(|db| {
-            db.conn.execute(
-                "UPDATE face SET person_id = NULL WHERE person_id IN (SELECT id FROM person WHERE kind = ?1 AND name = '')",
-                [kind],
+            // Faces in old unnamed groups, and where they go now.
+            let mut stmt = db.conn.prepare(
+                "SELECT f.id, f.person_id FROM face f JOIN person p ON p.id = f.person_id WHERE p.kind = ?1 AND p.name = ''",
             )?;
-            db.conn.execute("DELETE FROM person WHERE kind = ?1 AND name = ''", [kind])?;
-            let mut set = db.conn.prepare_cached("UPDATE face SET person_id = ?2 WHERE id = ?1 AND NOT confirmed")?;
-            for (face, person) in to_people {
-                set.execute(params![face, person])?;
+            let old: HashMap<i64, i64> = stmt.query_map([kind], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+            let mut stmt = db.conn.prepare("SELECT id FROM person WHERE kind = ?1 AND name = ''")?;
+            let old_groups: Vec<i64> = stmt.query_map([kind], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+            let mut overlap: HashMap<(usize, i64), usize> = HashMap::new();
+            for (face, g) in to_groups {
+                if let Some(&p) = old.get(face) {
+                    *overlap.entry((*g, p)).or_default() += 1;
+                }
             }
-            let mut groups: std::collections::HashMap<usize, i64> = Default::default();
+            let mut pairs: Vec<((usize, i64), usize)> = overlap.into_iter().collect();
+            pairs.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+            let mut groups: HashMap<usize, i64> = HashMap::new();
+            let mut kept = std::collections::HashSet::new();
+            for ((g, p), _) in pairs {
+                if !groups.contains_key(&g) && !kept.contains(&p) {
+                    groups.insert(g, p);
+                    kept.insert(p);
+                }
+            }
+            let mut target: HashMap<i64, Option<i64>> = old.keys().map(|&f| (f, None)).collect();
+            for (face, person) in to_people {
+                target.insert(*face, Some(*person));
+            }
             for (face, g) in to_groups {
                 let person = match groups.get(g) {
                     Some(p) => *p,
@@ -263,7 +288,14 @@ impl Db {
                         id
                     }
                 };
+                target.insert(*face, Some(person));
+            }
+            let mut set = db.conn.prepare_cached("UPDATE face SET person_id = ?2 WHERE id = ?1 AND NOT confirmed AND person_id IS NOT ?2")?;
+            for (face, person) in target {
                 set.execute(params![face, person])?;
+            }
+            for p in old_groups.into_iter().filter(|p| !kept.contains(p)) {
+                db.conn.execute("DELETE FROM person WHERE id = ?1", [p])?;
             }
             Ok(())
         })
@@ -351,16 +383,26 @@ impl Db {
                 Ok(other)
             }
             None => {
-                self.conn.execute("UPDATE person SET name = ?2 WHERE id = ?1", params![id, name])?;
+                self.conn.execute("UPDATE person SET name = ?2, name_ms = ?3 WHERE id = ?1", params![id, name, now()])?;
                 Ok(id)
             }
         }
     }
 
-    /// Moves the faces of `from` into `into` and drops `from`.
+    /// Moves the faces of `from` into `into` and drops `from`, leaving a forwarding record
+    /// for libraries that still know `from`.
     pub fn merge_people(&self, into: i64, from: &[i64]) -> Result<()> {
         self.batch(|db| {
+            let into_uid: String = db.conn.query_row("SELECT uid FROM person WHERE id = ?1", [into], |r| r.get(0))?;
             for &f in from.iter().filter(|&&f| f != into) {
+                let Some(uid): Option<String> = db.conn.query_row("SELECT uid FROM person WHERE id = ?1", [f], |r| r.get(0)).optional()? else {
+                    continue;
+                };
+                db.conn.execute("UPDATE person_alias SET into_uid = ?1 WHERE into_uid = ?2", params![into_uid, uid])?;
+                db.conn.execute(
+                    "INSERT OR REPLACE INTO person_alias (uid, into_uid, ms) VALUES (?1, ?2, ?3)",
+                    params![uid, into_uid, now()],
+                )?;
                 db.conn.execute("UPDATE face SET person_id = ?1 WHERE person_id = ?2", params![into, f])?;
                 db.conn.execute(
                     "INSERT OR IGNORE INTO face_reject (face_id, person_id) SELECT face_id, ?1 FROM face_reject WHERE person_id = ?2",
@@ -373,12 +415,16 @@ impl Db {
     }
 
     pub fn create_person(&self, kind: &str, name: &str, now_ms: i64) -> Result<i64> {
-        self.conn.execute("INSERT INTO person (kind, name, created_ms) VALUES (?1, ?2, ?3)", params![kind, name.trim(), now_ms])?;
+        let name_ms = if name.trim().is_empty() { 0 } else { now_ms };
+        self.conn.execute(
+            "INSERT INTO person (kind, name, created_ms, name_ms) VALUES (?1, ?2, ?3, ?4)",
+            params![kind, name.trim(), now_ms, name_ms],
+        )?;
         Ok(self.conn.last_insert_rowid())
     }
 
     pub fn set_person_hidden(&self, id: i64, hidden: bool) -> Result<()> {
-        self.conn.execute("UPDATE person SET hidden = ?2 WHERE id = ?1", params![id, hidden])?;
+        self.conn.execute("UPDATE person SET hidden = ?2, hidden_ms = ?3 WHERE id = ?1", params![id, hidden, now()])?;
         Ok(())
     }
 
@@ -390,14 +436,14 @@ impl Db {
                 match person {
                     Some(p) => {
                         db.conn.execute("DELETE FROM face_reject WHERE face_id = ?1 AND person_id = ?2", params![f, p])?;
-                        db.conn.execute("UPDATE face SET person_id = ?2, confirmed = 1 WHERE id = ?1", params![f, p])?;
+                        db.conn.execute("UPDATE face SET person_id = ?2, confirmed = 1, set_ms = ?3 WHERE id = ?1", params![f, p, now()])?;
                     }
                     None => {
                         db.conn.execute(
                             "INSERT OR IGNORE INTO face_reject (face_id, person_id) SELECT id, person_id FROM face WHERE id = ?1 AND person_id IS NOT NULL",
                             [f],
                         )?;
-                        db.conn.execute("UPDATE face SET person_id = NULL, confirmed = 0 WHERE id = ?1", [f])?;
+                        db.conn.execute("UPDATE face SET person_id = NULL, confirmed = 0, set_ms = ?2 WHERE id = ?1", params![f, now()])?;
                     }
                 }
             }

@@ -408,6 +408,7 @@ export const SECTIONS: Section[] = [
           { kind: "number", ...bundle({ path: "analysis.tag_threshold", label: "set.analysis.tagThreshold" }), min: 5, max: 99, step: 1, scale: 0.01, unit: "%" },
           { kind: "number", ...bundle({ path: "analysis.character_threshold", label: "set.analysis.charThreshold" }), min: 5, max: 99, step: 1, scale: 0.01, unit: "%" },
           { kind: "number", ...bundle({ path: "analysis.character_crop_scale", label: "set.analysis.cropScale", help: "set.analysis.cropScale.help" }), min: 1, max: 6, step: 0.1, unit: "×" },
+          { kind: "number", ...bundle({ path: "analysis.same_face_iou", label: "set.analysis.sameFace", help: "set.analysis.sameFace.help" }), min: 10, max: 95, step: 5, scale: 0.01, unit: "%" },
         ],
       },
     ],

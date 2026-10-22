@@ -40,6 +40,10 @@ struct ShardConfig {
     /// (`shard_props.rs`), so they go wherever the shard goes; otherwise only in the library.
     #[serde(default)]
     props_in_shard: bool,
+    /// Faces' identity vectors are kept in the shard too (with `props_in_shard`), so
+    /// another library can go on grouping without analysing again.
+    #[serde(default)]
+    embeddings_in_shard: bool,
 }
 
 fn config_of(source: &SourceRow) -> ShardConfig {
@@ -49,6 +53,11 @@ fn config_of(source: &SourceRow) -> ShardConfig {
 /// Whether `source` is a shard that keeps its items' properties itself.
 pub(crate) fn props_in_shard(source: &SourceRow) -> bool {
     source.driver == DRIVER && config_of(source).props_in_shard
+}
+
+/// Whether `source` is a shard that keeps its faces' identity vectors itself.
+pub(crate) fn embeddings_in_shard(source: &SourceRow) -> bool {
+    props_in_shard(source) && config_of(source).embeddings_in_shard
 }
 
 fn locked_error(source_id: i64, info: &ShardInfo) -> CmdError {
@@ -360,6 +369,11 @@ pub struct ShardStatus {
     pub stats: Option<vp_shard::ShardStats>,
     /// Item properties are kept in the shard.
     pub props_in_shard: bool,
+    /// Faces' identity vectors are kept in the shard too.
+    pub embeddings_in_shard: bool,
+    /// Faces found on its items, and the bytes their vectors take.
+    pub faces: u64,
+    pub embedding_bytes: u64,
 }
 
 #[tauri::command]
@@ -373,6 +387,7 @@ pub async fn shard_status(app: AppHandle) -> CmdResult<Vec<ShardStatus>> {
             let path = ws.shard_root(&s)?;
             let info = Shard::read_info(&path).ok();
             let open = info.as_ref().and_then(|_| ws.shard(&s).ok());
+            let (faces, embedding_bytes) = ws.read_db.lock().unwrap().source_face_stats(s.id)?;
             out.push(ShardStatus {
                 source_id: s.id,
                 path: path.display().to_string(),
@@ -387,6 +402,9 @@ pub async fn shard_status(app: AppHandle) -> CmdResult<Vec<ShardStatus>> {
                 chunk_bytes: info.as_ref().map(|i| i.chunk_bytes).unwrap_or(0),
                 stats: open.map(|o| o.stats()),
                 props_in_shard: cfg.props_in_shard,
+                embeddings_in_shard: cfg.embeddings_in_shard,
+                faces,
+                embedding_bytes,
             });
         }
         Ok(out)
@@ -453,6 +471,42 @@ pub async fn shard_set_props(app: AppHandle, source_id: i64, in_shard: bool) -> 
     .await
 }
 
+/// Keeps faces' identity vectors in the shard too (written out now) or not (removed
+/// from it now).
+#[tauri::command]
+pub async fn shard_set_embeddings(app: AppHandle, source_id: i64, on: bool) -> CmdResult<SourceRow> {
+    let ws = workspace(&app)?;
+    blocking(move || {
+        let s = source(&ws, source_id)?;
+        let mut cfg = config_of(&s);
+        if cfg.embeddings_in_shard == on {
+            return Ok(s);
+        }
+        cfg.embeddings_in_shard = on;
+        ws.write_db.lock().unwrap().update_source(source_id, &s.name, &s.root, &serde_json::to_value(cfg)?, s.enabled)?;
+        let s = source(&ws, source_id)?;
+        if props_in_shard(&s) {
+            let task = tasks::begin("shard_embeddings", &s.name, Unit::Items, None);
+            let result = crate::shard_props::write_embeddings(&ws, &s, on, &task).map(|_| ());
+            end_task(&task, &result);
+            result?;
+        }
+        Ok(s)
+    })
+    .await
+}
+
+/// The average size of a face's identity vector in this library (what keeping vectors in
+/// a shard costs per face), or that of the usual models when no face has one yet.
+#[tauri::command]
+pub async fn face_embedding_bytes(app: AppHandle) -> CmdResult<u64> {
+    let ws = workspace(&app)?;
+    blocking(move || Ok(ws.read_db.lock().unwrap().average_embedding_bytes()?.unwrap_or(TYPICAL_EMBEDDING_BYTES))).await
+}
+
+/// A 512-value vector in half precision.
+const TYPICAL_EMBEDDING_BYTES: u64 = 1024;
+
 // ---------------------------------------------------------------- create, attach, keys
 
 /// Creates an empty shard and adds it as a source. Without `location` it goes into the
@@ -466,6 +520,7 @@ pub async fn create_shard(
     keyfile: Option<String>,
     remember: bool,
     props_in_shard: bool,
+    embeddings_in_shard: Option<bool>,
 ) -> CmdResult<SourceRow> {
     let ws = workspace(&app)?;
     blocking(move || {
@@ -492,7 +547,12 @@ pub async fn create_shard(
         };
         let key = Shard::create(&folder, &opts)?;
         let (root, in_bundle) = ws.shard_location(&folder);
-        let cfg = ShardConfig { in_bundle, key: key.as_ref().filter(|_| remember && ws.key.is_some()).map(|k| k.to_hex().to_string()), props_in_shard };
+        let cfg = ShardConfig {
+            in_bundle,
+            key: key.as_ref().filter(|_| remember && ws.key.is_some()).map(|k| k.to_hex().to_string()),
+            props_in_shard,
+            embeddings_in_shard: embeddings_in_shard.unwrap_or(false),
+        };
         let id = ws.write_db.lock().unwrap().add_source(&NewSource { name, driver: DRIVER.into(), config: serde_json::to_value(cfg)?, root })?;
         if let Some(k) = key {
             ws.shard_keys.lock().unwrap().insert(id, k);
@@ -513,6 +573,7 @@ pub async fn attach_shard(
     keyfile: Option<String>,
     remember: bool,
     props_in_shard: bool,
+    embeddings_in_shard: Option<bool>,
 ) -> CmdResult<SourceRow> {
     let ws = workspace(&app)?;
     let ws2 = ws.clone();
@@ -546,7 +607,12 @@ pub async fn attach_shard(
             (root, in_bundle) = ws.shard_location(&dest);
         }
         let name = if info.name.is_empty() { folder_stem(&src) } else { info.name.clone() };
-        let cfg = ShardConfig { in_bundle, key: key.as_ref().filter(|_| remember && ws.key.is_some()).map(|k| k.to_hex().to_string()), props_in_shard };
+        let cfg = ShardConfig {
+            in_bundle,
+            key: key.as_ref().filter(|_| remember && ws.key.is_some()).map(|k| k.to_hex().to_string()),
+            props_in_shard,
+            embeddings_in_shard: embeddings_in_shard.unwrap_or(false),
+        };
         let id = ws.write_db.lock().unwrap().add_source(&NewSource { name, driver: DRIVER.into(), config: serde_json::to_value(cfg)?, root })?;
         if let Some(k) = key {
             ws.shard_keys.lock().unwrap().insert(id, k);
@@ -565,7 +631,7 @@ pub async fn attach_shard(
 pub async fn unlock_shard(app: AppHandle, source_id: i64, password: String, keyfile: Option<String>, remember: bool) -> CmdResult<()> {
     let ws = workspace(&app)?;
     let ws2 = ws.clone();
-    blocking(move || {
+    let changed = blocking(move || {
         let s = source(&ws2, source_id)?;
         let info = Shard::read_info(&ws2.shard_root(&s)?)?;
         let key = Shard::unlock(&info, &password, read_keyfile(keyfile)?.as_deref())?;
@@ -573,12 +639,12 @@ pub async fn unlock_shard(app: AppHandle, source_id: i64, password: String, keyf
         ws2.remember_key(source_id, remember.then_some(&key))?;
         ws2.shard_keys.lock().unwrap().insert(source_id, key);
         // Properties kept in the shard may have changed elsewhere since it was last open.
-        if ws2.autosave() {
-            crate::shard_props::import(&ws2, &s)?;
-        }
-        Ok(())
+        Ok(ws2.autosave() && crate::shard_props::import(&ws2, &s)? > 0)
     })
     .await?;
+    if changed {
+        crate::ml::notify(&app);
+    }
     if ws.autosave() {
         crate::thumbs::spawn_backfill(app.clone(), ws.clone());
         crate::video::spawn_probe_backfill(&app, ws);

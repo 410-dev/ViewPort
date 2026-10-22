@@ -155,6 +155,8 @@ pub fn run() {
             shards::copy_to_source,
             shards::copy_conflict_answer,
             shards::shard_set_props,
+            shards::shard_set_embeddings,
+            shards::face_embedding_bytes,
             mirror::mirror_list,
             mirror::mirror_save,
             mirror::mirror_delete,

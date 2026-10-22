@@ -5,6 +5,7 @@
   import { t } from "../i18n.svelte";
   import Icon from "../ui/Icon.svelte";
   import Select from "../ui/Select.svelte";
+  import { fmtBytes } from "../format";
   import { errText } from "./shared";
 
   /** Adds a shard source: a new shard (in the bundle or elsewhere), or an existing one. */
@@ -40,6 +41,12 @@
 
   /** Where item properties (favorites, tags, statistics, ...) are read and written. */
   let propsInShard = $state(false);
+  /** Faces' identity vectors go into the shard too. */
+  let embeddingsInShard = $state(false);
+  let embeddingBytes = $state<number | null>(null);
+  $effect(() => {
+    if (propsInShard && embeddingBytes === null) api.faceEmbeddingBytes().then((b) => (embeddingBytes = b)).catch(() => {});
+  });
 
   const others = $derived(sources.filter((s) => s.driver !== "shard"));
   const encrypted = $derived(tab === "create" ? encrypt : !!peek?.encrypted);
@@ -87,12 +94,12 @@
       const kf = keyfile || null;
       const rememberIt = bundle.locked && remember;
       if (tab === "create") {
-        const s = await api.createShard(name.trim(), elsewhere ? parent : null, encrypt ? password : null, encrypt ? kf : null, rememberIt, propsInShard);
+        const s = await api.createShard(name.trim(), elsewhere ? parent : null, encrypt ? password : null, encrypt ? kf : null, rememberIt, propsInShard, propsInShard && embeddingsInShard);
         if (initial === "folder") await api.shardImport(s.id, [initialFolder], "", mode);
         if (initial === "source") await api.shardFromSource(Number(initialSource), s.id, "", mode);
         ondone(s);
       } else {
-        ondone(await api.attachShard(path, place, password || null, kf, rememberIt, propsInShard));
+        ondone(await api.attachShard(path, place, password || null, kf, rememberIt, propsInShard, propsInShard && embeddingsInShard));
       }
     } catch (e) {
       error = errText(e);
@@ -217,6 +224,20 @@
         </div>
         <p class="hint">{propsInShard ? t("shard.props.shardHint") : t("shard.props.libraryHint")}</p>
         {#if tab === "attach" && peek?.has_props}<p class="hint"><Icon name="info" size={12} />{t("shard.props.found")}</p>{/if}
+        {#if propsInShard}
+          <label class="check">
+            <button
+              type="button"
+              class="switch"
+              class:on={embeddingsInShard}
+              aria-label={t("shard.embed")}
+              onclick={() => (embeddingsInShard = !embeddingsInShard)}
+            ></button>
+            <span>{t("shard.embed")}</span>
+          </label>
+          <p class="hint">{t("shard.embedHint")}</p>
+          {#if embeddingBytes !== null}<p class="hint">{t("shard.embedPerFace", { size: fmtBytes(embeddingBytes) })}</p>{/if}
+        {/if}
       </div>
 
       {#if encrypted}

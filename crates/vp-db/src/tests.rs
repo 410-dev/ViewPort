@@ -627,6 +627,79 @@ fn faces_group_into_people_whose_names_are_searchable() {
     assert!(lib.db.faces_for_grouping("real", emb).unwrap().is_empty());
 }
 
+/// The PC analyses and names; the phone (another library with the same items) takes the
+/// faces in, renames, says "not this person" and merges; the PC takes those back.
+#[test]
+fn faces_and_people_merge_between_libraries() {
+    use crate::faces::*;
+    let pc = library();
+    let phone = library();
+    let emb = pc.db.ml_model_id("sface@1", "face_embedder").unwrap();
+    let face = |x: f32| NewFace { model_id: emb, kind: "real".into(), bbox: [x, 0.1, 0.2, 0.2], score: 0.9, embedding: Some(vec![1, 2]), crop: None };
+    pc.db.record_analysis(1, &[emb], true, &[face(0.1), face(0.6)], None, OCT18).unwrap();
+    pc.db.record_analysis(2, &[emb], true, &[face(0.1)], None, OCT18).unwrap();
+    let faces = pc.db.faces_for_grouping("real", emb).unwrap();
+    let groups: Vec<(i64, usize)> = faces.iter().map(|f| (f.id, 0)).collect();
+    pc.db.apply_grouping("real", &[], &groups, OCT18).unwrap();
+    let group = pc.db.people("real", false).unwrap()[0].id;
+    let uid_of = |db: &Db, id: i64| -> String { db.conn.query_row("SELECT uid FROM person WHERE id = ?1", [id], |r| r.get(0)).unwrap() };
+    let group_uid = uid_of(&pc.db, group);
+    // Regrouping keeps the group (and so its uid) when it keeps its faces.
+    pc.db.apply_grouping("real", &[], &groups, OCT18).unwrap();
+    assert_eq!(pc.db.people("real", false).unwrap()[0].id, group);
+    assert_eq!(uid_of(&pc.db, group), group_uid);
+    let kim = pc.db.rename_person(group, "김철수").unwrap();
+
+    // To the phone.
+    let send = |from: &Db, to: &Db| {
+        let doc = from.people_doc(1).unwrap();
+        to.merge_people_doc(&doc).unwrap();
+        let mut added = 0;
+        for id in [1, 2] {
+            added += to.merge_item_faces(id, &from.item_faces(id).unwrap(), &doc, 0.5).unwrap().len();
+        }
+        added
+    };
+    assert_eq!(send(&pc.db, &phone.db), 3);
+    let people = phone.db.people("real", false).unwrap();
+    assert_eq!((people.len(), people[0].name.as_str(), people[0].faces), (1, "김철수", 3));
+    assert_eq!(uid_of(&phone.db, people[0].id), group_uid);
+    assert_eq!(phone.db.media_to_analyze(&[emb], &[], 0, 10).unwrap(), Vec::<i64>::new(), "analysed already");
+    assert_eq!(send(&pc.db, &phone.db), 0, "nothing new");
+
+    // On the phone: renamed, one face is not him, and a new person is merged into him.
+    let p_kim = people[0].id;
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    phone.db.rename_person(p_kim, "철수").unwrap();
+    let p_faces = phone.db.person_faces(p_kim, 0, 10).unwrap();
+    let out = p_faces.iter().find(|f| f.media_id == 2).unwrap().id;
+    phone.db.assign_faces(&[out], None).unwrap();
+    let lee = phone.db.create_person("real", "이영희", OCT18).unwrap();
+    let moved = p_faces.iter().find(|f| f.media_id == 1).unwrap().id;
+    phone.db.assign_faces(&[moved], Some(lee)).unwrap();
+    phone.db.merge_people(p_kim, &[lee]).unwrap();
+
+    // Back on the PC.
+    assert_eq!(send(&phone.db, &pc.db), 0);
+    let people = pc.db.people("real", false).unwrap();
+    assert_eq!(people.iter().map(|p| (p.id, p.name.as_str(), p.faces)).collect::<Vec<_>>(), [(kim, "철수", 2)]);
+    let rejected = pc.db.media_faces(2).unwrap()[0].clone();
+    assert_eq!(rejected.person_id, None);
+    assert!(pc.db.face_rejects().unwrap().contains(&(rejected.id, kim)));
+    let doc = pc.db.people_doc(1).unwrap();
+    assert!(doc.aliases.values().all(|a| a.into == group_uid), "the merged person forwards to him");
+
+    // A third library found the same face itself: it takes the shared uid.
+    let other = library();
+    let emb3 = other.db.ml_model_id("sface@1", "face_embedder").unwrap();
+    let own = NewFace { model_id: emb3, kind: "real".into(), bbox: [0.11, 0.1, 0.2, 0.2], score: 0.8, embedding: None, crop: None };
+    other.db.record_analysis(2, &[emb3], true, &[own], None, OCT18).unwrap();
+    other.db.merge_people_doc(&doc).unwrap();
+    let added = other.db.merge_item_faces(2, &pc.db.item_faces(2).unwrap(), &doc, 0.5).unwrap();
+    assert!(added.is_empty());
+    assert_eq!(other.db.item_faces(2).unwrap().faces[0].uid, pc.db.item_faces(2).unwrap().faces[0].uid);
+}
+
 #[test]
 fn item_properties_travel_and_changes_are_tracked() {
     let mut lib = library();

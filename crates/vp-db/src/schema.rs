@@ -373,6 +373,88 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (mirror_id, rel_path)
     );
     "#,
+    // v9: faces and people travel with shards. People and faces get ids that are the same
+    // in every library (`uid`), the user's changes are timed so the newer one wins
+    // (`name_ms`, `hidden_ms`, `set_ms`), and a merged person leaves a forwarding record
+    // (`person_alias`) for libraries that still know the old one. Face changes stamp
+    // their item (`meta_rev`); people changes stamp `people_rev`.
+    r#"
+    ALTER TABLE person ADD COLUMN uid TEXT;
+    ALTER TABLE person ADD COLUMN name_ms INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE person ADD COLUMN hidden_ms INTEGER NOT NULL DEFAULT 0;
+    UPDATE person SET uid = lower(hex(randomblob(16)));
+    CREATE UNIQUE INDEX person_uid ON person(uid);
+    CREATE TRIGGER person_uid_new AFTER INSERT ON person WHEN NEW.uid IS NULL BEGIN
+        UPDATE person SET uid = lower(hex(randomblob(16))) WHERE id = NEW.id;
+    END;
+
+    ALTER TABLE face ADD COLUMN uid TEXT;
+    ALTER TABLE face ADD COLUMN set_ms INTEGER NOT NULL DEFAULT 0;   -- the user last placed it
+    UPDATE face SET uid = lower(hex(randomblob(16)));
+    CREATE UNIQUE INDEX face_uid ON face(uid);
+    CREATE TRIGGER face_uid_new AFTER INSERT ON face WHEN NEW.uid IS NULL BEGIN
+        UPDATE face SET uid = lower(hex(randomblob(16))) WHERE id = NEW.id;
+    END;
+
+    -- Person `uid` was merged into `into_uid`.
+    CREATE TABLE person_alias (
+        uid      TEXT PRIMARY KEY,
+        into_uid TEXT NOT NULL,
+        ms       INTEGER NOT NULL
+    );
+
+    CREATE TRIGGER meta_face_ins AFTER INSERT ON face BEGIN
+        UPDATE meta_counter SET rev = rev + 1;
+        INSERT INTO meta_rev (media_id, rev) VALUES (NEW.media_id, (SELECT rev FROM meta_counter))
+            ON CONFLICT (media_id) DO UPDATE SET rev = excluded.rev;
+    END;
+    CREATE TRIGGER meta_face_upd AFTER UPDATE OF person_id, confirmed, set_ms, uid ON face
+        WHEN NEW.person_id IS NOT OLD.person_id OR NEW.confirmed IS NOT OLD.confirmed
+          OR NEW.set_ms IS NOT OLD.set_ms OR NEW.uid IS NOT OLD.uid BEGIN
+        UPDATE meta_counter SET rev = rev + 1;
+        INSERT INTO meta_rev (media_id, rev) VALUES (NEW.media_id, (SELECT rev FROM meta_counter))
+            ON CONFLICT (media_id) DO UPDATE SET rev = excluded.rev;
+    END;
+    CREATE TRIGGER meta_face_del AFTER DELETE ON face BEGIN
+        UPDATE meta_counter SET rev = rev + 1;
+        INSERT INTO meta_rev (media_id, rev) VALUES (OLD.media_id, (SELECT rev FROM meta_counter))
+            ON CONFLICT (media_id) DO UPDATE SET rev = excluded.rev;
+    END;
+    CREATE TRIGGER meta_reject_ins AFTER INSERT ON face_reject BEGIN
+        UPDATE meta_counter SET rev = rev + 1;
+        INSERT INTO meta_rev (media_id, rev) SELECT media_id, (SELECT rev FROM meta_counter) FROM face WHERE id = NEW.face_id
+            ON CONFLICT (media_id) DO UPDATE SET rev = excluded.rev;
+    END;
+    CREATE TRIGGER meta_reject_del AFTER DELETE ON face_reject BEGIN
+        UPDATE meta_counter SET rev = rev + 1;
+        INSERT INTO meta_rev (media_id, rev) SELECT media_id, (SELECT rev FROM meta_counter) FROM face WHERE id = OLD.face_id
+            ON CONFLICT (media_id) DO UPDATE SET rev = excluded.rev;
+    END;
+    CREATE TRIGGER meta_done_ins AFTER INSERT ON ml_done BEGIN
+        UPDATE meta_counter SET rev = rev + 1;
+        INSERT INTO meta_rev (media_id, rev) VALUES (NEW.media_id, (SELECT rev FROM meta_counter))
+            ON CONFLICT (media_id) DO UPDATE SET rev = excluded.rev;
+    END;
+
+    CREATE TABLE people_rev (id INTEGER PRIMARY KEY CHECK (id = 1), rev INTEGER NOT NULL);
+    INSERT INTO people_rev (id, rev) VALUES (1, 0);
+    CREATE TRIGGER people_rev_ins AFTER INSERT ON person BEGIN
+        UPDATE meta_counter SET rev = rev + 1;
+        UPDATE people_rev SET rev = (SELECT rev FROM meta_counter);
+    END;
+    CREATE TRIGGER people_rev_upd AFTER UPDATE ON person BEGIN
+        UPDATE meta_counter SET rev = rev + 1;
+        UPDATE people_rev SET rev = (SELECT rev FROM meta_counter);
+    END;
+    CREATE TRIGGER people_rev_del AFTER DELETE ON person BEGIN
+        UPDATE meta_counter SET rev = rev + 1;
+        UPDATE people_rev SET rev = (SELECT rev FROM meta_counter);
+    END;
+    CREATE TRIGGER people_rev_alias AFTER INSERT ON person_alias BEGIN
+        UPDATE meta_counter SET rev = rev + 1;
+        UPDATE people_rev SET rev = (SELECT rev FROM meta_counter);
+    END;
+    "#,
 ];
 
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;

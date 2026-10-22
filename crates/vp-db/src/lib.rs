@@ -1,6 +1,7 @@
 //! ViewPort library database (SQLite).
 
 pub mod collation;
+pub mod face_sync;
 pub mod faces;
 pub mod mirror;
 pub mod props;
@@ -509,6 +510,10 @@ impl Db {
 
     /// Runs `f` inside one transaction; rolls back if it fails.
     pub fn batch<T>(&self, f: impl FnOnce(&Db) -> Result<T>) -> Result<T> {
+        // Inside another batch: part of its transaction.
+        if !self.conn.is_autocommit() {
+            return f(self);
+        }
         self.conn.execute_batch("BEGIN IMMEDIATE")?;
         match f(self) {
             Ok(v) => {

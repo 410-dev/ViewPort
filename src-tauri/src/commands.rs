@@ -379,11 +379,13 @@ pub(crate) fn scan_now(app: &AppHandle, ws: Arc<Workspace>, source: SourceRow) -
         Err(e) => task.fail(e.clone()),
     }
     ws.scans.lock().unwrap().remove(&source.id);
-    if result.is_ok()
-        && ws.autosave()
-        && let Err(e) = crate::shard_props::import(&ws, &source)
-    {
-        crate::applog::warn("props", format!("could not take in properties of '{}': {}", source.name, e.message));
+    if result.is_ok() && ws.autosave() {
+        match crate::shard_props::import(&ws, &source) {
+            Ok(0) => {}
+            // Faces and people may have come along.
+            Ok(_) => crate::ml::notify(app),
+            Err(e) => crate::applog::warn("props", format!("could not take in properties of '{}': {}", source.name, e.message)),
+        }
     }
     if result.is_ok() && ws.autosave() {
         crate::video::spawn_probe_backfill(app, ws.clone());

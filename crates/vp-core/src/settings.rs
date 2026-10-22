@@ -88,6 +88,9 @@ pub struct AnalysisSettings {
     pub character_crop_scale: f32,
     /// Edge of the face pictures shown in the people view.
     pub face_crop_px: u32,
+    /// A face another library found (in a shard) that overlaps one found here by this IoU
+    /// or more is the same face.
+    pub same_face_iou: f32,
     /// What to look for per source (by source id): "auto" (both kinds, the default for
     /// sources not listed), "real" (photos), "anime" (illustrations) or "off". The tagger
     /// runs on every source that is not "off".
@@ -116,6 +119,7 @@ impl Default for AnalysisSettings {
             keep_score: 0.2,
             character_crop_scale: 2.5,
             face_crop_px: 128,
+            same_face_iou: 0.5,
             source_modes: Default::default(),
         }
     }

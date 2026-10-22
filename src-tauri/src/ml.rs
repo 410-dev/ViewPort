@@ -216,7 +216,7 @@ pub fn start(app: &AppHandle, ws: Arc<Workspace>) {
 }
 
 /// Tells every window that item values changed (as `sync.ts` broadcasts do).
-fn notify(app: &AppHandle) {
+pub(crate) fn notify(app: &AppHandle) {
     let _ = app.emit("vp-sync", serde_json::json!({ "kind": "media", "from": "backend" }));
     let _ = app.emit("vp-sync", serde_json::json!({ "kind": "people", "from": "backend" }));
 }
@@ -250,7 +250,15 @@ fn keep_crop(ws: &Workspace, crop: &RgbImage, quality: u8) -> Option<CropRef> {
     }
     let mut data = Vec::new();
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut data, quality).encode_image(crop).ok()?;
-    let sealed = ws.seal_thumb(&data).ok()?;
+    keep_crop_jpeg(ws, &data)
+}
+
+/// Stores an encoded face picture (one taken in from a shard) in the thumbnail packs.
+pub(crate) fn keep_crop_jpeg(ws: &Workspace, jpeg: &[u8]) -> Option<CropRef> {
+    if !ws.autosave() {
+        return None;
+    }
+    let sealed = ws.seal_thumb(jpeg).ok()?;
     let (pack, offset) = ws.thumbs.append(&sealed).ok()?;
     Some(CropRef { pack, offset, len: sealed.len() as u32 })
 }
@@ -752,7 +760,18 @@ pub async fn ml_hide_person(app: AppHandle, id: i64, hidden: bool) -> CmdResult<
 
 /// The stored picture of a face (JPEG), for `vpthumb://localhost/face-<id>`.
 pub fn face_crop(ws: &Workspace, face: i64) -> CmdResult<Option<Vec<u8>>> {
-    let Some(c) = ws.read_db.lock().unwrap().face_crop(face)? else { return Ok(None) };
+    let c = ws.read_db.lock().unwrap().face_crop(face)?;
+    read_crop(ws, c)
+}
+
+/// The stored picture of a face (JPEG), by uid.
+pub(crate) fn face_crop_by_uid(ws: &Workspace, uid: &str) -> CmdResult<Option<Vec<u8>>> {
+    let c = ws.read_db.lock().unwrap().face_crop_by_uid(uid)?;
+    read_crop(ws, c)
+}
+
+fn read_crop(ws: &Workspace, c: Option<CropRef>) -> CmdResult<Option<Vec<u8>>> {
+    let Some(c) = c else { return Ok(None) };
     let data = ws.thumbs.read(c.pack, c.offset, c.len)?;
     Ok(Some(match &ws.key {
         Some(k) => vp_crypto::open(k, &data, b"thumb")?,

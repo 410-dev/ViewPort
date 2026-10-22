@@ -578,11 +578,28 @@ export const api = {
   // Shard sources (src-tauri/src/shards.rs)
   shardStatus: () => invoke<ShardStatus[]>("shard_status"),
   inspectShard: (path: string) => invoke<ShardPeek>("inspect_shard", { path }),
-  createShard: (name: string, location: string | null, password: string | null, keyfile: string | null, remember: boolean, propsInShard: boolean) =>
-    invoke<SourceRow>("create_shard", { name, location, password, keyfile, remember, propsInShard }),
-  attachShard: (path: string, mode: ShardPlace, password: string | null, keyfile: string | null, remember: boolean, propsInShard: boolean) =>
-    invoke<SourceRow>("attach_shard", { path, mode, password, keyfile, remember, propsInShard }),
+  createShard: (
+    name: string,
+    location: string | null,
+    password: string | null,
+    keyfile: string | null,
+    remember: boolean,
+    propsInShard: boolean,
+    embeddingsInShard: boolean,
+  ) => invoke<SourceRow>("create_shard", { name, location, password, keyfile, remember, propsInShard, embeddingsInShard }),
+  attachShard: (
+    path: string,
+    mode: ShardPlace,
+    password: string | null,
+    keyfile: string | null,
+    remember: boolean,
+    propsInShard: boolean,
+    embeddingsInShard: boolean,
+  ) => invoke<SourceRow>("attach_shard", { path, mode, password, keyfile, remember, propsInShard, embeddingsInShard }),
   shardSetProps: (sourceId: number, inShard: boolean) => invoke<SourceRow>("shard_set_props", { sourceId, inShard }),
+  shardSetEmbeddings: (sourceId: number, on: boolean) => invoke<SourceRow>("shard_set_embeddings", { sourceId, on }),
+  /** Average bytes of a face's identity vector here (what keeping vectors in a shard costs per face). */
+  faceEmbeddingBytes: () => invoke<number>("face_embedding_bytes"),
   mirrorList: () => invoke<MirrorRow[]>("mirror_list"),
   mirrorSave: (id: number | null, sourceId: number, targetId: number, targetFolder: string, enabled: boolean, propagateDeletes: boolean) =>
     invoke<number>("mirror_save", { id, sourceId, targetId, targetFolder, enabled, propagateDeletes }),
@@ -662,6 +679,11 @@ export interface ShardStatus {
   stats: ShardStats | null;
   /** Item properties are kept in the shard. */
   props_in_shard: boolean;
+  /** Faces' identity vectors are kept in the shard too. */
+  embeddings_in_shard: boolean;
+  /** Faces found on its items, and the bytes their vectors take. */
+  faces: number;
+  embedding_bytes: number;
 }
 
 export interface ShardPeek {

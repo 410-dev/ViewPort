@@ -46,6 +46,10 @@
   const canWrite = $derived(!!status?.writable);
   const others = $derived(sources.filter((s) => s.id !== source.id));
   const mismatch = $derived(password2 !== "" && password !== password2);
+  let embeddingBytes = $state<number | null>(null);
+  $effect(() => {
+    if (status?.props_in_shard && embeddingBytes === null) api.faceEmbeddingBytes().then((b) => (embeddingBytes = b)).catch(() => {});
+  });
 
   async function run(f: () => Promise<string | void>) {
     busy = true;
@@ -251,6 +255,31 @@
               >
             </div>
             <p class="hint">{status.props_in_shard ? t("shard.props.shardHint") : t("shard.props.libraryHint")}</p>
+            {#if status.props_in_shard}
+              <label class="check">
+                <button
+                  type="button"
+                  class="switch"
+                  class:on={status.embeddings_in_shard}
+                  disabled={busy || !canWrite}
+                  aria-label={t("shard.embed")}
+                  onclick={() => run(async () => void (await api.shardSetEmbeddings(source.id, !status.embeddings_in_shard)))}
+                ></button>
+                <span>{t("shard.embed")}</span>
+              </label>
+              <p class="hint">{t("shard.embedHint")}</p>
+              <p class="hint">
+                {#if status.faces === 0}
+                  {t("shard.embedNoFaces")}
+                  {#if embeddingBytes !== null}{t("shard.embedPerFace", { size: fmtBytes(embeddingBytes) })}{/if}
+                {:else}
+                  {t(status.embeddings_in_shard ? "shard.embedStored" : "shard.embedEstimate", {
+                    count: fmtCount(status.faces),
+                    size: fmtBytes(status.embedding_bytes),
+                  })}
+                {/if}
+              </p>
+            {/if}
           </section>
         {/if}
 
