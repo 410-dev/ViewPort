@@ -578,6 +578,8 @@ export const api = {
   /** Copies items and folders (`path` "" = a whole source) into folder `dest` of source `to`, in the background. */
   copyToSource: (ids: number[], folders: { sourceId: number; path: string }[], to: number, dest: string) =>
     invoke<void>("copy_to_source", { ids, folders, to, dest }),
+  /** Answers a copy conflict; `null` cancels the copy. `all`: the same for every remaining one. */
+  copyConflictAnswer: (id: number, choice: OnConflict | null, all: boolean) => invoke<void>("copy_conflict_answer", { id, choice, all }),
   mlStatus: () => invoke<MlStatus>("ml_status"),
   /** Analyses every image not seen by the chosen models yet, in the background. */
   mlAnalyze: () => invoke<void>("ml_analyze"),
@@ -656,6 +658,29 @@ export interface CompactReport {
 
 export const onAudio = (f: (e: AudioState) => void): Promise<UnlistenFn> => listen<AudioState>("audio", (e) => f(e.payload));
 export const onAppSettings = (f: () => void): Promise<UnlistenFn> => listen("app-settings", () => f());
+
+/** What to do when a copy's target name is taken (`shards.rs` `OnConflict`). */
+export type OnConflict = "skip_same" | "skip_name" | "rename" | "overwrite";
+
+/** A copy waits for the user: a file is already at the target path. */
+export interface CopyConflict {
+  id: number;
+  task: number;
+  target: string;
+  source: string;
+  existing_size: number;
+  existing_modified_ms: number | null;
+  incoming_size: number;
+  incoming_modified_ms: number | null;
+  /** Same size and content. */
+  same: boolean | null;
+}
+
+export const onCopyConflict = (f: (c: CopyConflict) => void): Promise<UnlistenFn> =>
+  listen<CopyConflict>("copy-conflict", (e) => f(e.payload));
+/** Conflict `id` was answered (in some window) or its copy was cancelled. */
+export const onCopyConflictDone = (f: (id: number) => void): Promise<UnlistenFn> =>
+  listen<number>("copy-conflict-done", (e) => f(e.payload));
 
 /** An image could not be shown for want of the HEIF decoder (sent once per run). */
 export const onHeifNeeded = (f: () => void): Promise<UnlistenFn> => listen("heif-needed", () => f());

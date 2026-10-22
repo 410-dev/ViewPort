@@ -37,6 +37,7 @@
   import MoveDialog from "./MoveDialog.svelte";
   import StatusBar from "./StatusBar.svelte";
   import HeifBanner from "./HeifBanner.svelte";
+  import CopyConflict from "./CopyConflict.svelte";
   import ContextMenu, { type MenuItem } from "./ui/ContextMenu.svelte";
   import Icon from "./ui/Icon.svelte";
   import ViewerShell from "./ViewerShell.svelte";
@@ -1086,6 +1087,10 @@
 
 {#if showSettings && settings}
   <SettingsPanel {settings} {bundle} {onbundle} onclose={() => (showSettings = false)} />
+{/if}
+
+{#if !embedded}
+  <CopyConflict />
 {/if}
 
 {#if showPeople}

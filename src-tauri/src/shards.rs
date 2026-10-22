@@ -910,10 +910,15 @@ pub async fn copy_to_source(app: AppHandle, ids: Vec<i64>, folders: Vec<FolderPi
         let rescan = || {
             let _ = crate::commands::scan_now(&app, ws.clone(), target.clone());
         };
-        let result = copy_files(&ws, &registry, &target, jobs, &task, &cancel, rescan);
+        let result = copy_files(&ws, &registry, &target, jobs, Conflicts::Ask(app.clone()), &task, &cancel, rescan);
         match result {
             Ok((0, 0)) => task.finish(),
-            Ok((failed, skipped)) => task.fail(format!("{failed} files failed, {skipped} already existed")),
+            // Skipping is what the user chose: done, not failed.
+            Ok((0, skipped)) => {
+                task.detail(format!("{skipped} skipped"));
+                task.finish();
+            }
+            Ok((failed, skipped)) => task.fail(format!("{failed} files failed, {skipped} skipped")),
             Err(e) => end_task::<()>(&task, &Err(e)),
         }
         if target.driver == DRIVER {
@@ -986,13 +991,136 @@ fn copy_jobs(ws: &Workspace, ids: &[i64], folders: &[FolderPick], dest: &str) ->
     Ok(jobs)
 }
 
-/// Runs the copies, then `rescan` (which adds the copies to the library) and records what
-/// followed them; returns `(failed, skipped)`.
+// ---------------------------------------------------------------- name conflicts
+
+/// What to do when a file is already at a copy's target path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnConflict {
+    /// Skip it when it is the same file (size and content); otherwise copy under a new name.
+    SkipSame,
+    /// Skip it whenever the name is taken.
+    SkipName,
+    /// Copy under a new name ("name (2).ext").
+    Rename,
+    /// Replace the file there.
+    Overwrite,
+}
+
+/// How a copy settles conflicts: one rule, or asking the user (`copy-conflict` events,
+/// answered by `copy_conflict_answer`).
+pub(crate) enum Conflicts {
+    Fixed(OnConflict),
+    Ask(AppHandle),
+}
+
+/// A conflict put to the user.
+#[derive(Clone, Serialize)]
+struct ConflictAsk {
+    id: u64,
+    /// The copy's task.
+    task: u64,
+    /// Path in the target source.
+    target: String,
+    /// Path of the file being copied, in its own source.
+    source: String,
+    existing_size: u64,
+    existing_modified_ms: Option<i64>,
+    incoming_size: u64,
+    incoming_modified_ms: Option<i64>,
+    /// Same size and content.
+    same: Option<bool>,
+}
+
+type Answer = Option<(OnConflict, bool)>;
+
+/// Copies waiting for an answer, by conflict id.
+static ASKING: std::sync::Mutex<Option<std::collections::HashMap<u64, std::sync::mpsc::Sender<Answer>>>> = std::sync::Mutex::new(None);
+static NEXT_ASK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Answers conflict `id`: what to do (`None` cancels the copy) and whether for every
+/// remaining conflict of that copy.
+#[tauri::command]
+pub fn copy_conflict_answer(app: AppHandle, id: u64, choice: Option<OnConflict>, all: bool) {
+    use tauri::Emitter;
+    let tx = ASKING.lock().unwrap_or_else(|e| e.into_inner()).as_mut().and_then(|m| m.remove(&id));
+    if let Some(tx) = tx {
+        let _ = tx.send(choice.map(|c| (c, all)));
+    }
+    // Other windows showing the same question close it.
+    let _ = app.emit("copy-conflict-done", id);
+}
+
+/// Puts a conflict to the user and waits for the answer (or for the copy to be cancelled).
+fn ask_conflict(app: &AppHandle, mut facts: ConflictAsk, cancel: &AtomicBool, closed: &AtomicBool) -> CmdResult<(OnConflict, bool)> {
+    use tauri::Emitter;
+    let id = NEXT_ASK.fetch_add(1, Ordering::Relaxed);
+    facts.id = id;
+    let (tx, rx) = std::sync::mpsc::channel();
+    ASKING.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Default::default).insert(id, tx);
+    let _ = app.emit("copy-conflict", &facts);
+    loop {
+        match rx.recv_timeout(std::time::Duration::from_millis(200)) {
+            Ok(Some(answer)) => return Ok(answer),
+            Ok(None) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Err(cancelled()),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if cancel.load(Ordering::Relaxed) || closed.load(Ordering::Relaxed) {
+                    ASKING.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(|m| m.remove(&id));
+                    let _ = app.emit("copy-conflict-done", id);
+                    return Err(cancelled());
+                }
+            }
+        }
+    }
+}
+
+/// Whether `a` in `da` and `b` in `db` have the same content.
+fn same_content(da: &dyn vp_driver::MediaDriver, a: &str, db: &dyn vp_driver::MediaDriver, b: &str) -> CmdResult<bool> {
+    let (ra, rb) = (da.open(a)?, db.open(b)?);
+    if ra.len() != rb.len() {
+        return Ok(false);
+    }
+    let (mut x, mut y) = (vec![0u8; PIECE], vec![0u8; PIECE]);
+    let mut off = 0u64;
+    while off < ra.len() {
+        let n = ra.read_full_at(off, &mut x)?;
+        let m = rb.read_full_at(off, &mut y)?;
+        if n != m || x[..n] != y[..m] {
+            return Ok(false);
+        }
+        if n == 0 {
+            break;
+        }
+        off += n as u64;
+    }
+    Ok(true)
+}
+
+/// `path` with " (2)", " (3)", ... before its extension, the first one not taken in `out`.
+fn free_name(out: &dyn vp_driver::MediaDriver, path: &str) -> String {
+    let (dir, name) = path.rsplit_once('/').map(|(d, n)| (Some(d), n)).unwrap_or((None, path));
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() => (s, format!(".{e}")),
+        _ => (name, String::new()),
+    };
+    (2..)
+        .map(|n| {
+            let name = format!("{stem} ({n}){ext}");
+            dir.map(|d| format!("{d}/{name}")).unwrap_or(name)
+        })
+        .find(|p| out.stat(p).is_err())
+        .expect("some name is free")
+}
+
+/// Runs the copies (settling taken names by `conflicts`), then `rescan` (which adds the
+/// copies to the library) and records what followed them; returns `(failed, skipped)`.
+#[allow(clippy::too_many_arguments)]
 fn copy_files(
     ws: &Workspace,
     registry: &vp_driver::DriverRegistry,
     to: &SourceRow,
     jobs: Vec<CopyJob>,
+    conflicts: Conflicts,
     task: &Task,
     cancel: &AtomicBool,
     rescan: impl FnOnce(),
@@ -1006,26 +1134,81 @@ fn copy_files(
     let mut thumbs = Vec::new();
     let mut variants = Vec::new();
     let mut origins: std::collections::HashMap<i64, Arc<dyn vp_driver::MediaDriver>> = Default::default();
-    for j in jobs {
-        if ws.closed.load(Ordering::Relaxed) {
+    // An answer the user gave for every remaining conflict.
+    let mut for_all = match &conflicts {
+        Conflicts::Fixed(c) => Some(*c),
+        Conflicts::Ask(_) => None,
+    };
+    for mut j in jobs {
+        if ws.closed.load(Ordering::Relaxed) || cancel.load(Ordering::Relaxed) {
             return Err(cancelled());
         }
         task.detail(&j.target);
-        if out.stat(&j.target).is_ok() {
-            skipped += 1;
-            task.add(j.size);
-            continue;
+        let from = match origins.get(&j.source_id) {
+            Some(d) => d.clone(),
+            None => {
+                let d = ws
+                    .read_db
+                    .lock()
+                    .unwrap()
+                    .source(j.source_id)?
+                    .ok_or_else(|| CmdError::new("not_found", "source"))
+                    .and_then(|s| ws.driver(registry, &s));
+                match d {
+                    Ok(d) => {
+                        origins.insert(j.source_id, d.clone());
+                        d
+                    }
+                    Err(_) => {
+                        failed += 1;
+                        continue;
+                    }
+                }
+            }
+        };
+        if let Ok(existing) = out.stat(&j.target) {
+            // The same file (size, then content), worked out once and only when needed.
+            let mut same: Option<bool> = None;
+            let is_same = |same: &mut Option<bool>| -> bool {
+                *same.get_or_insert_with(|| existing.size == j.size && same_content(out.as_ref(), &j.target, from.as_ref(), &j.rel).unwrap_or(false))
+            };
+            let choice = match (for_all, &conflicts) {
+                (Some(c), _) => c,
+                (None, Conflicts::Ask(app)) => {
+                    let facts = ConflictAsk {
+                        id: 0,
+                        task: task.id(),
+                        target: j.target.clone(),
+                        source: j.rel.clone(),
+                        existing_size: existing.size,
+                        existing_modified_ms: existing.modified_ms,
+                        incoming_size: j.size,
+                        incoming_modified_ms: j.modified_ms,
+                        same: Some(is_same(&mut same)),
+                    };
+                    let (c, all) = ask_conflict(app, facts, cancel, &ws.closed)?;
+                    if all {
+                        for_all = Some(c);
+                    }
+                    c
+                }
+                (None, Conflicts::Fixed(c)) => *c,
+            };
+            let skip = match choice {
+                OnConflict::SkipName => true,
+                OnConflict::SkipSame => is_same(&mut same),
+                OnConflict::Rename | OnConflict::Overwrite => false,
+            };
+            if skip {
+                skipped += 1;
+                task.add(j.size);
+                continue;
+            }
+            if choice != OnConflict::Overwrite {
+                j.target = free_name(out.as_ref(), &j.target);
+            }
         }
         let one = (|| -> CmdResult<()> {
-            let from = match origins.get(&j.source_id) {
-                Some(d) => d.clone(),
-                None => {
-                    let s = ws.read_db.lock().unwrap().source(j.source_id)?.ok_or_else(|| CmdError::new("not_found", "source"))?;
-                    let d = ws.driver(registry, &s)?;
-                    origins.insert(j.source_id, d.clone());
-                    d
-                }
-            };
             let reader = from.open(&j.rel)?;
             match (&shard, out.local_path(&j.target)) {
                 (Some(s), _) => put_file(s, &j.target, reader.as_ref(), j.created_ms, j.modified_ms, task, cancel)?,
@@ -1268,11 +1451,15 @@ mod copy_tests {
     }
 
     fn copy(ws: &Workspace, registry: &DriverRegistry, ids: &[i64], folders: &[FolderPick], to: i64, dest: &str) -> (usize, usize) {
+        copy_as(ws, registry, ids, folders, to, dest, OnConflict::SkipName)
+    }
+
+    fn copy_as(ws: &Workspace, registry: &DriverRegistry, ids: &[i64], folders: &[FolderPick], to: i64, dest: &str, on: OnConflict) -> (usize, usize) {
         let target = ws.read_db.lock().unwrap().source(to).unwrap().unwrap();
         let jobs = copy_jobs(ws, ids, folders, dest).unwrap();
         let task = tasks::begin("copy_to_source", "test", Unit::Bytes, None);
         let cancel = AtomicBool::new(false);
-        copy_files(ws, registry, &target, jobs, &task, &cancel, || scan(ws, registry, to)).unwrap()
+        copy_files(ws, registry, &target, jobs, Conflicts::Fixed(on), &task, &cancel, || scan(ws, registry, to)).unwrap()
     }
 
     #[test]
@@ -1308,6 +1495,25 @@ mod copy_tests {
         assert_eq!(copied.view_count, 1);
         // Again: everything is already there.
         assert_eq!(copy(&ws, &registry, &[a], &folders, shard, "in"), (0, 3));
+
+        // Taken names: the same files are skipped, a changed one goes in beside the old.
+        std::fs::write(photos.join("a.jpg"), b"xyz").unwrap();
+        assert_eq!(copy_as(&ws, &registry, &[a], &folders, shard, "in", OnConflict::SkipSame), (0, 2));
+        let read = |p: &str| {
+            let s = ws.read_db.lock().unwrap().source(shard).unwrap().unwrap();
+            let r = ws.driver(&registry, &s).unwrap().open(p).unwrap();
+            let mut b = vec![0u8; r.len() as usize];
+            r.read_full_at(0, &mut b).unwrap();
+            b
+        };
+        assert_eq!((read("in/a.jpg"), read("in/a (2).jpg")), (b"aaa".to_vec(), b"xyz".to_vec()));
+        // Rename copies again; overwrite replaces.
+        assert_eq!(copy_as(&ws, &registry, &[a], &[], shard, "in", OnConflict::Rename), (0, 0));
+        assert_eq!(read("in/a (3).jpg"), b"xyz");
+        assert_eq!(copy_as(&ws, &registry, &[a], &[], shard, "in", OnConflict::Overwrite), (0, 0));
+        assert_eq!(read("in/a.jpg"), b"xyz");
+        assert_eq!(copy_as(&ws, &registry, &[a], &[], shard, "in", OnConflict::SkipSame), (0, 1));
+        std::fs::write(photos.join("a.jpg"), b"aaa").unwrap();
 
         // The whole shard out into a new folder of the local source.
         let out = [FolderPick { source_id: shard, path: String::new() }];

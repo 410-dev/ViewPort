@@ -145,6 +145,7 @@ pub fn run() {
             shards::shard_from_source,
             shards::shard_export,
             shards::copy_to_source,
+            shards::copy_conflict_answer,
             ml::ml_status,
             ml::ml_analyze,
             ml::ml_prioritize,
