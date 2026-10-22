@@ -69,6 +69,10 @@ pub struct AnalysisSettings {
     pub character_crop_scale: f32,
     /// Edge of the face pictures shown in the people view.
     pub face_crop_px: u32,
+    /// What to look for per source (by source id): "auto" (both kinds, the default for
+    /// sources not listed), "real" (photos), "anime" (illustrations) or "off". The tagger
+    /// runs on every source that is not "off".
+    pub source_modes: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for AnalysisSettings {
@@ -93,6 +97,7 @@ impl Default for AnalysisSettings {
             keep_score: 0.2,
             character_crop_scale: 2.5,
             face_crop_px: 128,
+            source_modes: Default::default(),
         }
     }
 }
@@ -469,6 +474,8 @@ pub struct MlSettings {
     pub threads: u32,
     /// Analyse new items in the background after scans, while a bundle is open.
     pub auto_analyze: bool,
+    /// How many items of what the library shows (in its order) are analysed before the rest.
+    pub priority_items: u32,
 }
 
 impl Default for MlSettings {
@@ -488,6 +495,7 @@ impl Default for MlSettings {
             max_edge_px: 1280,
             threads: 0,
             auto_analyze: false,
+            priority_items: 500,
         }
     }
 }

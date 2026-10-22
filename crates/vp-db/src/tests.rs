@@ -562,7 +562,13 @@ fn faces_group_into_people_whose_names_are_searchable() {
     assert!(lib.db.media_to_analyze(&[det, emb], &[1], 0, 10).unwrap().is_empty(), "a disconnected source is skipped");
     lib.db.record_analysis(2, &[det, emb], true, &[face(0.7)], Some((det, &[("long hair".into(), 0, 0.9), ("miku".into(), 4, 0.95)])), OCT18).unwrap();
     let counts = lib.db.analysis_counts(&[det, emb], &[]).unwrap();
-    assert_eq!((counts.images, counts.done, counts.faces), (2, 2, 3));
+    assert_eq!((counts.images, counts.done, counts.faces, counts.failed), (2, 2, 3, 0));
+    // A failure counts, and retrying forgets it (the item is analysed again).
+    let tagger = lib.db.ml_model_id("wd@3", "tagger").unwrap();
+    lib.db.record_analysis(1, &[tagger], false, &[], None, OCT18).unwrap();
+    assert_eq!(lib.db.analysis_counts(&[det, emb, tagger], &[]).unwrap().failed, 1);
+    assert_eq!(lib.db.retry_failed().unwrap(), 1);
+    assert_eq!(lib.db.media_to_analyze(&[det, emb, tagger], &[], 0, 10).unwrap(), [1, 2]);
 
     // Grouping: all three faces in one unnamed group.
     let faces = lib.db.faces_for_grouping("real", emb).unwrap();

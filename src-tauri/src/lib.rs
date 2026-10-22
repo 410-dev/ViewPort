@@ -141,6 +141,8 @@ pub fn run() {
             shards::copy_to_source,
             ml::ml_status,
             ml::ml_analyze,
+            ml::ml_prioritize,
+            ml::ml_retry_failed,
             ml::ml_regroup,
             ml::ml_people,
             ml::ml_person_faces,

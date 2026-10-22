@@ -78,6 +78,18 @@ pub struct AnalysisCounts {
     pub faces: u64,
     pub people: u64,
     pub unnamed: u64,
+    /// Items a model could not analyse (unreadable image, model error).
+    pub failed: u64,
+}
+
+impl std::ops::AddAssign for AnalysisCounts {
+    /// Sums the item counts of separate groups of sources (faces and people are totals).
+    fn add_assign(&mut self, o: Self) {
+        self.images += o.images;
+        self.done += o.done;
+        self.failed += o.failed;
+        (self.faces, self.people, self.unnamed) = (o.faces, o.people, o.unnamed);
+    }
 }
 
 /// `json_each` input for a list of ids.
@@ -108,15 +120,17 @@ impl Db {
     }
 
     pub fn analysis_counts(&self, models: &[i64], exclude: &[i64]) -> Result<AnalysisCounts> {
-        let (images, done): (i64, i64) = self.conn.query_row(
+        let (images, done, failed): (i64, i64, i64) = self.conn.query_row(
             "SELECT COUNT(*),
                     COALESCE(SUM(NOT EXISTS (SELECT 1 FROM json_each(?1) j
-                         WHERE NOT EXISTS (SELECT 1 FROM ml_done d WHERE d.media_id = m.id AND d.model_id = j.value))), 0)
+                         WHERE NOT EXISTS (SELECT 1 FROM ml_done d WHERE d.media_id = m.id AND d.model_id = j.value))), 0),
+                    COALESCE(SUM(EXISTS (SELECT 1 FROM ml_done d WHERE d.media_id = m.id AND NOT d.ok
+                                         AND d.model_id IN (SELECT value FROM json_each(?1)))), 0)
              FROM media m JOIN source src ON src.id = m.source_id
              WHERE m.kind = 'image' AND NOT m.missing AND src.enabled
                AND m.source_id NOT IN (SELECT value FROM json_each(?2))",
             params![json_ids(models), json_ids(exclude)],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
         let faces: i64 = self.conn.query_row("SELECT COUNT(*) FROM face", [], |r| r.get(0))?;
         let (people, unnamed): (i64, i64) = self.conn.query_row(
@@ -124,7 +138,19 @@ impl Db {
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
-        Ok(AnalysisCounts { images: images as u64, done: done as u64, faces: faces as u64, people: people as u64, unnamed: unnamed as u64 })
+        Ok(AnalysisCounts {
+            images: images as u64,
+            done: done as u64,
+            faces: faces as u64,
+            people: people as u64,
+            unnamed: unnamed as u64,
+            failed: failed as u64,
+        })
+    }
+
+    /// Forgets failed analyses, so the next job tries those items again. Returns how many.
+    pub fn retry_failed(&self) -> Result<usize> {
+        Ok(self.conn.execute("DELETE FROM ml_done WHERE NOT ok", [])?)
     }
 
     /// Stores one item's results: it was analysed by `models` (`ok` = the image was read),
