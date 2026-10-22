@@ -194,6 +194,14 @@ name.vpshard/
 - **이름과 검색**: 사람이 이름을 붙이면(같은 종류에 같은 이름이 있으면 합쳐짐) `x.people`(인물)·`x.characters`(캐릭터) 기본 필드에
   출처 `auto:faces` 값으로, 태거 결과는 `x.auto_tags`(자동 태그)·`x.characters`에 `auto:tagger` 값으로 다시 쓴다(`sync_*`).
   사용자가 직접 넣은 같은 값은 건드리지도, 중복하지도 않는다. 그래서 `인물(김철수)`, `캐릭터(miku)`, `자동 태그(long hair)`가 그대로 검색된다.
+- **소스별 범위**(`analysis.source_modes`, 소스 id → `auto`/`real`/`anime`/`off`): 작업은 소스를 범위별 그룹으로 나눠 그룹마다 필요한
+  모델만 돌린다(`off`는 태거도 안 돌림). 연결되지 않은 소스와 잠긴 샤드는 "실패"가 아니라 대기다.
+- **보이는 것 먼저**: 라이브러리가 보여 주는 결과(순서대로, `ml.priority_items`개)를 `ml_prioritize`로 알리고, 읽기 스레드는 항목마다
+  이 목록을 먼저 확인한다. 한 작업 안에서 같은 항목은 한 번만 읽는다.
+- **실패 재시도**: 읽지 못했거나 모델 오류가 난 항목은 `ml_done.ok = 0`으로 남고, `ml_retry_failed`가 지운 뒤 다시 분석한다.
+- **모델 받기**(`ml_store.rs`, 카탈로그 `models/catalog.json`을 앱에 포함): 각 모델의 배포처 URL·크기·라이선스·manifest. UI가 라이선스
+  단계(전문 열기 + 동의 체크)를 거친 뒤 동의한 라이선스 이름과 함께 요청해야 받는다. 설정 폴더 `models/<id>/`에 `.part`로 받아
+  이름을 바꾸고, `consent.json`(라이선스·동의 시각) 다음 **manifest를 마지막에** 써서 받다 만 팩이 인식되지 않는다. 데스크톱만(`ureq`, rustls).
 - **UI**: 사이드바 "인물" → `people/PeopleView.svelte`(인물/캐릭터 탭, 분석 상태·시작, 그룹 카드, 합치기, 이름 붙이기, 얼굴별 "이 사람 아님",
   "사진 보기" = 해당 조건 검색). 설정 → 분석.
 - 선택적 실제 환경 테스트: `VP_TEST_ORT=<ONNX Runtime 라이브러리> VP_TEST_MODELS=<모델 팩 폴더> [VP_TEST_IMAGE=<사진>] cargo test -p vp-ml --features onnx`.

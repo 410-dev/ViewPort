@@ -4,7 +4,7 @@
   import { onBack } from "../back.svelte";
   import { pickFile } from "../pick.svelte";
   import { onDestroy, onMount, untrack } from "svelte";
-  import { api, asCmdError, type AppSettings, type BundleSummary, type CacheStats, type FfmpegStatus, type Settings } from "../api";
+  import { api, asCmdError, type AppSettings, type BundleSummary, type CacheStats, type FfmpegStatus, type Settings, type SourceRow } from "../api";
   import { fmtBytes } from "../format";
   import { LOCALES, QUERY_LOCALES, t, type Key } from "../i18n.svelte";
   import { applyPrefs, prefs } from "../prefs.svelte";
@@ -105,6 +105,9 @@
 
   // ---- status blocks
   let stats = $state<CacheStats | null>(null);
+  /** For per-source settings (image analysis). */
+  let sources = $state<SourceRow[]>([]);
+  api.listSources().then((l) => (sources = l)).catch(() => {});
   let ffmpeg = $state<FfmpegStatus | null>(null);
   let incompatible = $state<number[]>([]);
   let convertStarted = $state(false);
@@ -261,6 +264,30 @@
                           {:else if ffmpeg}
                             <div class="status warn"><Icon name="alert" size={14} /><span>{t("ffmpeg.missing")}</span></div>
                           {/if}
+                        {:else if f.id === "analysis_sources"}
+                          {#each sources as s (s.id)}
+                            <div class="source-mode">
+                              <span>{s.name}</span>
+                              <Select
+                                value={draft.analysis?.source_modes?.[String(s.id)] ?? "auto"}
+                                label={s.name}
+                                options={[
+                                  { value: "auto", label: t("set.analysis.mode.auto") },
+                                  { value: "real", label: t("set.analysis.mode.real") },
+                                  { value: "anime", label: t("set.analysis.mode.anime") },
+                                  { value: "off", label: t("set.analysis.mode.off") },
+                                ]}
+                                onchange={(v) => {
+                                  const modes = { ...(draft.analysis.source_modes ?? {}) };
+                                  if (v === "auto") delete modes[String(s.id)];
+                                  else modes[String(s.id)] = v;
+                                  draft.analysis.source_modes = modes;
+                                }}
+                              />
+                            </div>
+                          {:else}
+                            <p class="text">{t("side.noSources")}</p>
+                          {/each}
                         {:else if f.id === "lock"}
                           {#if bundle.locked}
                             <p class="text">{t("lock.lockedNote")}</p>
@@ -719,6 +746,19 @@
     grid-template-columns: minmax(0, 1fr);
     gap: 8px;
     max-width: 420px;
+  }
+  .source-mode {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 4px 0;
+  }
+  .source-mode span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .pair {
     display: flex;

@@ -252,6 +252,7 @@ export interface AppSettings {
     max_edge_px: number;
     threads: number;
     auto_analyze: boolean;
+    priority_items: number;
   };
 }
 
@@ -277,6 +278,22 @@ export interface AnalysisCounts {
   faces: number;
   people: number;
   unnamed: number;
+  failed: number;
+}
+
+/** A downloadable model pack (`ml_store.rs`, `models/catalog.json`). */
+export interface StoreItem {
+  id: string;
+  name: string;
+  kind: PackKind;
+  summary: Record<string, string>;
+  license: { name: string; url: string };
+  homepage: string;
+  files: { url: string; path: string; size: number }[];
+  size: number;
+  installed: boolean;
+  downloading: boolean;
+  path: string;
 }
 
 export interface MlStatus {
@@ -547,6 +564,13 @@ export const api = {
   /** `person` null: "not this person". */
   mlAssignFaces: (faces: number[], person: number | null) => invoke<void>("ml_assign_faces", { faces, person }),
   mlHidePerson: (id: number, hidden: boolean) => invoke<void>("ml_hide_person", { id, hidden }),
+  /** What the library shows, in order: analysed before the rest. */
+  mlPrioritize: (ids: number[]) => invoke<void>("ml_prioritize", { ids }),
+  /** Forgets failed analyses and analyses those items again; returns how many. */
+  mlRetryFailed: () => invoke<number>("ml_retry_failed"),
+  mlCatalog: () => invoke<StoreItem[]>("ml_catalog"),
+  /** `license`: the name of the license the user accepted. */
+  mlDownload: (id: string, license: string) => invoke<void>("ml_download", { id, license }),
   shardVerify: (sourceId: number) => invoke<VerifyReport>("shard_verify", { sourceId }),
   shardCompact: (sourceId: number) => invoke<CompactReport>("shard_compact", { sourceId }),
   shardSetEncryption: (sourceId: number, password: string | null, keyfile: string | null, remember: boolean) =>

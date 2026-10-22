@@ -7,6 +7,7 @@
   import { onSync } from "../sync";
   import { tasks } from "../tasks.svelte";
   import Icon from "../ui/Icon.svelte";
+  import ModelStore from "./ModelStore.svelte";
 
   /**
    * People and characters found by image analysis (`ml.rs`): groups to name, merge and
@@ -27,7 +28,9 @@
   let name = $state("");
   let error = $state("");
 
-  $effect(() => onBack(() => (open ? (open = null) : onclose())));
+  $effect(() => {
+    if (!store) return onBack(() => (open ? (open = null) : onclose()));
+  });
 
   async function refreshStatus() {
     status = await api.mlStatus().catch(() => null);
@@ -89,6 +92,8 @@
   }
 
   const analyze = () => run(() => api.mlAnalyze()).then(refreshStatus);
+  const retry = () => run(() => api.mlRetryFailed()).then(refreshStatus);
+  let store = $state(false);
   const regroup = () => run(() => api.mlRegroup()).then(refreshPeople);
 
   async function saveName() {
@@ -177,7 +182,15 @@
             })}
           </span>
         {/if}
+        {#if status?.counts?.failed}
+          <button class="btn sm ghost" disabled={analyzing} onclick={retry} title={t("people.retryHint")}>
+            <Icon name="alert" size={13} />{t("people.failed", { n: status.counts.failed.toLocaleString() })}
+          </button>
+        {/if}
         <span class="grow"></span>
+        {#if status?.supported}
+          <button class="btn sm ghost" onclick={() => (store = true)}><Icon name="download" size={13} />{t("people.getModels")}</button>
+        {/if}
         {#if picked.size >= 2}
           <button class="btn sm" onclick={merge}><Icon name="layers" size={13} />{t("people.merge", { n: picked.size })}</button>
         {/if}
@@ -240,6 +253,10 @@
     {/if}
   </div>
 </div>
+
+{#if store}
+  <ModelStore onclose={() => (store = false)} onchanged={refreshStatus} />
+{/if}
 
 <style>
   .people {

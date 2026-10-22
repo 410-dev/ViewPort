@@ -23,7 +23,7 @@ export type Field =
   | (Base & { kind: "list"; placeholder?: string })
   | (Base & { kind: "color" })
   | (Base & { kind: "columns" })
-  | { kind: "custom"; id: "cache" | "ffmpeg" | "lock"; label?: Key };
+  | { kind: "custom"; id: "cache" | "ffmpeg" | "lock" | "analysis_sources"; label?: Key };
 
 export interface Group {
   title?: Key;
@@ -57,6 +57,7 @@ export const DESKTOP_ONLY = new Set([
   "ml.max_edge_px",
   "ml.model_dirs",
   "ml.auto_analyze",
+  "ml.priority_items",
   "privacy.restore_shortcut",
   "privacy.tray_icon",
   "windows.new_width",
@@ -341,6 +342,11 @@ export const SECTIONS: Section[] = [
         ],
       },
       {
+        title: "set.analysis.sources",
+        note: "set.analysis.sources.note",
+        fields: [{ kind: "custom", id: "analysis_sources" }],
+      },
+      {
         title: "set.analysis.runtime",
         note: "set.analysis.runtime.note",
         fields: [
@@ -349,6 +355,7 @@ export const SECTIONS: Section[] = [
           { kind: "number", ...app({ path: "ml.device_id", label: "set.analysis.device" }), min: 0, max: 16, step: 1 },
           { kind: "number", ...app({ path: "ml.threads", label: "set.analysis.threads", help: "set.analysis.threads.help" }), min: 0, max: 64, step: 1 },
           { kind: "number", ...app({ path: "ml.max_edge_px", label: "set.analysis.maxEdge" }), min: 320, max: 4096, step: 64, unit: "px" },
+          { kind: "number", ...app({ path: "ml.priority_items", label: "set.analysis.priority", help: "set.analysis.priority.help" }), min: 0, max: 10000, step: 100 },
           { kind: "list", ...app({ path: "ml.model_dirs", label: "set.analysis.modelDirs", help: "set.analysis.modelDirs.help" }) },
         ],
       },

@@ -57,6 +57,12 @@ CUDA 빌드와 DirectML 빌드는 서로 다른 라이브러리입니다. 설정
 - `anime_detector`(`yolo` 형식)는 상자만 내고, 캐릭터 특징값은 얼굴 상자를 `analysis.character_crop_scale`배 키운 정사각형에서 뽑습니다.
 - 임베더 출력은 길이 1로 정규화되어 코사인 유사도로 비교됩니다.
 
+## 앱에서 받기
+
+인물 화면의 **모델 받기**에서 아래 모델을 바로 받을 수 있습니다. 모델마다 라이선스 단계(전문 열기, 동의 체크)를 거쳐야 받기
+버튼이 켜지고, 설정 폴더의 `models/<id>/`에 저장됩니다(동의 내용은 `consent.json`). 목록은 `catalog.json`이며 앱에 포함됩니다.
+새 모델을 목록에 넣으려면 항목 하나(배포처 URL, 크기, 라이선스, 그대로 쓸 manifest)를 추가합니다.
+
 ## 예시
 
 `examples/` 폴더에 아래 모델의 manifest 예시가 있습니다. 모델 파일을 받아 같은 폴더에 두고, 폴더째 모델 팩 위치에 복사하면 됩니다.
@@ -68,7 +74,7 @@ CUDA 빌드와 DirectML 빌드는 서로 다른 라이브러리입니다. 설정
 | `sface` | 실사 얼굴 특징값(128) | OpenCV Zoo `face_recognition_sface` | |
 | `anime-face` | 애니 얼굴 검출 | Hugging Face `deepghs/anime_face_detection` | YOLOv8 계열 |
 | `ccip` | 캐릭터 특징값 | Hugging Face `deepghs/ccip_onnx` | 특징값(`model_feat.onnx`)만 사용 |
-| `wd-tagger` | 태거 | Hugging Face `SmilingWolf/wd-eva02-large-tagger-v3` 등 | `selected_tags.csv` 필요 |
+| `wd-tagger` | 태거 | Hugging Face `SmilingWolf/wd-eva02-large-tagger-v3` (앱 목록에는 더 가벼운 `wd-vit-tagger-v3`) | `selected_tags.csv` 필요 |
 
 InsightFace 계열(buffalo_l 등)은 정확도가 높지만 비상업 연구용 라이선스입니다. 개인적으로 쓰려면 같은 형식으로 manifest를
 만들면 됩니다(검출기는 `yunet`과 출력이 달라 지금은 지원하지 않고, 특징값 모델(ArcFace, 112×112 RGB, `scale` 1/127.5,

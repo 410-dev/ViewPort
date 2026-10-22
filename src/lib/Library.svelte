@@ -24,7 +24,7 @@
   import { i18n, t } from "./i18n.svelte";
   import { isTyping, matches } from "./keys";
   import RightPanel from "./panel/RightPanel.svelte";
-  import { savePrefs, ui } from "./prefs.svelte";
+  import { prefs, savePrefs, ui } from "./prefs.svelte";
   import { quoteParam } from "./query";
   import QueryModal from "./query/QueryModal.svelte";
   import SettingsPanel from "./settings/SettingsPanel.svelte";
@@ -222,6 +222,14 @@
     const f = folder;
     subfolders = [];
     if (src !== null) api.childFolders(src, f).then((list) => (subfolders = list)).catch(() => {});
+  });
+
+  // Image analysis works through what is shown first (desktop; phones do not analyse).
+  $effect(() => {
+    const shown = ids;
+    if (isMobile || embedded) return;
+    const timer = setTimeout(() => api.mlPrioritize(shown.slice(0, prefs.app?.ml.priority_items ?? 500)).catch(() => {}), ui().search_debounce_ms);
+    return () => clearTimeout(timer);
   });
 
   $effect(() => {
