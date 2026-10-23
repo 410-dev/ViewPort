@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { pop } from "./ui/motion";
   import { onBack } from "./back.svelte";
   import { api, type TaskInfo } from "./api";
   import { fmtBytes, fmtCount } from "./format";
@@ -67,7 +68,7 @@
 
 {#if open}
   <div class="pop-scrim" role="presentation" onclick={() => (open = false)}></div>
-  <div class="pop" role="dialog" aria-label={t("status.tasks")}>
+  <div class="pop" role="dialog" aria-label={t("status.tasks")} transition:pop>
     <header>
       <span class="eyebrow">{t("status.tasks")}</span>
       <span class="grow"></span>
@@ -207,7 +208,6 @@
     background: var(--surface);
     border: 1px solid var(--border);
     box-shadow: var(--shadow);
-    animation: vp-pop var(--t-med) var(--ease);
   }
   .pop header {
     display: flex;

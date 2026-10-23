@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fade, pop } from "../ui/motion";
   import { onMount } from "svelte";
   import { api, type MirrorRow, type SourceRow } from "../api";
   import { onBack } from "../back.svelte";
@@ -72,8 +73,8 @@
   };
 </script>
 
-<div class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && !busy && onclose()}>
-  <div class="dialog mirror" role="dialog" aria-modal="true" aria-labelledby="mirror-title">
+<div out:fade class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && !busy && onclose()}>
+  <div out:pop class="dialog mirror" role="dialog" aria-modal="true" aria-labelledby="mirror-title">
     <header>
       <h2 id="mirror-title">{t("mirror.title", { name: source.name })}</h2>
       <button class="icon-btn" onclick={onclose} aria-label={t("common.close")}><Icon name="x" size={15} /></button>

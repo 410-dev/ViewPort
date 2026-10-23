@@ -161,13 +161,15 @@ button {
   transition:
     background var(--t-fast) var(--ease),
     color var(--t-fast) var(--ease),
-    box-shadow var(--t-fast) var(--ease);
+    box-shadow var(--t-fast) var(--ease),
+    transform var(--t-fast) var(--ease);
 }
 .btn:hover:not(:disabled) {
   background: var(--hover);
 }
 .btn:active:not(:disabled) {
   background: var(--surface-3);
+  transform: scale(0.97);
 }
 .btn:focus-visible,
 .icon-btn:focus-visible,
@@ -224,11 +226,16 @@ button {
   flex-shrink: 0;
   transition:
     background var(--t-fast) var(--ease),
-    color var(--t-fast) var(--ease);
+    color var(--t-fast) var(--ease),
+    transform var(--t-fast) var(--ease);
 }
 .icon-btn:hover:not(:disabled) {
   background: var(--hover);
   color: var(--fg);
+}
+/* A light press: buttons give a little under the pointer. */
+.icon-btn:active:not(:disabled) {
+  transform: scale(0.9);
 }
 .icon-btn.on {
   color: var(--accent);
@@ -511,6 +518,12 @@ input.input[type="date"] {
 @keyframes vp-fade {
   from {
     opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .btn:active:not(:disabled),
+  .icon-btn:active:not(:disabled) {
+    transform: none;
   }
 }
 @keyframes vp-pop {

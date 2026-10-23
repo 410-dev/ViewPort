@@ -256,22 +256,35 @@
     padding: 16px;
     cursor: default;
   }
+  /* The thumbnails shrink (to nothing) with the room left; the count and the button
+     never do, so a short panel cannot stack them on top of each other. */
   .multi {
     flex: 1;
-    display: grid;
-    place-items: center;
-    align-content: center;
-    gap: 12px;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
     color: var(--muted);
+    overflow: hidden;
+    container-type: size;
+  }
+  .multi > p,
+  .multi > .btn {
+    flex-shrink: 0;
   }
   .stack {
+    --mini: clamp(0px, calc((100cqh - 96px) / 3 - 4px), 64px);
     display: grid;
-    grid-template-columns: repeat(3, 64px);
+    grid-template-columns: repeat(3, var(--mini));
     gap: 6px;
+    flex-shrink: 1;
+    min-height: 0;
   }
   .mini {
-    width: 64px;
-    height: 64px;
+    width: var(--mini);
+    height: var(--mini);
     border-radius: var(--radius-sm);
     background: var(--tile);
     overflow: hidden;
@@ -283,6 +296,12 @@
   }
   .multi p {
     margin: 0;
+    text-align: center;
+  }
+  @container (max-height: 150px) {
+    .stack {
+      display: none;
+    }
   }
   .empty {
     flex: 1;

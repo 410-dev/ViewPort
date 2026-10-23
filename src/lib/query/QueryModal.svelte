@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fade, pop } from "../ui/motion";
   import { onBack } from "../back.svelte";
   import { untrack } from "svelte";
   import { api, asCmdError, type SavedQuery, type Vocabulary } from "../api";
@@ -283,8 +284,8 @@
 
 <svelte:window onkeydown={onKey} />
 
-<div class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
-  <div class="dialog modal" role="dialog" aria-modal="true" aria-label={t("query.title")}>
+<div out:fade class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
+  <div out:pop class="dialog modal" role="dialog" aria-modal="true" aria-label={t("query.title")}>
     <header class="title"><h2>{t("query.title")}</h2></header>
 
     <div class="content">

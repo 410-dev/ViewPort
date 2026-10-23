@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { pop } from "./motion";
   import { onDestroy, onMount } from "svelte";
   import { onBack } from "../back.svelte";
   import Icon, { type IconName } from "./Icon.svelte";
@@ -40,7 +41,7 @@
   });
 </script>
 
-<ul bind:this={menu} use:portal class="ctx" role="menu" style:left="{pos.left}px" style:top="{pos.top}px" oncontextmenu={(e) => e.preventDefault()}>
+<ul bind:this={menu} use:portal out:pop={{ y: 4, duration: 110 }} class="ctx" role="menu" style:left="{pos.left}px" style:top="{pos.top}px" oncontextmenu={(e) => e.preventDefault()}>
   {#each items as item (item.label)}
     <li role="none">
       <button

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fade, pop } from "../ui/motion";
   import { onDestroy } from "svelte";
   import { api, asCmdError, faceUrl, type FaceKind, type FaceRow, type MlStatus, type PersonRow } from "../api";
   import { onBack } from "../back.svelte";
@@ -207,8 +208,8 @@
   );
 </script>
 
-<div class="scrim" role="presentation" style:display={hidden ? "none" : null} onclick={(e) => e.target === e.currentTarget && onclose()}>
-  <div class="dialog people" role="dialog" aria-modal="true" aria-labelledby="people-title">
+<div out:fade class="scrim" role="presentation" style:display={hidden ? "none" : null} onclick={(e) => e.target === e.currentTarget && onclose()}>
+  <div out:pop class="dialog people" role="dialog" aria-modal="true" aria-labelledby="people-title">
     <header>
       {#if open}
         <button class="icon-btn" aria-label={t("common.back")} onclick={() => (open = null)}><Icon name="chevronLeft" size={16} /></button>
@@ -332,8 +333,8 @@
 {/if}
 
 {#if moving}
-  <div class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && (moving = null)}>
-    <div class="dialog move" role="dialog" aria-modal="true" aria-labelledby="move-title">
+  <div out:fade class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && (moving = null)}>
+    <div out:pop class="dialog move" role="dialog" aria-modal="true" aria-labelledby="move-title">
       <header>
         <span class="face mini"><img src={faceUrl(moving.id)} alt="" draggable="false" /></span>
         <h2 id="move-title">{t("people.moveTo")}</h2>

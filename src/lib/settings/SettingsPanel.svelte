@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fade, pop } from "../ui/motion";
   import Select from "../ui/Select.svelte";
   import { ask } from "@tauri-apps/plugin-dialog";
   import { onBack } from "../back.svelte";
@@ -234,8 +235,8 @@
 
 <svelte:window onkeydown={(e) => e.key === "Escape" && cancel()} />
 
-<div class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && cancel()}>
-  <div class="dialog settings" role="dialog" aria-modal="true" aria-label={t("set.title")}>
+<div out:fade class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && cancel()}>
+  <div out:pop class="dialog settings" role="dialog" aria-modal="true" aria-label={t("set.title")}>
     <aside class="nav">
       <div class="nav-head">
         <h2>{t("set.title")}</h2>

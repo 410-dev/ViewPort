@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { pop } from "./motion";
   import { onBack } from "../back.svelte";
   import { onDestroy, onMount } from "svelte";
   import { portal } from "./portal";
@@ -78,6 +79,7 @@
   {id}
   class="dropdown"
   class:above={pos.above}
+  out:pop={{ base: pos.above ? "translateY(-100%)" : "", y: pos.above ? -4 : 4, duration: 110 }}
   role="listbox"
   style:left="{pos.left}px"
   style:top="{pos.top}px"

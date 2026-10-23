@@ -25,12 +25,18 @@ export class Selection {
   revealing = $state<number | null>(null);
   /** Where the selection's context menu is open (the library draws it), or null. */
   menu = $state<{ x: number; y: number } | null>(null);
-  /** A selected folder: folders are selected one at a time, never together with items. */
-  folder = $state<FolderRef | null>(null);
+  /** Selected folders: never together with items. */
+  folders = $state<FolderRef[]>([]);
   /** Where the folder's context menu is open, or null. */
   folderMenu = $state<{ x: number; y: number } | null>(null);
   #anchor = -1;
+  #folderAnchor: FolderRef | null = null;
   #pointer = "mouse";
+
+  /** The one selected folder, or null (none, or several). */
+  get folder(): FolderRef | null {
+    return this.folders.length === 1 ? this.folders[0] : null;
+  }
 
   pointer(e: PointerEvent) {
     this.#pointer = e.pointerType;
@@ -57,7 +63,7 @@ export class Selection {
     const id = ids[index];
     if (id === undefined) return;
     e.preventDefault();
-    this.folder = null;
+    this.folders = [];
     if (this.touch) {
       navigator.vibrate?.(12);
       if (this.set.size === 0) return this.toggle(index, ids);
@@ -71,30 +77,77 @@ export class Selection {
     this.menu = { x: e.clientX, y: e.clientY };
   }
 
-  /** Selects folder `f` alone (a click on it). */
+  /** Selects folder `f` alone. */
   selectFolder(f: FolderRef) {
+    this.#clearItems();
+    this.folders = [f];
+    this.#folderAnchor = f;
+  }
+
+  #clearItems() {
     this.set.clear();
     this.focus = null;
     this.#anchor = -1;
-    this.folder = f;
   }
 
   isFolder(sourceId: number, path: string) {
-    return this.folder?.sourceId === sourceId && this.folder.path === path;
+    return this.folders.some((f) => f.sourceId === sourceId && f.path === path);
   }
 
-  /** Long press or right click on a folder: selects it and opens its menu. */
+  toggleFolder(f: FolderRef) {
+    this.#clearItems();
+    const was = this.folders.length;
+    this.folders = this.folders.filter((x) => x.sourceId !== f.sourceId || x.path !== f.path);
+    if (this.folders.length === was) this.folders = [...this.folders, f];
+    this.#folderAnchor = f;
+  }
+
+  /**
+   * A click on a folder: selects it alone, Ctrl/Cmd toggles it, Shift extends over `list`
+   * from the last folder clicked. On touch it only toggles while folders are selected.
+   * Returns false when the click was not taken (touch: the caller opens the folder).
+   */
+  clickFolder(e: MouseEvent, f: FolderRef, list: FolderRef[] = []): boolean {
+    if (this.touch) {
+      if (this.folders.length === 0) return false;
+      this.toggleFolder(f);
+      return true;
+    }
+    const same = (a: FolderRef) => (b: FolderRef) => a.sourceId === b.sourceId && a.path === b.path;
+    const from = this.#folderAnchor ? list.findIndex(same(this.#folderAnchor)) : -1;
+    const to = list.findIndex(same(f));
+    if (e.shiftKey && from >= 0 && to >= 0) {
+      const [a, b] = from < to ? [from, to] : [to, from];
+      const range = list.slice(a, b + 1);
+      const keep = e.ctrlKey || e.metaKey ? this.folders.filter((x) => !range.some(same(x))) : [];
+      this.#clearItems();
+      this.folders = [...keep, ...range];
+    } else if (e.ctrlKey || e.metaKey) this.toggleFolder(f);
+    else this.selectFolder(f);
+    return true;
+  }
+
+  /**
+   * Long press or right click on a folder: it joins the selected folders (mouse: replaces
+   * them unless already selected) and the menu opens.
+   */
   holdFolder(e: MouseEvent, f: FolderRef) {
     e.preventDefault();
     if (this.touch) navigator.vibrate?.(12);
-    this.selectFolder(f);
+    if (!this.isFolder(f.sourceId, f.path)) {
+      if (this.touch) {
+        this.#clearItems();
+        this.folders = [...this.folders, f];
+        this.#folderAnchor = f;
+      } else this.selectFolder(f);
+    }
     this.folderMenu = { x: e.clientX, y: e.clientY };
   }
 
   toggle(index: number, ids: number[]) {
     const id = ids[index];
     if (id === undefined) return;
-    this.folder = null;
+    this.folders = [];
     if (this.set.has(id)) {
       this.set.delete(id);
       if (this.focus === id) this.focus = this.set.size ? [...this.set].at(-1)! : null;
@@ -109,7 +162,7 @@ export class Selection {
     const id = ids[index];
     if (id === undefined) return;
     const additive = e.ctrlKey || e.metaKey;
-    this.folder = null;
+    this.folders = [];
     if (e.shiftKey && this.#anchor >= 0) {
       const [a, b] = this.#anchor < index ? [this.#anchor, index] : [index, this.#anchor];
       if (!additive) this.set.clear();
@@ -129,7 +182,7 @@ export class Selection {
   /** Moves the focus by `delta` items; with `extend`, grows the selection from the anchor. */
   move(delta: number, ids: number[], extend: boolean): number {
     if (ids.length === 0) return -1;
-    this.folder = null;
+    this.folders = [];
     const cur = this.focus == null ? -1 : ids.indexOf(this.focus);
     const next = cur < 0 ? (delta > 0 ? 0 : ids.length - 1) : Math.min(ids.length - 1, Math.max(0, cur + delta));
     if (extend && this.#anchor >= 0) {
@@ -146,12 +199,13 @@ export class Selection {
   }
 
   selectAll(ids: number[]) {
-    this.folder = null;
+    this.folders = [];
     for (const id of ids) this.set.add(id);
   }
 
   clear() {
-    this.folder = null;
+    this.folders = [];
+    this.#folderAnchor = null;
     this.set.clear();
     this.focus = null;
     this.#anchor = -1;

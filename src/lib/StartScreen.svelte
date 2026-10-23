@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fade, pop } from "./ui/motion";
   import Select from "./ui/Select.svelte";
   import { api, asCmdError, platformApi, type BundleSummary, type CmdError, type RecentBundle } from "./api";
   import { onBack } from "./back.svelte";
@@ -218,8 +219,8 @@
 </div>
 
 {#if pendingLock}
-  <div class="scrim" role="presentation">
-    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="lock-title">
+  <div out:fade class="scrim" role="presentation">
+    <div out:pop class="dialog" role="dialog" aria-modal="true" aria-labelledby="lock-title">
       <header><h2 id="lock-title">{t("start.locked.title")}</h2></header>
       <div class="body form">
         <p class="path">{pendingLock.path}</p>
@@ -251,8 +252,8 @@
 {/if}
 
 {#if pendingNewer}
-  <div class="scrim" role="presentation">
-    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="newer-title">
+  <div out:fade class="scrim" role="presentation">
+    <div out:pop class="dialog" role="dialog" aria-modal="true" aria-labelledby="newer-title">
       <header><h2 id="newer-title">{t("start.tooNew.title")}</h2></header>
       <div class="body"><p class="text">{t("start.tooNew.body", pendingNewer)}</p></div>
       <footer>

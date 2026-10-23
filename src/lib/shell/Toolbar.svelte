@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fade, pop } from "../ui/motion";
   import { onBack } from "../back.svelte";
   import type { Settings, SourceRow } from "../api";
   import { t } from "../i18n.svelte";
@@ -185,7 +186,7 @@
 
 {#if basic}
   <div class="pop-scrim" role="presentation" onclick={() => (basic = false)}></div>
-  <div class="pop">
+  <div class="pop" transition:pop={{ base: "translateX(-50%)" }}>
     <BasicSearch onquery={(text) => (query = text)} onclose={() => (basic = false)} />
   </div>
 {/if}
@@ -321,6 +322,5 @@
     background: var(--surface);
     border: 1px solid var(--border);
     box-shadow: var(--shadow);
-    animation: vp-pop var(--t-med) var(--ease);
   }
 </style>

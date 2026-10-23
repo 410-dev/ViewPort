@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fade, pop } from "./ui/motion";
   import { api } from "./api";
   import { onBack } from "./back.svelte";
   import { t } from "./i18n.svelte";
@@ -57,8 +58,8 @@
   const inside = (p: string) => exclude != null && (p === exclude || p.startsWith(`${exclude}/`));
 </script>
 
-<div class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
-  <div class="dialog mover" role="dialog" aria-modal="true" aria-labelledby="move-title">
+<div out:fade class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
+  <div out:pop class="dialog mover" role="dialog" aria-modal="true" aria-labelledby="move-title">
     <header>
       <h2 id="move-title">{title ?? t("move.title")}</h2>
       <button class="icon-btn" aria-label={t("common.close")} onclick={onclose}><Icon name="x" size={16} /></button>

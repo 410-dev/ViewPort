@@ -182,6 +182,24 @@ pub fn sync(app: &AppHandle, ws: &Arc<Workspace>, m: &MirrorRow) -> CmdResult<St
     sync_with(ws, &registry, m, &|s| crate::commands::scan_now(app, ws.clone(), s.clone()).map(|_| ()))
 }
 
+/// Folders (relative to `src`, ending in `/`) of `src` and `tgt` when they are shards
+/// kept inside `src`.
+fn own_shards(ws: &Workspace, registry: &vp_driver::DriverRegistry, src: &SourceRow, tgt: &SourceRow) -> Vec<String> {
+    let Some(root) = ws.driver(registry, src).ok().and_then(|d| d.local_path("")) else { return Vec::new() };
+    let root = std::fs::canonicalize(&root).unwrap_or(root);
+    [src, tgt]
+        .into_iter()
+        .filter(|s| s.driver == crate::shards::DRIVER)
+        .filter_map(|s| ws.shard_root(s).ok())
+        .filter_map(|dir| {
+            let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+            let rel = dir.strip_prefix(&root).ok()?;
+            let rel: Vec<String> = rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+            (!rel.is_empty()).then(|| format!("{}/", rel.join("/")))
+        })
+        .collect()
+}
+
 /// [`sync`], scanning sources with `scan`.
 fn sync_with(
     ws: &Arc<Workspace>,
@@ -207,7 +225,11 @@ fn sync_with(
 
     let cancel = Arc::new(AtomicBool::new(false));
     let task = tasks::begin_with_cancel("mirror", format!("{} → {}", src.name, tgt.name), Unit::Bytes, None, Some(cancel.clone()));
-    let present = ws.read_db.lock().unwrap().present_files(src.id)?;
+    // The source's and the target's own shard folders, when they lie inside the source,
+    // are never copied (the target would copy into itself). Other shards are just files.
+    let mut present = ws.read_db.lock().unwrap().present_files(src.id)?;
+    let skip = own_shards(ws, registry, &src, &tgt);
+    present.retain(|rel, _| !skip.iter().any(|d| rel.starts_with(d.as_str())));
     let tracked = ws.read_db.lock().unwrap().mirror_items(m.id)?;
 
     // Deletions: only copies the mirror made and nobody changed since.
@@ -384,6 +406,9 @@ mod tests {
         std::fs::write(phone.join("a.jpg"), b"aaa").unwrap();
         std::fs::write(phone.join("b.jpg"), b"bbb").unwrap();
         std::fs::write(phone.join("sub/c.jpg"), b"ccc").unwrap();
+        // Another shard kept in the source folder is copied like any file.
+        std::fs::create_dir_all(phone.join("Box.vpshard")).unwrap();
+        std::fs::write(phone.join("Box.vpshard/000001.chunk"), b"chunk").unwrap();
         let add = |name: &str, driver: &str, root: &str, config: serde_json::Value| {
             ws.write_db.lock().unwrap().add_source(&NewSource { name: name.into(), driver: driver.into(), config, root: root.into() }).unwrap()
         };
@@ -400,8 +425,9 @@ mod tests {
 
         // First sync copies everything.
         let s1 = sync_with(&ws, &registry, &m(), &do_scan).unwrap();
-        assert!(s1.starts_with("3 copied"), "{s1}");
+        assert!(s1.starts_with("4 copied"), "{s1}");
         assert_eq!(read("phone/sub/c.jpg").unwrap(), b"ccc");
+        assert_eq!(read("phone/Box.vpshard/000001.chunk").unwrap(), b"chunk");
 
         // Meanwhile another device puts files into the target.
         shard.put("phone/ext.jpg", b"theirs", None, None).unwrap();
@@ -441,5 +467,32 @@ mod tests {
         let _ = src;
         drop(shard);
         ws.close_shard(usb_id).unwrap();
+    }
+
+    #[test]
+    fn mirror_skips_the_target_shard_kept_in_the_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = Arc::new(Workspace::create(&dir.path().join("Lib.vpbun"), "Lib").unwrap());
+        let registry = DriverRegistry::with_builtin();
+        let photos = dir.path().join("photos");
+        std::fs::create_dir_all(&photos).unwrap();
+        std::fs::write(photos.join("a.jpg"), b"aaa").unwrap();
+        let inner = photos.join("backup.vpshard");
+        Shard::create(&inner, &CreateOptions { chunk_bytes: 1 << 20, ..Default::default() }).unwrap();
+        let add = |name: &str, driver: &str, root: &str| {
+            let config = serde_json::json!({});
+            ws.write_db.lock().unwrap().add_source(&NewSource { name: name.into(), driver: driver.into(), config, root: root.into() }).unwrap()
+        };
+        let src_id = add("photos", "local", &photos.display().to_string());
+        let tgt_id = add("backup", crate::shards::DRIVER, &inner.display().to_string());
+        let id = ws.write_db.lock().unwrap().save_mirror(None, src_id, tgt_id, "photos", true, true, 1).unwrap();
+        let m = ws.read_db.lock().unwrap().mirror(id).unwrap().unwrap();
+        let s = sync_with(&ws, &registry, &m, &|s| scan(&ws, &registry, s)).unwrap();
+        assert!(s.starts_with("1 copied"), "{s}");
+        let tgt = source(&ws, tgt_id).unwrap();
+        let shard = ws.shard(&tgt).unwrap();
+        assert!(shard.open_file("photos/a.jpg").is_ok());
+        drop(shard);
+        ws.close_shard(tgt_id).unwrap();
     }
 }

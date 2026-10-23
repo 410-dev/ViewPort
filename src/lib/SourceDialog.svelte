@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fade, pop } from "./ui/motion";
   import Select from "./ui/Select.svelte";
   import { onBack } from "./back.svelte";
   import { pickFolder as pickDir } from "./pick.svelte";
@@ -86,8 +87,8 @@
   $effect(() => onBack(onclose));
 </script>
 
-<div class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
-  <div class="dialog" role="dialog" aria-modal="true">
+<div out:fade class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
+  <div out:pop class="dialog" role="dialog" aria-modal="true">
     <header>
       <h2>{source ? t("src.edit") : t("src.add")}</h2>
       <button class="icon-btn" onclick={onclose} aria-label={t("common.close")}><Icon name="x" size={15} /></button>

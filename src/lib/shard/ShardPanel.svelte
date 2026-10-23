@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fade, pop } from "../ui/motion";
   import { ask } from "@tauri-apps/plugin-dialog";
   import { untrack } from "svelte";
   import { onBack } from "../back.svelte";
@@ -152,8 +153,8 @@
   $effect(() => onBack(onclose));
 </script>
 
-<div class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && !busy && onclose()}>
-  <div class="dialog" role="dialog" aria-modal="true">
+<div out:fade class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && !busy && onclose()}>
+  <div out:pop class="dialog" role="dialog" aria-modal="true">
     <header>
       <Icon name="archive" size={16} />
       <h2>{t("shard.manage")}</h2>

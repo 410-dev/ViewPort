@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { dismiss } from "./ui/dismiss";
+  import { fade, pop, slide } from "./ui/motion";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { onDestroy, onMount } from "svelte";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
@@ -498,6 +500,13 @@
   // `brief` lags behind `id` until it loads; a slid-in neighbour is already known.
   const zoomable = $derived((known.get(id)?.kind ?? (brief?.id === id ? brief.kind : null)) === "image" && !error);
   let stageEl = $state<HTMLDivElement | null>(null);
+  let dockEl = $state<HTMLDivElement | null>(null);
+
+  /** A press on a video's own control bar (seeking while the loop panel is open). */
+  function onVideoControls(e: PointerEvent) {
+    if (!video || e.target !== video || !video.controls) return false;
+    return e.clientY > video.getBoundingClientRect().bottom - 72;
+  }
   let stageW = $state(0);
   let stageH = $state(0);
   $effect(() => {
@@ -863,7 +872,7 @@
   {#if immersive.on}
     <!-- Immersive: no banners. -->
   {:else if brief && converting[brief.id]}
-    <div class="banner" role="status">
+    <div class="banner" role="status" transition:pop={{ base: "translateX(-50%)" }}>
       <span class="spinner"></span>
       <span>{t("viewer.converting")}</span>
       <span class="bar"><i style:width="{converting[brief.id].progress * 100}%"></i></span>
@@ -871,7 +880,7 @@
       <button class="btn sm" onclick={() => api.cancelConvert(brief!.id)}>{t("common.cancel")}</button>
     </div>
   {:else if showBanner && brief}
-    <div class="banner" role="alert" onpointerdown={(e) => e.stopPropagation()} onpointerup={(e) => e.stopPropagation()}>
+    <div class="banner" role="alert" transition:pop={{ base: "translateX(-50%)" }} onpointerdown={(e) => e.stopPropagation()} onpointerup={(e) => e.stopPropagation()}>
       {#if hasFfmpeg}
         <span>{t("viewer.mayNotPlay")}</span>
         <button class="btn sm primary" onclick={() => convert(brief!.id)}>{t("viewer.convert")}</button>
@@ -890,14 +899,19 @@
     {/key}
   {/if}
   {#if convertError && !immersive.on}
-    <div class="banner err" role="alert">
+    <div class="banner err" role="alert" transition:pop={{ base: "translateX(-50%)" }}>
       <span>{t("viewer.convertFailed")}: {convertError}</span>
       <button class="icon-btn sm" aria-label={t("common.close")} onclick={() => (convertError = null)}><Icon name="x" size={13} /></button>
     </div>
   {/if}
 
   {#if showLoops && brief?.kind === "video" && !immersive.on}
-    <div class="loops" role="presentation" onpointerdown={(e) => e.stopPropagation()} onpointerup={(e) => e.stopPropagation()}>
+    <div
+      class="loops"
+      role="presentation"
+      transition:pop
+      use:dismiss={{ onclose: () => (showLoops = false), keep: () => [dockEl], ignore: onVideoControls }}
+      onpointerdown={(e) => e.stopPropagation()} onpointerup={(e) => e.stopPropagation()}>
       <div class="loops-head">
         <strong>{t("viewer.loops")}</strong>
         {#if activeSeg}<button class="btn sm" onclick={() => playSegment(null)}>{t("viewer.stopLoop")}</button>{/if}
@@ -934,12 +948,13 @@
     <!-- Tapping beside the panel closes it, and never reaches the picture or the arrows. -->
     <div
       class="side-scrim"
+      transition:fade
       role="presentation"
       onpointerdown={(e) => e.stopPropagation()}
       onpointerup={(e) => e.stopPropagation()}
       onclick={() => (showInfo = false)}
     ></div>
-    <div class="side" role="presentation" onpointerdown={(e) => e.stopPropagation()} onpointerup={(e) => e.stopPropagation()}>
+    <div class="side" role="presentation" transition:slide={{ x: 24 }} onpointerdown={(e) => e.stopPropagation()} onpointerup={(e) => e.stopPropagation()}>
       <InfoPanel ids={[id]} {onchanged} />
     </div>
   {/if}
@@ -962,6 +977,7 @@
   <!-- Everything but "close" sits at the bottom, above a video's own control bar. -->
   <div
     class="dock"
+    bind:this={dockEl}
     class:visible={showHud}
     class:above-controls={brief?.kind === "video"}
     role="presentation"
@@ -1059,6 +1075,11 @@
     width: 100%;
     height: 100%;
     object-fit: contain;
+  }
+  /* No big play/pause button in the middle of a video: a tap shows the controls only. */
+  video::-webkit-media-controls-overlay-play-button,
+  video::-webkit-media-controls-start-playback-button {
+    display: none !important;
   }
   img {
     transform-origin: center;
@@ -1318,11 +1339,15 @@
     color: var(--fg-2);
     transition:
       background var(--t-fast) var(--ease),
-      color var(--t-fast) var(--ease);
+      color var(--t-fast) var(--ease),
+      transform var(--t-fast) var(--ease);
   }
   .hb:hover {
     background: var(--hover);
     color: #fff;
+  }
+  .hb:active {
+    transform: scale(0.9);
   }
   .hb.on {
     color: var(--accent);

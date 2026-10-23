@@ -90,7 +90,7 @@
           style:height="{rowPx}px"
           style:transform="translateY({r.slot * rowPx}px)"
           onpointerdown={(e) => selection.pointer(e)}
-          onclick={() => (selection.touch ? onfolder(f.path) : selection.selectFolder(f))}
+          onclick={(e) => selection.clickFolder(e, f, folders) || onfolder(f.path)}
           oncontextmenu={(e) => selection.holdFolder(e, f)}
           ondblclick={() => onfolder(f.path)}
           onkeydown={(e) => e.key === "Enter" && onfolder(f.path)}

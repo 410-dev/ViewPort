@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fade, pop } from "./ui/motion";
   import { onMount } from "svelte";
   import { api, onCopyConflict, onCopyConflictDone, type CopyConflict, type OnConflict } from "./api";
   import { onBack } from "./back.svelte";
@@ -43,8 +44,8 @@
 </script>
 
 {#if current}
-  <div class="scrim" role="presentation">
-    <div class="dialog conflict" role="dialog" aria-modal="true" aria-labelledby="conflict-title">
+  <div out:fade class="scrim" role="presentation">
+    <div out:pop class="dialog conflict" role="dialog" aria-modal="true" aria-labelledby="conflict-title">
       <header><h2 id="conflict-title">{t("conflict.title")}</h2></header>
       <div class="body">
         <p class="path" title={current.target}>{current.target}</p>

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { dismiss } from "../ui/dismiss";
+  import { pop } from "../ui/motion";
   import type { BundleSummary, SavedQuery, ScanEvent, ShardStatus, SourceRow } from "../api";
   import { t } from "../i18n.svelte";
   import Icon from "../ui/Icon.svelte";
@@ -71,6 +73,7 @@
   } = $props();
 
   let addMenu = $state(false);
+  let addBtn = $state<HTMLButtonElement | null>(null);
 </script>
 
 <nav class="side">
@@ -99,12 +102,18 @@
     <div class="group">
       <div class="ghead">
         <span class="eyebrow">{t("side.sources")}</span>
-        <button class="icon-btn sm" title={t("side.addSource")} onclick={() => (addMenu = !addMenu)} aria-expanded={addMenu}>
+        <button
+          class="icon-btn sm"
+          bind:this={addBtn}
+          title={t("side.addSource")}
+          onclick={() => (addMenu = !addMenu)}
+          aria-expanded={addMenu}
+        >
           <Icon name="plus" size={14} />
         </button>
       </div>
       {#if addMenu}
-        <div class="menu">
+        <div class="menu" transition:pop={{ y: -4 }} use:dismiss={{ onclose: () => (addMenu = false), keep: () => [addBtn] }}>
           <button
             class="item"
             onclick={() => {

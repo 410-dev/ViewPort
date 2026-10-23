@@ -159,8 +159,9 @@
           style:height="{rowPx}px"
           style:transform="translateY({slot * rowPx}px)"
           onpointerdown={(e) => selection.pointer(e)}
-          onclick={() => {
-            if (!r.source && !selection.touch) selection.selectFolder(ref);
+          onclick={(e) => {
+            // Touch: a tap opens the node, or, while folders are selected, toggles it.
+            if (!r.source && selection.clickFolder(e, ref) && selection.touch) return;
             toggle(r.src, r.path);
           }}
           oncontextmenu={(e) => !r.source && selection.holdFolder(e, ref)}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fade, pop } from "../ui/motion";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { api, asCmdError, type PackKind, type StoreItem } from "../api";
   import { onBack } from "../back.svelte";
@@ -64,8 +65,8 @@
   const open = (url: string) => openUrl(url).catch((e) => (error = asCmdError(e).message));
 </script>
 
-<div class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
-  <div class="dialog store" role="dialog" aria-modal="true" aria-labelledby="store-title">
+<div out:fade class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
+  <div out:pop class="dialog store" role="dialog" aria-modal="true" aria-labelledby="store-title">
     <header>
       <h2 id="store-title">{t("store.title")}</h2>
       <button class="icon-btn" aria-label={t("common.close")} onclick={onclose}><Icon name="x" size={16} /></button>

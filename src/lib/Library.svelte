@@ -5,6 +5,7 @@
 </script>
 
 <script lang="ts">
+  import { fade, pop, slide } from "./ui/motion";
   import { ask } from "@tauri-apps/plugin-dialog";
   import { pickFolder } from "./pick.svelte";
   import { onBack, PASS } from "./back.svelte";
@@ -636,6 +637,16 @@
     };
   }
 
+  /** Several folders selected: only what applies to all of them at once. */
+  const foldersMenuItems = $derived<MenuItem[]>([
+    { label: t("sel.info"), icon: "info", action: () => setPanel(true) },
+    { label: t("sel.export"), icon: "download", action: () => exportFolders([...selection.folders]) },
+    ...(hasShard
+      ? [{ label: t("sel.copyTo"), icon: "copy" as const, action: () => startCopy([], selection.folders.map((f) => ({ sourceId: f.sourceId, path: f.path }))) }]
+      : []),
+    { label: t("sel.delete"), icon: "trash", danger: true, action: () => (confirmFolderDelete = [...selection.folders]) },
+  ]);
+
   const folderMenuItems = $derived<MenuItem[]>([
     { label: t("folder.open"), icon: "folder", action: folderAction(openFolder) },
     { label: t("sel.goToFolder"), icon: "arrowUp", action: folderAction(revealFolder) },
@@ -655,22 +666,23 @@
     { label: t("sel.move"), icon: "folder", action: folderAction((f) => (moving = { ids: [], folder: f, sourceId: f.sourceId, start: parentOf(f.path) })) },
     { label: t("sel.export"), icon: "download", action: folderAction(exportFolder) },
     ...(hasShard ? [{ label: t("sel.copyTo"), icon: "copy" as const, action: folderAction((f) => startCopy([], [{ sourceId: f.sourceId, path: f.path }])) }] : []),
-    { label: t("sel.delete"), icon: "trash", danger: true, action: folderAction((f) => (confirmFolderDelete = f)) },
+    { label: t("sel.delete"), icon: "trash", danger: true, action: folderAction((f) => (confirmFolderDelete = [f])) },
   ]);
 
-  let confirmFolderDelete = $state<FolderRef | null>(null);
+  let confirmFolderDelete = $state<FolderRef[] | null>(null);
   $effect(() => {
     if (confirmFolderDelete) return onBack(() => (confirmFolderDelete = null));
   });
 
   async function deleteFolderConfirmed() {
-    const f = confirmFolderDelete;
-    if (!f) return;
+    const list = confirmFolderDelete;
+    if (!list) return;
     deleting = true;
     try {
-      const r = await api.deleteFolder(f.sourceId, f.path);
+      const failed: string[] = [];
+      for (const f of list) failed.push(...(await api.deleteFolder(f.sourceId, f.path)).failed);
       afterFolderChange();
-      if (r.failed.length) alert(`${t("del.failed", { n: r.failed.length })}\n\n${r.failed.slice(0, 5).join("\n")}`);
+      if (failed.length) alert(`${t("del.failed", { n: failed.length })}\n\n${failed.slice(0, 5).join("\n")}`);
     } catch (e) {
       alert(asCmdError(e).message);
     } finally {
@@ -695,8 +707,13 @@
   }
 
   async function exportFolder(f: FolderRef) {
+    return exportFolders([f]);
+  }
+
+  async function exportFolders(list: FolderRef[]) {
     const dest = await pickFolder(t("panel.exportTo"));
-    if (dest) api.exportFolder(f.sourceId, f.path, dest).catch((e) => alert(asCmdError(e).message));
+    if (!dest) return;
+    for (const f of list) api.exportFolder(f.sourceId, f.path, dest).catch((e) => alert(asCmdError(e).message));
   }
 
   async function deleteConfirmed() {
@@ -768,7 +785,7 @@
     if (compact && panelVisible) return onBack(() => setPanel(false));
   });
   $effect(() => {
-    if (compact && selection.set.size > 0) return onBack(() => selection.clear());
+    if (compact && (selection.set.size > 0 || selection.folders.length > 0)) return onBack(() => selection.clear());
   });
 </script>
 
@@ -783,7 +800,7 @@
     class:no-panel={!panelVisible}
   >
     {#if drawer}
-      <div class="drawer-scrim" role="presentation" onclick={() => (drawer = false)}></div>
+      <div class="drawer-scrim" role="presentation" transition:fade onclick={() => (drawer = false)}></div>
     {/if}
     <!-- In the drawer, picking anything in the sidebar closes it. -->
     <div
@@ -846,12 +863,19 @@
         onmenu={compact ? () => (drawer = true) : undefined}
       />
       {#if compact && selection.set.size > 0}
-        <div class="selbar">
+        <div class="selbar" transition:slide={{ y: -8 }}>
           <button class="icon-btn" aria-label={t("sel.clear")} onclick={() => selection.clear()}><Icon name="x" size={16} /></button>
           <span class="grow tabular">{t("sel.count", { n: selection.set.size })}</span>
           <button class="btn sm ghost" onclick={() => selection.selectAll(ids)}><Icon name="checkSquare" size={14} />{t("sel.all")}</button>
           <button class="btn sm primary" onclick={() => setPanel(true)}><Icon name="info" size={14} />{t("sel.info")}</button>
           <button class="btn sm danger" onclick={() => (confirmDelete = [...selection.set])}><Icon name="trash" size={14} />{t("sel.delete")}</button>
+        </div>
+      {:else if compact && selection.folders.length > 0}
+        <div class="selbar" transition:slide={{ y: -8 }}>
+          <button class="icon-btn" aria-label={t("sel.clear")} onclick={() => selection.clear()}><Icon name="x" size={16} /></button>
+          <span class="grow tabular">{t("sel.folders", { n: selection.folders.length })}</span>
+          <button class="btn sm primary" onclick={() => setPanel(true)}><Icon name="info" size={14} />{t("sel.info")}</button>
+          <button class="btn sm danger" onclick={() => (confirmFolderDelete = [...selection.folders])}><Icon name="trash" size={14} />{t("sel.delete")}</button>
         </div>
       {/if}
       {#if queryError}
@@ -899,13 +923,13 @@
         <RightPanel
           focus={selection.focus}
           selected={selectedIds}
-          folder={selection.folder}
+          folders={selection.folders}
           onopen={(id) => openViewer(id, ids.includes(id) ? ids : [id])}
           onopenwindow={isMobile ? undefined : (id) => openViewerWindow(id, ids.includes(id) ? ids : [id])}
           onclose={compact ? () => setPanel(false) : undefined}
           onchanged={() => {
             // Folder edits may have reached every item inside.
-            const changed = selection.folder ? undefined : selectedIds;
+            const changed = selection.folders.length ? undefined : selectedIds;
             invalidate(changed);
             broadcast("media", changed);
             runSearch(false);
@@ -929,8 +953,8 @@
 </div>
 
 {#if savingCurrent}
-  <div class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && (savingCurrent = null)}>
-    <div class="dialog confirm" role="dialog" aria-modal="true" aria-labelledby="savecur-title">
+  <div out:fade class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && (savingCurrent = null)}>
+    <div out:pop class="dialog confirm" role="dialog" aria-modal="true" aria-labelledby="savecur-title">
       <header><h2 id="savecur-title">{t("side.saveCurrent.title")}</h2></header>
       <div class="body form">
         <p class="query-text">{currentText}</p>
@@ -969,8 +993,13 @@
   />
 {/if}
 
-{#if selection.folderMenu && selection.folder}
-  <ContextMenu x={selection.folderMenu.x} y={selection.folderMenu.y} items={folderMenuItems} onclose={() => (selection.folderMenu = null)} />
+{#if selection.folderMenu && selection.folders.length}
+  <ContextMenu
+    x={selection.folderMenu.x}
+    y={selection.folderMenu.y}
+    items={selection.folder ? folderMenuItems : foldersMenuItems}
+    onclose={() => (selection.folderMenu = null)}
+  />
 {/if}
 
 {#if selection.menu && selection.set.size > 0}
@@ -978,8 +1007,8 @@
 {/if}
 
 {#if renaming}
-  <div class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && (renaming = null)}>
-    <div class="dialog confirm" role="dialog" aria-modal="true" aria-labelledby="ren-title">
+  <div out:fade class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && (renaming = null)}>
+    <div out:pop class="dialog confirm" role="dialog" aria-modal="true" aria-labelledby="ren-title">
       <header><h2 id="ren-title">{t("rename.title")}</h2></header>
       <div class="body form">
         <!-- svelte-ignore a11y_autofocus -->
@@ -1029,8 +1058,8 @@
 {/if}
 
 {#if confirmDelete}
-  <div class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && !deleting && (confirmDelete = null)}>
-    <div class="dialog confirm" role="alertdialog" aria-modal="true" aria-labelledby="del-title">
+  <div out:fade class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && !deleting && (confirmDelete = null)}>
+    <div out:pop class="dialog confirm" role="alertdialog" aria-modal="true" aria-labelledby="del-title">
       <header><h2 id="del-title">{t("del.title")}</h2></header>
       <div class="body"><p class="text">{t("del.body", { n: confirmDelete.length.toLocaleString() })}</p></div>
       <footer>
@@ -1045,11 +1074,14 @@
 {/if}
 
 {#if confirmFolderDelete}
-  {@const f = confirmFolderDelete}
-  <div class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && !deleting && (confirmFolderDelete = null)}>
-    <div class="dialog confirm" role="alertdialog" aria-modal="true" aria-labelledby="fdel-title">
+  {@const list = confirmFolderDelete}
+  {@const n = list.reduce((a, f) => a + f.count, 0).toLocaleString()}
+  <div out:fade class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && !deleting && (confirmFolderDelete = null)}>
+    <div out:pop class="dialog confirm" role="alertdialog" aria-modal="true" aria-labelledby="fdel-title">
       <header><h2 id="fdel-title">{t("folder.delTitle")}</h2></header>
-      <div class="body"><p class="text">{t("folder.delBody", { name: baseName(f.path), n: f.count.toLocaleString() })}</p></div>
+      <div class="body"><p class="text">
+          {list.length === 1 ? t("folder.delBody", { name: baseName(list[0].path), n }) : t("folder.delBodyMany", { folders: list.length, n })}
+        </p></div>
       <footer>
         <span class="grow"></span>
         <button class="btn ghost" disabled={deleting} onclick={() => (confirmFolderDelete = null)}>{t("common.cancel")}</button>

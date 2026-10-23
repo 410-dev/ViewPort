@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fade, pop } from "../ui/motion";
   import { onBack } from "../back.svelte";
   import { pickFile, pickFolder } from "../pick.svelte";
   import { api, type BundleSummary, type ShardPeek, type ShardPlace, type SourceRow, type TransferMode } from "../api";
@@ -111,8 +112,8 @@
   $effect(() => onBack(onclose));
 </script>
 
-<div class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && !busy && onclose()}>
-  <div class="dialog" role="dialog" aria-modal="true">
+<div out:fade class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && !busy && onclose()}>
+  <div out:pop class="dialog" role="dialog" aria-modal="true">
     <header>
       <h2>{t("shard.titleAdd")}</h2>
       <button class="icon-btn" onclick={onclose} aria-label={t("common.close")}><Icon name="x" size={15} /></button>

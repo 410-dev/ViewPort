@@ -12,16 +12,21 @@
 
   /**
    * Metadata and editable extension fields (tags, rating, memo, custom) of the selection,
-   * or of a folder. A folder field can be applied to everything inside as well (per field
-   * toggle): one by one, merging multi-valued fields and replacing single values.
+   * or of selected folders. A folder field can be applied to everything inside as well
+   * (per field toggle): one by one, merging multi-valued fields and replacing single
+   * values. Turning the toggle on applies what the folders already have.
    * `compact` hides the file name (the preview above already shows it).
    */
   let {
     ids,
-    folder = null,
+    folders = [],
     onchanged,
     compact = false,
-  }: { ids: number[]; folder?: FolderRef | null; onchanged?: () => void; compact?: boolean } = $props();
+  }: { ids: number[]; folders?: FolderRef[]; onchanged?: () => void; compact?: boolean } = $props();
+
+  /** The one folder shown, when exactly one is selected. */
+  const folder = $derived(folders.length === 1 ? folders[0] : null);
+  const ofFolders = $derived(folders.length > 0);
 
   let fields = $state<FieldInfo[]>([]);
   let detail = $state<MediaDetail | null>(null);
@@ -31,8 +36,8 @@
   /** Fields whose folder edits also apply to everything inside. */
   let deep = $state<Record<string, boolean>>({});
   /** One target shows its values: a folder or a single item. */
-  const one = $derived(folder !== null || ids.length === 1);
-  const many = $derived(folder === null && ids.length > 1);
+  const one = $derived(ofFolders ? folder !== null : ids.length === 1);
+  const many = $derived(ofFolders ? folders.length > 1 : ids.length > 1);
 
   const fieldName = (f: FieldInfo) => f.names.find(([l]) => l === i18n.locale)?.[1] ?? f.names[0]?.[1] ?? f.key;
 
@@ -86,24 +91,45 @@
     try {
       const n = await f();
       await reload();
-      if (folder && typeof n === "number" && n > 0) notice = t("info.appliedInside", { n: n.toLocaleString() });
+      if (ofFolders && typeof n === "number" && n > 0) notice = t("info.appliedInside", { n: n.toLocaleString() });
     } catch (e) {
       error = asCmdError(e).message;
     }
   }
 
-  // Edits go to the selected items, or to the folder (and, per field, everything inside).
+  /** Applies `edit` to every selected folder; returns the items changed inside. */
+  async function editFolders(key: string, edit: Parameters<typeof api.editFolderValues>[3], recursive = !!deep[key]) {
+    let n = 0;
+    for (const f of folders) n += await api.editFolderValues(f.sourceId, f.path, key, edit, recursive);
+    return n;
+  }
+
+  // Edits go to the selected items, or to the folders (and, per field, everything inside).
   function setVals(key: string, vals: ExtValue[]) {
-    if (folder) return api.editFolderValues(folder.sourceId, folder.path, key, { op: "set", value: vals }, !!deep[key]);
+    if (ofFolders) return editFolders(key, { op: "set", value: vals });
     return api.setValues(ids, key, vals);
   }
   function addVal(key: string, v: ExtValue) {
-    if (folder) return api.editFolderValues(folder.sourceId, folder.path, key, { op: "add", value: v }, !!deep[key]);
+    if (ofFolders) return editFolders(key, { op: "add", value: v });
     return api.addValue(ids, key, v);
   }
   function removeVal(key: string, v: ExtValue) {
-    if (folder) return api.editFolderValues(folder.sourceId, folder.path, key, { op: "remove", value: v }, !!deep[key]);
+    if (ofFolders) return editFolders(key, { op: "remove", value: v });
     return api.removeValue(ids, key, v);
+  }
+
+  /** Turning "inside too" on also applies the values the folders already have. */
+  function toggleDeep(key: string) {
+    deep[key] = !deep[key];
+    if (!deep[key]) return;
+    run(async () => {
+      let n = 0;
+      for (const f of folders) {
+        const vals = (await api.folderValues(f.sourceId, f.path))[key] ?? [];
+        if (vals.length) n += await api.editFolderValues(f.sourceId, f.path, key, { op: "set", value: vals }, true);
+      }
+      return n;
+    });
   }
 
   const values = (key: string): ExtValue[] => (folder ? folderVals?.[key] : detail?.values[key]) ?? [];
@@ -163,7 +189,7 @@
 </script>
 
 <div class="info">
-  {#if ids.length === 0 && !folder}
+  {#if ids.length === 0 && !ofFolders}
     <p class="muted center">{t("panel.nothing")}</p>
   {:else}
     {#if folder}
@@ -176,6 +202,15 @@
           <dd class="tabular">{folder.count.toLocaleString()}</dd>
         </dl>
         <p class="muted small hint">{t("info.folderHint")}</p>
+      </section>
+    {:else if ofFolders}
+      <section class="facts">
+        <h3 class="title"><Icon name="folder" size={14} /> {t("sel.folders", { n: folders.length })}</h3>
+        <dl>
+          <dt>{t("info.items")}</dt>
+          <dd class="tabular">{folders.reduce((a, f) => a + f.count, 0).toLocaleString()}</dd>
+        </dl>
+        <p class="muted small hint">{t("info.multiHint")}</p>
       </section>
     {:else if ids.length === 1 && detail}
       <section class="facts">
@@ -212,13 +247,13 @@
           <div class="label">
             <span>{fieldName(f)}</span>
             <span class="grow"></span>
-            {#if folder}
+            {#if ofFolders}
               <button
                 class="deep"
                 class:on={deep[f.key]}
                 aria-pressed={!!deep[f.key]}
                 title={t(f.ty.type === "enum" ? "info.deepMerge" : "info.deepReplace")}
-                onclick={() => (deep[f.key] = !deep[f.key])}><Icon name="layers" size={11} />{t("info.deep")}</button
+                onclick={() => toggleDeep(f.key)}><Icon name="layers" size={11} />{t("info.deep")}</button
               >
             {/if}
             {#if !f.builtin}
@@ -245,7 +280,7 @@
               onenter={() => addTag(f.key)}
             />
             {#if many && (tagInput[f.key] ?? "").trim()}
-              <button class="btn sm ghost" onclick={() => run(() => api.removeValue(ids, f.key, tagInput[f.key].trim()))}
+              <button class="btn sm ghost" onclick={() => run(() => removeVal(f.key, tagInput[f.key].trim()))}
                 >{t("info.removeFromAll")}</button
               >
             {/if}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fade, pop } from "./motion";
   import { onMount } from "svelte";
   import { asCmdError, platformApi, type DirListing, type StorageRoot, type SystemPick } from "../api";
   import { onBack } from "../back.svelte";
@@ -139,8 +140,8 @@
   });
 </script>
 
-<div class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && done(null)}>
-  <div class="dialog picker" role="dialog" aria-modal="true" aria-label={title}>
+<div out:fade class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && done(null)}>
+  <div out:pop class="dialog picker" role="dialog" aria-modal="true" aria-label={title}>
     <header>
       <h2>{title}</h2>
       <button class="icon-btn" aria-label={t("common.close")} onclick={() => done(null)}><Icon name="x" size={16} /></button>

@@ -9,7 +9,7 @@
   let {
     focus,
     selected,
-    folder = null,
+    folders = [],
     onopen,
     onopenwindow,
     onchanged,
@@ -17,8 +17,8 @@
   }: {
     focus: number | null;
     selected: number[];
-    /** A selected folder: its fields are shown instead of items. */
-    folder?: FolderRef | null;
+    /** Selected folders: their fields are shown instead of items. */
+    folders?: FolderRef[];
     onopen: (id: number) => void;
     onopenwindow?: (id: number) => void;
     onchanged: () => void;
@@ -73,8 +73,8 @@
     {/if}
   </header>
   <div class="body" bind:this={body}>
-    {#if folder}
-      <InfoPanel ids={[]} {folder} {onchanged} />
+    {#if folders.length}
+      <InfoPanel ids={[]} {folders} {onchanged} />
     {:else if ui().panel_mode === "preview"}
       <Preview id={current} {selected} {onopen} {onopenwindow} />
     {:else if ui().panel_mode === "info"}
