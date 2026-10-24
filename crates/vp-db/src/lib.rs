@@ -1,6 +1,7 @@
 //! ViewPort library database (SQLite).
 
 pub mod collation;
+pub mod dedup;
 pub mod face_sync;
 pub mod faces;
 pub mod mirror;

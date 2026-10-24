@@ -28,6 +28,73 @@ export interface SourceRow {
   enabled: boolean;
 }
 
+/** A file in a duplicate group (`src-tauri/src/dedup.rs`). */
+export interface DupItem {
+  media_id: number;
+  source_id: number;
+  rel_path: string;
+  size: number;
+  created_ms: number | null;
+  modified_ms: number | null;
+  added_ms: number;
+  /** Stored-data id of a shard item: the same for items that already share their data. */
+  body: string | null;
+  /** From a saved report: "deleted", "linked", or "gone" (no longer in the library). */
+  action: string;
+}
+
+export interface DupGroup {
+  sha256: string;
+  size: number;
+  items: DupItem[];
+}
+
+export interface DupScan {
+  groups: DupGroup[];
+  checked: number;
+  read_bytes: number;
+  failed: string[];
+  elapsed_ms: number;
+}
+
+export interface DupScope {
+  sources: number[];
+  across: boolean;
+}
+
+export interface DupApplyGroup {
+  items: number[];
+  delete: number[];
+  link: number[];
+}
+
+export interface DupApplyReport {
+  deleted: number;
+  linked: number;
+  freed: number;
+  failed: string[];
+}
+
+export interface DupReportRow {
+  id: number;
+  created_ms: number;
+  label: string;
+  scope: DupScope;
+  groups: number;
+  files: number;
+  wasted: number;
+}
+
+export interface DupEntry {
+  grp: number;
+  media_id: number | null;
+  source_id: number;
+  rel_path: string;
+  size: number;
+  sha256: string;
+  action: string;
+}
+
 export interface MediaBrief {
   id: number;
   name: string;
@@ -621,6 +688,13 @@ export const api = {
     invoke<number>("mirror_save", { id, sourceId, targetId, targetFolder, enabled, propagateDeletes }),
   mirrorDelete: (id: number) => invoke<void>("mirror_delete", { id }),
   mirrorSync: (id: number) => invoke<void>("mirror_sync", { id }),
+  dupScan: (sources: number[], across: boolean) => invoke<DupScan>("dup_scan", { sources, across }),
+  dupApply: (groups: DupApplyGroup[]) => invoke<DupApplyReport>("dup_apply", { groups }),
+  dupSaveReport: (label: string, scope: DupScope, entries: DupEntry[]) => invoke<number>("dup_save_report", { label, scope, entries }),
+  dupReports: () => invoke<DupReportRow[]>("dup_reports"),
+  dupReport: (id: number) => invoke<{ report: DupReportRow; groups: DupGroup[] } | null>("dup_report", { id }),
+  dupRenameReport: (id: number, label: string) => invoke<void>("dup_rename_report", { id, label }),
+  dupDeleteReport: (id: number) => invoke<void>("dup_delete_report", { id }),
   unlockShard: (sourceId: number, password: string, keyfile: string | null, remember: boolean) =>
     invoke<void>("unlock_shard", { sourceId, password, keyfile, remember }),
   lockShard: (sourceId: number) => invoke<void>("lock_shard", { sourceId }),

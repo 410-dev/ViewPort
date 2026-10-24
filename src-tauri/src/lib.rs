@@ -2,6 +2,7 @@ mod applog;
 mod archive;
 mod audio;
 mod commands;
+mod dedup;
 mod error;
 mod heif;
 mod media;
@@ -158,6 +159,13 @@ pub fn run() {
             shards::shard_set_embeddings,
             shards::face_embedding_bytes,
             mirror::mirror_list,
+            dedup::dup_scan,
+            dedup::dup_apply,
+            dedup::dup_save_report,
+            dedup::dup_reports,
+            dedup::dup_report,
+            dedup::dup_rename_report,
+            dedup::dup_delete_report,
             mirror::mirror_save,
             mirror::mirror_delete,
             mirror::mirror_sync,

@@ -204,6 +204,7 @@ impl<'a> ItemWriter<'a> {
             sha256: sha,
             parts: std::mem::take(&mut self.parts),
             attrs: Default::default(),
+            body: None,
         };
         {
             let mut ix = self.shard.index.write().unwrap();

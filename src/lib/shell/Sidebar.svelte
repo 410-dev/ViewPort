@@ -31,6 +31,7 @@
     ondeletesaved,
     onsavecurrent,
     onpeople,
+    ondedup,
     onsettings,
     onclose,
     onsave,
@@ -67,6 +68,8 @@
     onsavecurrent: () => void;
     /** Opens the people view (image analysis). */
     onpeople?: () => void;
+    /** Opens the duplicate finder. */
+    ondedup?: () => void;
     onsettings: () => void;
     onclose: () => void;
     onsave: () => void;
@@ -96,6 +99,9 @@
       </button>
       {#if onpeople}
         <button class="item" onclick={onpeople}><Icon name="users" size={15} /><span class="label">{t("side.people")}</span></button>
+      {/if}
+      {#if ondedup}
+        <button class="item" onclick={ondedup}><Icon name="layers" size={15} /><span class="label">{t("side.dedup")}</span></button>
       {/if}
     </div>
 

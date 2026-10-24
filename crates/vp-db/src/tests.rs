@@ -789,3 +789,52 @@ fn mirrors_track_what_they_copied() {
     lib.db.delete_mirror(id).unwrap();
     assert!(lib.db.mirrors().unwrap().is_empty());
 }
+
+#[test]
+fn duplicate_candidates_hashes_and_reports() {
+    let lib = library();
+    let db = &lib.db;
+    let sources: Vec<i64> = db.sources().unwrap().iter().map(|s| s.id).collect();
+    // All five items have the same size: one group across sources, 3 + 2 within.
+    assert_eq!(db.dup_candidates(&sources, true).unwrap().len(), 5);
+    assert_eq!(db.dup_candidates(&sources[..1], false).unwrap().len(), 3);
+    let one = db.dup_candidates(&sources, false).unwrap();
+    let solo = one[0].media_id;
+    db.conn().execute("UPDATE media SET size = 7 WHERE id = ?1", [solo]).unwrap();
+    assert_eq!(db.dup_candidates(&sources, false).unwrap().len(), 4, "a size of its own is no candidate");
+
+    let row = dedup::HashRow { media_id: solo, size: 7, modified_ms: None, partial_len: Some(4), partial: Some(vec![1]), sha256: Some(vec![9; 32]) };
+    db.store_hashes(std::slice::from_ref(&row)).unwrap();
+    db.store_hashes(&[dedup::HashRow { media_id: 9999, ..row.clone() }]).unwrap();
+    let cached = db.cached_hashes(&[solo, 9999]).unwrap();
+    assert_eq!(cached.len(), 1);
+    assert_eq!(cached[&solo], row);
+
+    let entry = |grp: u32, media_id: i64| dedup::DupEntry {
+        grp,
+        media_id: Some(media_id),
+        source_id: sources[0],
+        rel_path: format!("{media_id}.jpg"),
+        size: 100,
+        sha256: "ab".repeat(32),
+        action: String::new(),
+    };
+    let ids: Vec<i64> = one.iter().map(|c| c.media_id).collect();
+    let report = db
+        .save_dup_report("first", &serde_json::json!({"across": true}), &[entry(0, ids[0]), entry(0, ids[1]), entry(0, ids[2]), entry(1, ids[3]), entry(1, 424242)], 5)
+        .unwrap();
+    let (row, entries) = db.dup_report(report).unwrap().unwrap();
+    assert_eq!((row.groups, row.files, row.wasted), (2, 5, 300));
+    assert_eq!(entries[4].media_id, None, "unknown items are kept without an id");
+    assert_eq!(entries[0].sha256, "ab".repeat(32));
+
+    assert_eq!(db.dup_items(&[ids[1], 424242]).unwrap().len(), 1);
+    db.delete_media(ids[1]).unwrap();
+    db.mark_dup_entries(&[(sources[0], format!("{}.jpg", ids[1]))], "deleted").unwrap();
+    let (_, entries) = db.dup_report(report).unwrap().unwrap();
+    assert_eq!((entries[1].media_id, entries[1].action.as_str()), (None, "deleted"));
+    db.rename_dup_report(report, "renamed").unwrap();
+    assert_eq!(db.dup_reports().unwrap()[0].label, "renamed");
+    db.delete_dup_report(report).unwrap();
+    assert!(db.dup_reports().unwrap().is_empty());
+}

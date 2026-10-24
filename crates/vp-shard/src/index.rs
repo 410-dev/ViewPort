@@ -5,13 +5,16 @@
 //! by replaying every chunk. Replay orders changes by their sequence number, so the latest
 //! write, delete or move of a path wins no matter where its record ended up after
 //! compaction.
+//!
+//! Several files may share one stored body (deduplication, [`crate::format::LinkMeta`]):
+//! each keeps its own id, and the body's records stay live while any file refers to it.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Bound;
 
 use serde::{Deserialize, Serialize};
 
-use crate::format::{Digest, Id, Meta, PartMeta, Stream};
+use crate::format::{Digest, Id, LinkMeta, Meta, PartMeta, Stream};
 
 /// Location of one stored part.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -44,6 +47,16 @@ pub struct Item {
     pub parts: Vec<Part>,
     #[serde(default)]
     pub attrs: serde_json::Map<String, serde_json::Value>,
+    /// Id of the stored data this file shares with others, when it is not its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<Id>,
+}
+
+impl Item {
+    /// Id the item's data was written under: its own, or the body it links to.
+    pub fn body_id(&self) -> Id {
+        self.body.unwrap_or(self.id)
+    }
 }
 
 /// A delete or move record, kept so compaction can carry it over: without it a rebuilt
@@ -90,6 +103,9 @@ pub struct Index {
     pub next_chunk: [u32; 3],
     #[serde(default)]
     pub next_seq: u64,
+    /// How many files refer to each stored body (rebuilt on load).
+    #[serde(skip)]
+    pub refs: HashMap<Id, u32>,
 }
 
 /// A record found while scanning a chunk.
@@ -124,6 +140,22 @@ enum Event {
     Tomb(Tomb),
 }
 
+/// What a link record turns into: the linked file with the body's data.
+fn linked_item(l: &LinkMeta, body: &Item) -> Item {
+    Item {
+        id: l.id,
+        seq: l.seq,
+        nonce: body.nonce,
+        size: body.size,
+        created_ms: l.created_ms,
+        modified_ms: l.modified_ms,
+        sha256: body.sha256,
+        parts: body.parts.clone(),
+        attrs: Default::default(),
+        body: (l.id != l.body).then_some(l.body),
+    }
+}
+
 impl Index {
     pub fn blobs(&self, stream: Stream) -> &HashMap<Id, Item> {
         match stream {
@@ -156,6 +188,58 @@ impl Index {
         }
     }
 
+    /// Counts the files referring to each body; called after loading a snapshot.
+    pub fn rebuild_refs(&mut self) {
+        let mut refs = HashMap::new();
+        for f in self.files.values() {
+            *refs.entry(f.body_id()).or_insert(0) += 1;
+        }
+        self.refs = refs;
+    }
+
+    /// A file now refers to its body; the body's records become live with the first.
+    fn acquire(&mut self, item: &Item) {
+        let n = self.refs.entry(item.body_id()).or_insert(0);
+        *n += 1;
+        if *n == 1 {
+            self.add_item_live(Stream::Data, item);
+        }
+    }
+
+    /// A file stopped referring to its body; the body is garbage after the last one.
+    fn release(&mut self, item: &Item, drop_blobs: bool) {
+        let body = item.body_id();
+        if let Some(n) = self.refs.get_mut(&body) {
+            *n -= 1;
+            if *n == 0 {
+                self.refs.remove(&body);
+                self.sub_item_live(Stream::Data, item);
+            }
+        }
+        if drop_blobs {
+            self.drop_blobs_of(item.id);
+        }
+    }
+
+    /// Paths of the files whose data is `body`.
+    pub fn holders(&self, body: Id, hint: &str) -> Vec<String> {
+        if self.refs.get(&body).copied().unwrap_or(0) <= 1 && self.files.get(hint).is_some_and(|f| f.body_id() == body) {
+            return vec![hint.to_string()];
+        }
+        self.files.iter().filter(|(_, f)| f.body_id() == body).map(|(p, _)| p.clone()).collect()
+    }
+
+    /// A file holding `body` (preferring `hint`), to copy its data locations from.
+    pub fn find_body(&self, body: Id, hint: &str) -> Option<&Item> {
+        if let Some(f) = self.files.get(hint).filter(|f| f.body_id() == body) {
+            return Some(f);
+        }
+        if !self.refs.contains_key(&body) {
+            return None;
+        }
+        self.files.values().find(|f| f.body_id() == body)
+    }
+
     fn add_item_live(&mut self, stream: Stream, item: &Item) {
         for p in &item.parts {
             self.add_live(stream, p.chunk, p.rec_len);
@@ -178,8 +262,7 @@ impl Index {
     /// Removes a file together with its thumbnail and converted copy.
     pub fn remove_file(&mut self, path: &str) -> Option<Item> {
         let item = self.files.remove(path)?;
-        self.sub_item_live(Stream::Data, &item);
-        self.drop_blobs_of(item.id);
+        self.release(&item, true);
         Some(item)
     }
 
@@ -198,17 +281,12 @@ impl Index {
             if old.seq > item.seq {
                 return false;
             }
-            if old.id == item.id {
-                // The same item seen again (a copy made by compaction): keep the newest locations.
-                let old = self.files.remove(path).unwrap();
-                self.sub_item_live(Stream::Data, &old);
-                self.add_item_live(Stream::Data, &item);
-                self.files.insert(path.to_string(), item);
-                return true;
-            }
-            self.remove_file(path);
+            // The same item seen again (a copy made by compaction, or now linked to shared
+            // data) keeps its thumbnail and converted copy.
+            let old = self.files.remove(path).unwrap();
+            self.release(&old, old.id != item.id);
         }
-        self.add_item_live(Stream::Data, &item);
+        self.acquire(&item);
         self.files.insert(path.to_string(), item);
         true
     }
@@ -226,9 +304,17 @@ impl Index {
         true
     }
 
-    /// Applies a delete or move record and remembers it for compaction.
-    pub fn apply_tomb(&mut self, tomb: Tomb) {
+    /// Applies a delete, move or link record and remembers it for compaction. `pool` has
+    /// bodies found while replaying, for links whose data no file holds yet.
+    pub fn apply_tomb(&mut self, tomb: Tomb, pool: Option<&HashMap<Id, Item>>) {
         match &tomb.meta {
+            Meta::Link(l) => {
+                let blocked = self.files.get(&l.path).is_some_and(|f| f.seq > l.seq);
+                let body = self.find_body(l.body, &l.from).or_else(|| pool.and_then(|p| p.get(&l.body)));
+                if let Some(item) = body.map(|b| linked_item(l, b)).filter(|_| !blocked) {
+                    self.install_file(&l.path, item);
+                }
+            }
             Meta::Delete { seq, path } => {
                 if self.files.get(path).is_some_and(|f| f.seq < *seq) {
                     self.remove_file(path);
@@ -240,10 +326,8 @@ impl Index {
                 if movable && !blocked {
                     let mut item = self.files.remove(from).unwrap();
                     item.seq = *seq;
-                    if let Some(old) = self.files.get(to)
-                        && old.id != item.id
-                    {
-                        self.remove_file(to);
+                    if let Some(old) = self.files.remove(to) {
+                        self.release(&old, old.id != item.id);
                     }
                     self.files.insert(to.clone(), item);
                 }
@@ -255,21 +339,27 @@ impl Index {
         self.tombs.push(tomb);
     }
 
-    /// Finds an existing item by id: by the path or owner its record names, falling back
-    /// to a full search (it may have moved since the record was written).
-    fn locate(&mut self, stream: Stream, meta: &PartMeta) -> Option<&mut Item> {
+    /// Points the existing items a part record belongs to at that record (a copy made by
+    /// compaction). Data parts are found by body: through the path the record names,
+    /// else by a full search (the files may have moved or share the data). Returns the
+    /// part's previous location, or `None` if no item has it.
+    fn relocate_part(&mut self, stream: Stream, meta: &PartMeta, part: &Part) -> Option<Part> {
+        let idx = meta.part as usize;
         match stream {
             Stream::Data => {
-                let key = if self.files.get(&meta.path).is_some_and(|f| f.id == meta.id) {
-                    Some(meta.path.clone())
-                } else {
-                    self.files.iter().find(|(_, f)| f.id == meta.id).map(|(k, _)| k.clone())
-                };
-                key.and_then(move |k| self.files.get_mut(&k))
+                let keys = if self.refs.contains_key(&meta.id) { self.holders(meta.id, &meta.path) } else { Vec::new() };
+                let mut old = None;
+                for k in keys {
+                    if let Some(p) = self.files.get_mut(&k).and_then(|f| f.parts.get_mut(idx)) {
+                        old = Some(std::mem::replace(p, part.clone()));
+                    }
+                }
+                old
             }
             s => {
                 let owner = meta.owner?;
-                self.blobs_mut(s).get_mut(&owner).filter(|b| b.id == meta.id)
+                let item = self.blobs_mut(s).get_mut(&owner).filter(|b| b.id == meta.id)?;
+                item.parts.get_mut(idx).map(|p| std::mem::replace(p, part.clone()))
             }
         }
     }
@@ -282,23 +372,14 @@ impl Index {
         }
         let mut groups: HashMap<Id, Group> = HashMap::new();
         let mut events: Vec<(u64, Event)> = Vec::new();
+        let mut pool: HashMap<Id, Item> = HashMap::new();
         for f in found {
             match &f.meta {
                 Meta::Part(p) => {
                     let part = f.part(p);
                     self.next_seq = self.next_seq.max(p.seq + 1);
                     // A copy of a part of a known item (compaction): point at the new place.
-                    let moved = match self.locate(f.stream, p) {
-                        Some(item) => {
-                            let old = item.parts.get(p.part as usize).cloned();
-                            if old.is_some() {
-                                item.parts[p.part as usize] = part.clone();
-                            }
-                            old
-                        }
-                        None => None,
-                    };
-                    if let Some(old) = moved {
+                    if let Some(old) = self.relocate_part(f.stream, p, &part) {
                         self.sub_live(f.stream, old.chunk, old.rec_len);
                         self.add_live(f.stream, part.chunk, part.rec_len);
                         continue;
@@ -309,7 +390,7 @@ impl Index {
                         .parts
                         .insert(p.part, (part, p.clone()));
                 }
-                Meta::Delete { .. } | Meta::Move { .. } => events.push((
+                Meta::Delete { .. } | Meta::Move { .. } | Meta::Link(_) => events.push((
                     f.meta.seq(),
                     Event::Tomb(Tomb { chunk: f.chunk, rec: f.rec, rec_len: f.rec_len, meta: f.meta.clone() }),
                 )),
@@ -334,9 +415,18 @@ impl Index {
                 sha256: last.sha256,
                 parts: g.parts.into_values().map(|(p, _)| p).collect(),
                 attrs: last.attrs.clone(),
+                body: None,
             };
             let event = match g.stream {
-                Stream::Data => Event::File(first.path.clone(), item),
+                // Data no file holds as its own any more, kept only for the links to it.
+                Stream::Data if first.path.is_empty() => {
+                    pool.insert(id, item);
+                    continue;
+                }
+                Stream::Data => {
+                    pool.insert(id, item.clone());
+                    Event::File(first.path.clone(), item)
+                }
                 s => match first.owner {
                     Some(owner) => Event::Blob(s, owner, item),
                     None => continue,
@@ -353,7 +443,8 @@ impl Index {
                 Event::Blob(s, owner, item) => {
                     self.install_blob(s, owner, item);
                 }
-                Event::Tomb(t) => self.apply_tomb(t),
+                Event::Tomb(t) => self.apply_tomb(t, Some(&pool)),
+
             }
         }
         self.prune_orphans();

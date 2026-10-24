@@ -21,6 +21,10 @@
 //! derived key in `info.json`) seals every record's metadata and the body in fixed-size
 //! segments (XChaCha20-Poly1305), so any byte range is readable without decrypting the
 //! rest and names, sizes and times are hidden.
+//!
+//! Files with the same contents can share one stored copy ([`Shard::link`]): a link
+//! record points a file at another file's data, and writing either file later replaces
+//! only that one (copy-on-write). Shards with links are format v2.
 
 mod format;
 mod index;
@@ -30,7 +34,7 @@ mod writer;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -42,8 +46,8 @@ use vp_crypto::{BundleKey, CryptoError, KdfParams, SegmentCipher, TAG_LEN};
 
 pub use format::{Digest, Hex, Id, Stream, normalize_path};
 use format::{
-    CHUNK_HEADER_LEN, META_RESERVE, Meta, PartMeta, RECORD_HEADER_LEN, RecordHeader, check_chunk_header, chunk_header,
-    chunk_name, index_label, meta_label, parse_chunk_name,
+    CHUNK_HEADER_LEN, LinkMeta, META_RESERVE, Meta, PartMeta, RECORD_HEADER_LEN, RecordHeader, check_chunk_header,
+    chunk_header, chunk_name, index_label, meta_label, parse_chunk_name,
 };
 pub use index::Item;
 use index::{ChunkStat, Found, Index, Part, Tomb};
@@ -56,7 +60,11 @@ pub const EXTENSION: &str = "vpshard";
 pub const INFO_FILE: &str = "info.json";
 pub const INDEX_FILE: &str = "index.vpidx";
 pub const LOCK_FILE: &str = "shard.lock";
-pub const SHARD_FORMAT_VERSION: u32 = 1;
+pub const SHARD_FORMAT_VERSION: u32 = 2;
+/// Format of a new shard: the oldest that holds what it uses, so older apps still write it.
+const BASE_FORMAT_VERSION: u32 = 1;
+/// Linked files need v2: older apps cannot read link records.
+const LINK_FORMAT_VERSION: u32 = 2;
 
 /// Folder for the app's own files inside a shard (item properties). Ordinary files, so
 /// older apps read the shard as before; the shard driver leaves the folder out of listings.
@@ -221,6 +229,20 @@ pub struct ShardStats {
     pub disk_bytes: u64,
     /// Space compaction would reclaim.
     pub garbage_bytes: u64,
+    /// Files that share their stored data with another file (beyond the first of each).
+    pub linked: u64,
+    /// Bytes not stored again thanks to that sharing.
+    pub shared_bytes: u64,
+}
+
+/// What is known about a stored file's contents without reading it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FileContent {
+    pub path: String,
+    pub size: u64,
+    pub sha256: Option<Digest>,
+    /// Id of the stored data: the same for files linked to one copy.
+    pub body: Id,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -309,8 +331,8 @@ impl Shard {
             None => (None, None),
         };
         let info = ShardInfo {
-            shard_version: SHARD_FORMAT_VERSION,
-            min_reader_version: SHARD_FORMAT_VERSION,
+            shard_version: BASE_FORMAT_VERSION,
+            min_reader_version: BASE_FORMAT_VERSION,
             id,
             name: opts.name.clone(),
             app_version: opts.app_version.clone(),
@@ -510,6 +532,7 @@ impl Shard {
         let snapshot = self.read_snapshot();
         let have_snapshot = snapshot.is_some();
         let mut index = snapshot.unwrap_or_default();
+        index.rebuild_refs();
         let mut found = Vec::new();
         for s in Stream::ALL {
             let on_disk = self.chunk_numbers(s)?;
@@ -825,12 +848,17 @@ impl Shard {
 
     fn write_tomb(&self, make: impl FnOnce(u64) -> Meta) -> Result<()> {
         let mut w = self.lock_writer(Stream::Data)?;
+        self.append_tomb(&mut w, make)
+    }
+
+    /// Appends a delete, move or link record while holding the data stream's lock.
+    fn append_tomb(&self, w: &mut MutexGuard<'_, Option<StreamWriter>>, make: impl FnOnce(u64) -> Meta) -> Result<()> {
         let seq = self.index.write().unwrap().alloc_seq();
         let meta = make(seq);
         let bytes = self.encode_meta(Stream::Data, &meta)?;
         let need = RECORD_HEADER_LEN + bytes.len() as u64;
         if w.as_ref().unwrap().len + need > self.chunk_bytes() {
-            self.new_chunk(Stream::Data, &mut w)?;
+            self.new_chunk(Stream::Data, w)?;
         }
         let sw = w.as_mut().unwrap();
         let rec = sw.len;
@@ -840,11 +868,84 @@ impl Shard {
         let (chunk, end) = (sw.chunk, sw.len);
         {
             let mut ix = self.index.write().unwrap();
-            ix.apply_tomb(Tomb { chunk, rec, rec_len: need, meta });
+            ix.apply_tomb(Tomb { chunk, rec, rec_len: need, meta }, None);
             ix.commit_pos(Stream::Data, chunk, end);
         }
-        drop(w);
         self.after_commit()
+    }
+
+    // ------------------------------------------------------------ deduplication
+
+    /// Size, SHA-256 and stored-data id of every file, without reading any.
+    pub fn contents(&self) -> Vec<FileContent> {
+        let ix = self.index.read().unwrap();
+        ix.files
+            .iter()
+            .filter(|(p, _)| !is_reserved(p))
+            .map(|(p, f)| FileContent { path: p.clone(), size: f.size, sha256: f.sha256, body: f.body_id() })
+            .collect()
+    }
+
+    /// Raises the shard's format (and the oldest app that may read it) to `v` before
+    /// writing something older apps cannot read.
+    fn require_version(&self, v: u32) -> Result<()> {
+        let mut info = self.info.write().unwrap();
+        if info.min_reader_version >= v {
+            return Ok(());
+        }
+        info.shard_version = info.shard_version.max(v);
+        info.min_reader_version = v;
+        write_atomic(&self.root.join(INFO_FILE), &serde_json::to_vec_pretty(&*info)?)?;
+        Ok(())
+    }
+
+    /// Makes the file at `to` share the stored data of the file at `from` instead of
+    /// keeping its own copy. Both must hold the same contents (same size and SHA-256).
+    /// `to` keeps its identity, times, thumbnail and converted copy, and writing either
+    /// file later replaces only that one (copy-on-write). Returns how many bytes are no
+    /// longer stored (`to`'s own data, unless another file still shares it), 0 if the two
+    /// already shared their data. The space is reclaimed by compaction.
+    pub fn link(&self, from: &str, to: &str) -> Result<u64> {
+        let (from, to) = (norm(from)?, norm(to)?);
+        let mut w = self.lock_writer(Stream::Data)?;
+        // Checked under the lock: nothing can replace either file before the record is written.
+        let (src, dst, freed) = {
+            let ix = self.index.read().unwrap();
+            let src = ix.files.get(&from).cloned().ok_or_else(|| ShardError::NotFound(from.clone()))?;
+            let dst = ix.files.get(&to).cloned().ok_or_else(|| ShardError::NotFound(to.clone()))?;
+            let alone = ix.refs.get(&dst.body_id()).copied().unwrap_or(0) <= 1;
+            let freed = if alone { dst.size } else { 0 };
+            (src, dst, freed)
+        };
+        if src.body_id() == dst.body_id() {
+            return Ok(0);
+        }
+        if src.size != dst.size || src.sha256.is_none() || src.sha256 != dst.sha256 {
+            return Err(ShardError::Invalid(format!("'{from}' and '{to}' differ")));
+        }
+        self.require_version(LINK_FORMAT_VERSION)?;
+        self.append_tomb(&mut w, |seq| {
+            Meta::Link(LinkMeta {
+                seq,
+                id: dst.id,
+                body: src.body_id(),
+                path: to.clone(),
+                from: from.clone(),
+                created_ms: dst.created_ms,
+                modified_ms: dst.modified_ms,
+            })
+        })?;
+        Ok(freed)
+    }
+
+    /// Adds a new file at `to` that shares the stored data of `from` (repacking).
+    fn link_new(&self, from: &str, to: &str, created_ms: Option<i64>, modified_ms: Option<i64>) -> Result<()> {
+        let (from, to) = (norm(from)?, norm(to)?);
+        let mut w = self.lock_writer(Stream::Data)?;
+        let body = self.index.read().unwrap().files.get(&from).map(|f| f.body_id()).ok_or_else(|| ShardError::NotFound(from.clone()))?;
+        self.require_version(LINK_FORMAT_VERSION)?;
+        let id = Id::random()?;
+        self.append_tomb(&mut w, |seq| Meta::Link(LinkMeta { seq, id, body, path: to, from, created_ms, modified_ms }))
     }
 
     /// Deletes a file, or every file under a folder. Returns how many were deleted.
@@ -940,6 +1041,13 @@ impl Shard {
             converted: ix.converted.len() as u64,
             ..Default::default()
         };
+        let mut bodies = HashSet::new();
+        for f in ix.files.values() {
+            if !bodies.insert(f.body_id()) {
+                s.linked += 1;
+                s.shared_bytes += f.size;
+            }
+        }
         for chunks in &ix.chunks {
             for st in chunks.values() {
                 s.chunks += 1;
@@ -1025,22 +1133,52 @@ impl Shard {
         progress: &mut dyn FnMut(u64),
     ) -> Result<()> {
         enum Job {
+            /// Data parts by body: `key` is the file that holds it as its own (`""` when
+            /// only links to it are left), `id` the body.
             Part { key: String, owner: Option<Id>, id: Id, idx: usize },
-            Tomb(Tomb),
+            /// A record to carry over as `Some(meta)` (rewritten), or to drop.
+            Tomb(Tomb, Option<Meta>),
         }
         let jobs: Vec<Job> = {
             let ix = self.index.read().unwrap();
             let mut jobs = Vec::new();
             match stream {
                 Stream::Data => {
-                    for (path, f) in &ix.files {
+                    // The index cannot change meanwhile: its writers need the lock we hold.
+                    let owners: HashMap<Id, &String> = ix.files.iter().filter(|(_, f)| f.body.is_none()).map(|(p, f)| (f.id, p)).collect();
+                    let mut seen = HashSet::new();
+                    for f in ix.files.values() {
                         for (i, p) in f.parts.iter().enumerate() {
-                            if p.chunk == chunk {
-                                jobs.push(Job::Part { key: path.clone(), owner: None, id: f.id, idx: i });
+                            if p.chunk == chunk && seen.insert((f.body_id(), i)) {
+                                let key = owners.get(&f.body_id()).map(|k| (*k).clone()).unwrap_or_default();
+                                jobs.push(Job::Part { key, owner: None, id: f.body_id(), idx: i });
                             }
                         }
                     }
-                    jobs.extend(ix.tombs.iter().filter(|t| t.chunk == chunk).cloned().map(Job::Tomb));
+                    let tombs: Vec<Tomb> = ix.tombs.iter().filter(|t| t.chunk == chunk).cloned().collect();
+                    // In a full compaction every record of a removed or moved file is gone, so
+                    // only links still in use are carried over, naming where their files are now.
+                    let linked: HashMap<Id, (&String, &Item)> = if full && tombs.iter().any(|t| matches!(t.meta, Meta::Link(_))) {
+                        ix.files.iter().filter(|(_, f)| f.body.is_some()).map(|(p, f)| (f.id, (p, f))).collect()
+                    } else {
+                        HashMap::new()
+                    };
+                    for t in tombs {
+                        let meta = match (&t.meta, full) {
+                            (m, false) => Some(m.clone()),
+                            (Meta::Link(l), true) => linked.get(&l.id).filter(|(_, f)| f.body == Some(l.body)).map(|(p, f)| {
+                                Meta::Link(LinkMeta {
+                                    seq: f.seq,
+                                    path: (*p).clone(),
+                                    created_ms: f.created_ms,
+                                    modified_ms: f.modified_ms,
+                                    ..l.clone()
+                                })
+                            }),
+                            (_, true) => None,
+                        };
+                        jobs.push(Job::Tomb(t, meta));
+                    }
                 }
                 s => {
                     for (owner, b) in ix.blobs(s) {
@@ -1057,13 +1195,13 @@ impl Shard {
         let src = self.handle(stream, chunk)?;
         for job in jobs {
             match job {
-                Job::Tomb(t) => {
-                    if full {
+                Job::Tomb(t, meta) => {
+                    let Some(meta) = meta else {
                         // Every live record is rewritten, so nothing older is left to undo.
                         self.index.write().unwrap().tombs.retain(|x| x != &t);
                         continue;
-                    }
-                    let bytes = self.encode_meta(stream, &t.meta)?;
+                    };
+                    let bytes = self.encode_meta(stream, &meta)?;
                     let need = RECORD_HEADER_LEN + bytes.len() as u64;
                     if w.as_ref().unwrap().len + need > self.chunk_bytes() {
                         self.new_chunk(stream, w)?;
@@ -1076,7 +1214,7 @@ impl Shard {
                     let (nc, end) = (sw.chunk, sw.len);
                     let mut ix = self.index.write().unwrap();
                     if let Some(x) = ix.tombs.iter_mut().find(|x| **x == t) {
-                        *x = Tomb { chunk: nc, rec, rec_len: need, meta: t.meta.clone() };
+                        *x = Tomb { chunk: nc, rec, rec_len: need, meta };
                         ix.chunks[stream.idx()].entry(nc).or_default().live += need;
                     }
                     ix.commit_pos(stream, nc, end);
@@ -1084,11 +1222,10 @@ impl Shard {
                 Job::Part { key, owner, id, idx } => {
                     let found = {
                         let ix = self.index.read().unwrap();
-                        let item = match owner {
-                            None => ix.files.get(&key),
-                            Some(o) => ix.blobs(stream).get(&o),
-                        };
-                        item.filter(|i| i.id == id).cloned()
+                        match owner {
+                            None => ix.files.get(&key).filter(|i| i.id == id).or_else(|| ix.find_body(id, &key)).cloned(),
+                            Some(o) => ix.blobs(stream).get(&o).filter(|i| i.id == id).cloned(),
+                        }
                     };
                     let Some(item) = found else { continue };
                     let old = item.parts[idx].clone();
@@ -1096,7 +1233,7 @@ impl Shard {
                     let meta = Meta::Part(PartMeta {
                         seq: item.seq,
                         id,
-                        path: key.clone(),
+                        path: if item.id == id { key.clone() } else { String::new() },
                         owner,
                         nonce: item.nonce,
                         part: idx as u32,
@@ -1132,15 +1269,32 @@ impl Shard {
                     let (nc, end) = (sw.chunk, sw.len);
                     let part = Part { chunk: nc, rec, rec_len: need, at, stored: old.stored, off: old.off, len: old.len };
                     let mut ix = self.index.write().unwrap();
-                    let item = match owner {
-                        None => ix.files.get_mut(&key),
-                        Some(o) => match stream {
-                            Stream::Thumbs => ix.thumbs.get_mut(&o),
-                            _ => ix.converted.get_mut(&o),
-                        },
+                    let moved = match owner {
+                        None => {
+                            // Every file sharing the data now reads the copy.
+                            let holders = ix.holders(id, &key);
+                            for k in &holders {
+                                if let Some(f) = ix.files.get_mut(k) {
+                                    f.parts[idx] = part.clone();
+                                }
+                            }
+                            !holders.is_empty()
+                        }
+                        Some(o) => {
+                            let item = match stream {
+                                Stream::Thumbs => ix.thumbs.get_mut(&o),
+                                _ => ix.converted.get_mut(&o),
+                            };
+                            match item.filter(|i| i.id == id) {
+                                Some(item) => {
+                                    item.parts[idx] = part;
+                                    true
+                                }
+                                None => false,
+                            }
+                        }
                     };
-                    if let Some(item) = item.filter(|i| i.id == id) {
-                        item.parts[idx] = part;
+                    if moved {
                         ix.chunks[stream.idx()].entry(nc).or_default().live += need;
                     }
                     ix.commit_pos(stream, nc, end);
@@ -1158,7 +1312,14 @@ impl Shard {
         let items: Vec<(String, Stream, Item)> = {
             let ix = self.index.read().unwrap();
             let names: HashMap<Id, &String> = ix.files.iter().map(|(p, f)| (f.id, p)).collect();
-            let mut v: Vec<(String, Stream, Item)> = ix.files.iter().map(|(p, f)| (p.clone(), Stream::Data, f.clone())).collect();
+            // Data shared by several files is checked once.
+            let mut bodies = HashSet::new();
+            let mut v: Vec<(String, Stream, Item)> = ix
+                .files
+                .iter()
+                .filter(|(_, f)| bodies.insert(f.body_id()))
+                .map(|(p, f)| (p.clone(), Stream::Data, f.clone()))
+                .collect();
             for s in [Stream::Thumbs, Stream::Converted] {
                 for (owner, b) in ix.blobs(s) {
                     let name = names.get(owner).map(|n| n.as_str()).unwrap_or("?");
@@ -1261,7 +1422,9 @@ impl Shard {
             }
             (files, blobs)
         };
-        let total: u64 = files.iter().map(|(_, f)| f.size).sum::<u64>() + blobs.iter().map(|(_, _, b)| b.size).sum::<u64>();
+        let mut bodies = HashSet::new();
+        let total: u64 = files.iter().filter(|(_, f)| bodies.insert(f.body_id())).map(|(_, f)| f.size).sum::<u64>()
+            + blobs.iter().map(|(_, _, b)| b.size).sum::<u64>();
         let mut done = 0u64;
         let mut buf = vec![0u8; COPY_PIECE];
         let mut copy = |r: ShardReader, mut w: ItemWriter<'_>, done: &mut u64| -> Result<()> {
@@ -1281,10 +1444,18 @@ impl Shard {
             }
             w.finish()
         };
+        // Files that share data here share it in the copy too.
+        let mut written: HashMap<Id, String> = HashMap::new();
         for (path, f) in files {
+            if let Some(first) = written.get(&f.body_id()) {
+                out.link_new(first, &path, f.created_ms, f.modified_ms)?;
+                continue;
+            }
+            written.insert(f.body_id(), path.clone());
             let w = out.writer(&path, Some(f.size), f.created_ms, f.modified_ms)?;
             copy(self.reader(Stream::Data, f)?, w, &mut done)?;
         }
+
         for (s, owner, b) in blobs {
             let w = out.blob_writer(s, &owner, Some(b.size), b.attrs.clone())?;
             copy(self.reader(s, b)?, w, &mut done)?;

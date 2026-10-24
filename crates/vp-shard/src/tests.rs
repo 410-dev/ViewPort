@@ -337,3 +337,83 @@ fn options_are_validated() {
     let shard = Shard::open(&dir.path().join("c"), None, OpenOptions::default()).unwrap();
     assert!(matches!(shard.put("../escape", b"", None, None), Err(ShardError::InvalidPath(_))));
 }
+
+#[test]
+fn links_share_data_and_survive_compaction_and_rebuild() {
+    for pw in [None, Some("pw")] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("d.vpshard");
+        let open = |root: &Path| {
+            let key = pw.map(|p| Shard::unlock(&Shard::read_info(root).unwrap(), p, None).unwrap());
+            Shard::open(root, key, OpenOptions::default()).unwrap()
+        };
+        let body = data(30_000, 7);
+        {
+            let shard = Shard::create_and_open(&root, &small(pw), OpenOptions::default()).unwrap();
+            shard.put("a.jpg", &body, Some(1), Some(1)).unwrap();
+            shard.put("x/b.jpg", &body, Some(2), Some(2)).unwrap();
+            shard.put("c.jpg", &body, Some(3), Some(3)).unwrap();
+            shard.put("other.jpg", &data(1000, 9), None, None).unwrap();
+            shard.put_blob(Stream::Thumbs, "x/b.jpg", b"THUMB-B", Default::default()).unwrap();
+            let id_b = shard.file_id("x/b.jpg");
+            assert_eq!(Shard::read_info(&root).unwrap().min_reader_version, 1);
+
+            assert!(matches!(shard.link("a.jpg", "other.jpg"), Err(ShardError::Invalid(_))));
+            assert_eq!(shard.link("a.jpg", "x/b.jpg").unwrap(), body.len() as u64);
+            assert_eq!(shard.link("a.jpg", "c.jpg").unwrap(), body.len() as u64);
+            assert_eq!(shard.link("c.jpg", "x/b.jpg").unwrap(), 0, "already shared");
+            assert_eq!(Shard::read_info(&root).unwrap().min_reader_version, 2);
+            // The linked file keeps its identity, times and thumbnail.
+            assert_eq!(shard.file_id("x/b.jpg"), id_b);
+            assert_eq!(shard.stat("x/b.jpg").unwrap().modified_ms, Some(2));
+            assert_eq!(shard.blob(Stream::Thumbs, "x/b.jpg").unwrap().unwrap().read_all().unwrap(), b"THUMB-B");
+            let st = shard.stats();
+            assert_eq!((st.linked, st.shared_bytes), (2, 2 * body.len() as u64));
+            assert!(st.garbage_bytes >= 2 * body.len() as u64, "{st:?}");
+
+            // Deleting the original keeps the data for the links; replacing one leaves the others.
+            shard.delete("a.jpg").unwrap();
+            shard.put("c.jpg", b"new", None, None).unwrap();
+            shard.rename("x/b.jpg", "y/b.jpg").unwrap();
+            assert_eq!(shard.open_file("y/b.jpg").unwrap().read_all().unwrap(), body);
+            let report = shard.verify(&no_cancel(), &mut |_, _| {}).unwrap();
+            assert!(report.damaged.is_empty(), "{:?}", report.damaged);
+
+            let before = shard.stats().disk_bytes;
+            shard.compact(true, 0.0, &no_cancel(), &mut |_, _| {}).unwrap();
+            assert!(shard.stats().disk_bytes + 2 * body.len() as u64 <= before);
+            assert_eq!(shard.stats().garbage_bytes, 0);
+            assert_eq!(shard.open_file("y/b.jpg").unwrap().read_all().unwrap(), body);
+        }
+        // Reopened from the snapshot, then rebuilt from the chunks alone.
+        for rebuild in [false, true] {
+            if rebuild {
+                fs::remove_file(root.join(INDEX_FILE)).unwrap();
+            }
+            let shard = open(&root);
+            let mut paths: Vec<String> = shard.files_under("").unwrap().into_iter().map(|(p, _)| p).collect();
+            paths.sort();
+            assert_eq!(paths, ["c.jpg", "other.jpg", "y/b.jpg"]);
+            assert_eq!(shard.open_file("y/b.jpg").unwrap().read_all().unwrap(), body);
+            assert_eq!(shard.open_file("c.jpg").unwrap().read_all().unwrap(), b"new");
+            assert_eq!(shard.stat("y/b.jpg").unwrap().modified_ms, Some(2));
+            assert_eq!(shard.stats().garbage_bytes, 0);
+        }
+    }
+}
+
+#[test]
+fn repack_keeps_links() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = Shard::create_and_open(&dir.path().join("s.vpshard"), &small(None), OpenOptions::default()).unwrap();
+    let body = data(100_000, 3);
+    src.put("a", &body, None, Some(1)).unwrap();
+    src.put("b", &body, None, Some(2)).unwrap();
+    src.link("a", "b").unwrap();
+    let out = src.repack(&dir.path().join("t.vpshard"), &small(Some("pw")), OpenOptions::default(), &no_cancel(), &mut |_, _| {}).unwrap();
+    assert_eq!(out.open_file("b").unwrap().read_all().unwrap(), body);
+    assert_eq!(out.stat("b").unwrap().modified_ms, Some(2));
+    let st = out.stats();
+    assert_eq!(st.linked, 1);
+    assert!(st.disk_bytes < 2 * body.len() as u64);
+}

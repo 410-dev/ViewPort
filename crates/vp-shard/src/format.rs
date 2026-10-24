@@ -187,6 +187,9 @@ pub enum Meta {
     Part(PartMeta),
     Delete { seq: u64, path: String },
     Move { seq: u64, from: String, to: String },
+    /// The file at `path` (item `id`) now holds the stored data `body` of another item
+    /// instead of its own (deduplication). Needs format v2.
+    Link(LinkMeta),
 }
 
 impl Meta {
@@ -194,8 +197,27 @@ impl Meta {
         match self {
             Meta::Part(p) => p.seq,
             Meta::Delete { seq, .. } | Meta::Move { seq, .. } => *seq,
+            Meta::Link(l) => l.seq,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LinkMeta {
+    pub seq: u64,
+    /// The linked file keeps its own id, so its thumbnail, converted copy and properties
+    /// stay with it.
+    pub id: Id,
+    /// Id the shared data was written under (its segments are bound to it).
+    pub body: Id,
+    pub path: String,
+    /// Where the data was found when linking: a hint for finding it again.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub from: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

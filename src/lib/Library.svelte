@@ -41,6 +41,7 @@
   import HeifBanner from "./HeifBanner.svelte";
   import CopyConflict from "./CopyConflict.svelte";
   import MirrorDialog from "./shard/MirrorDialog.svelte";
+  import DedupDialog from "./dedup/DedupDialog.svelte";
   import ContextMenu, { type MenuItem } from "./ui/ContextMenu.svelte";
   import Icon from "./ui/Icon.svelte";
   import ViewerShell from "./ViewerShell.svelte";
@@ -105,6 +106,7 @@
   let modal = $state<{ editing: SavedQuery | null } | null>(null);
   let showSettings = $state(false);
   let showPeople = $state(false);
+  let showDedup = $state(false);
   let sourceDialog = $state<{ source: SourceRow | null } | null>(null);
   let shardDialog = $state(false);
   /** Source id of the shard being managed (or unlocked). */
@@ -463,7 +465,7 @@
   let toolbar: Toolbar;
   function onKey(e: KeyboardEvent) {
     if (embedded && !embedded.active) return;
-    if (!settings || viewing || modal || savingCurrent || copying || showSettings || showPeople || sourceDialog || shardDialog || shardPanel !== null) return;
+    if (!settings || viewing || modal || savingCurrent || copying || showSettings || showPeople || showDedup || sourceDialog || shardDialog || shardPanel !== null) return;
     const k = settings.keys;
     if (matches(e, k.focus_search)) toolbar?.focusSearch();
     else if (matches(e, k.query_editor)) modal = { editing: null };
@@ -856,6 +858,7 @@
         ondeletesaved={deleteSaved}
         onsettings={() => (showSettings = true)}
         onpeople={embedded ? undefined : () => (showPeople = true)}
+        ondedup={embedded ? undefined : () => (showDedup = true)}
         onclose={close}
         onsave={() => api.saveBundle().catch((e) => alert(asCmdError(e).message))}
       />
@@ -1171,6 +1174,10 @@
 
 {#if mirroring}
   <MirrorDialog source={mirroring} {sources} onclose={() => (mirroring = null)} />
+{/if}
+
+{#if showDedup}
+  <DedupDialog {sources} initial={selected} onchange={() => runSearch(false)} onclose={() => (showDedup = false)} />
 {/if}
 
 {#if showPeople}

@@ -1139,7 +1139,7 @@ pub async fn delete_media(app: AppHandle, state: State<'_, AppState>, ids: Vec<i
 
 /// Deletes the file of item `id` through its source's driver and forgets the item (a
 /// file that is already gone only drops the item); its converted copy goes too.
-fn delete_one(ws: &Workspace, registry: &vp_driver::DriverRegistry, id: i64, task: &crate::tasks::Task) -> CmdResult<()> {
+pub(crate) fn delete_one(ws: &Workspace, registry: &vp_driver::DriverRegistry, id: i64, task: &crate::tasks::Task) -> CmdResult<()> {
     let Some(loc) = ws.read_db.lock().unwrap().media_location(id)? else { return Ok(()) };
     task.detail(crate::workspace::file_name(&loc.rel_path));
     let source = ws.read_db.lock().unwrap().source(loc.source_id)?.ok_or_else(|| CmdError::new("not_found", "source"))?;

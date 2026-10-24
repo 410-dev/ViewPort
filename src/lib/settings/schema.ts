@@ -536,6 +536,16 @@ export const SECTIONS: Section[] = [
           },
         ],
       },
+      {
+        title: "set.dedup",
+        fields: [
+          { kind: "number", ...bundle({ path: "dedup.workers", label: "set.dedupWorkers", help: "set.dedupWorkers.help" }), min: 0, max: 256, step: 1 },
+          { kind: "number", ...bundle({ path: "dedup.network_workers", label: "set.dedupNetWorkers", help: "set.dedupNetWorkers.help" }), min: 1, max: 64, step: 1 },
+          { kind: "number", ...bundle({ path: "dedup.partial_bytes", label: "set.dedupPartial", help: "set.dedupPartial.help" }), min: 4, max: 4096, step: 16, scale: 1024, unit: "KB" },
+          { kind: "number", ...bundle({ path: "dedup.read_bytes", label: "set.dedupRead" }), min: 1, max: 64, step: 1, scale: MB, unit: "MB" },
+          { kind: "toggle", ...bundle({ path: "dedup.compact_after", label: "set.dedupCompact", help: "set.dedupCompact.help" }) },
+        ],
+      },
     ],
   },
   {

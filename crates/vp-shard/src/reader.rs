@@ -65,7 +65,7 @@ impl ShardReader {
             .open(
                 &segment_nonce(nonce, seg),
                 &buf,
-                &segment_aad(self.shard, self.stream, self.item.id, seg, seg == last_seg),
+                &segment_aad(self.shard, self.stream, self.item.body_id(), seg, seg == last_seg),
             )
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "shard data is damaged or was tampered with"))?;
         let plain = Arc::new(plain);

@@ -455,6 +455,42 @@ const MIGRATIONS: &[&str] = &[
         UPDATE people_rev SET rev = (SELECT rev FROM meta_counter);
     END;
     "#,
+    // v10: duplicate finder. Content hashes of items, reused while their size and
+    // modification time stay the same, and duplicate reports the user saved. A report's
+    // entries outlive the items (`media_id` is cleared when an item goes).
+    r#"
+    CREATE TABLE media_hash (
+        media_id    INTEGER PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,
+        size        INTEGER NOT NULL,
+        modified_ms INTEGER,
+        partial_len INTEGER,   -- bytes hashed from each end for `partial`
+        partial     BLOB,
+        sha256      BLOB       -- whole contents
+    );
+
+    CREATE TABLE dup_report (
+        id         INTEGER PRIMARY KEY,
+        created_ms INTEGER NOT NULL,
+        label      TEXT NOT NULL DEFAULT '',
+        scope      TEXT NOT NULL,      -- JSON: source ids and whether across sources
+        groups     INTEGER NOT NULL,
+        files      INTEGER NOT NULL,
+        wasted     INTEGER NOT NULL    -- bytes beyond one copy per group
+    );
+
+    CREATE TABLE dup_entry (
+        report_id INTEGER NOT NULL REFERENCES dup_report(id) ON DELETE CASCADE,
+        grp       INTEGER NOT NULL,
+        media_id  INTEGER REFERENCES media(id) ON DELETE SET NULL,
+        source_id INTEGER NOT NULL,
+        rel_path  TEXT NOT NULL,
+        size      INTEGER NOT NULL,
+        sha256    BLOB NOT NULL,
+        action    TEXT NOT NULL DEFAULT ''   -- '' | 'deleted' | 'linked'
+    );
+    CREATE INDEX dup_entry_report ON dup_entry(report_id, grp);
+    CREATE INDEX dup_entry_media  ON dup_entry(media_id);
+    "#,
 ];
 
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;

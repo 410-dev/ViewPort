@@ -28,6 +28,31 @@ pub struct Settings {
     pub keys: KeyBindings,
     pub analysis: AnalysisSettings,
     pub mirror: MirrorSettings,
+    pub dedup: DedupSettings,
+}
+
+/// The duplicate finder: files are grouped by size, then by a hash of their ends, and only
+/// what still matches is read whole (SHA-256). Hashes are cached per item.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DedupSettings {
+    /// Files hashed at once (0: one per logical CPU).
+    pub workers: u32,
+    /// Files read at once from a network source (SMB), which slows down when overloaded.
+    pub network_workers: u32,
+    /// Bytes hashed from each end of a file before reading it whole.
+    pub partial_bytes: u64,
+    /// Read size when hashing whole files.
+    pub read_bytes: u64,
+    /// After deleting or sharing duplicates in a shard, compact it so the space is freed
+    /// right away.
+    pub compact_after: bool,
+}
+
+impl Default for DedupSettings {
+    fn default() -> Self {
+        Self { workers: 0, network_workers: 4, partial_bytes: 64 * 1024, read_bytes: 4 * MIB, compact_after: true }
+    }
 }
 
 /// Source mirrors: a source kept copied into another (e.g. a phone's photo folder into a

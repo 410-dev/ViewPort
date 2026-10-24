@@ -69,13 +69,15 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
   `mirror.rs`(소스 미러: 미러가 복사한 파일만 추적·교체·삭제, 원본·대상이 둘 다 있을 때만 동기화),
   `ml.rs`(이미지 분석 작업·묶기·인물 커맨드. 결과는 `vp-db::faces`, 자동 값은 `x.people`/`x.characters`/`x.auto_tags`에 `auto:*` 출처로).
   모델·ONNX Runtime은 번들하지 않는다(`models/README.md`).
+- `dedup.rs`: 중복 파일 찾기(크기 → 앞뒤 해시 → 전체 SHA-256, 샤드는 저장된 해시, `media_hash` 캐시)와 처리(삭제,
+  샤드 안 공간 최적화 = `Shard::link` 공유 본문), 기록(`dup_report`, 라이브러리에만).
 
 ### 프론트엔드 (`src/`)
 - `routes/+page.svelte`가 기기 설정(`prefs.svelte.ts`)을 불러온 뒤 `StartScreen` ↔ `Library` 전환. `app.css`가 디자인 토큰
   (다크 기본, `data-theme="light"`)과 알약형 기본 컴포넌트(`.btn`, `.icon-btn`, `.seg`, `.input`, `.switch`, `.dialog`)를 정의한다.
 - `Library.svelte`가 조합: `shell/Sidebar`, `shell/Toolbar`, `views/*`(그리드·목록·트리), `panel/RightPanel`(미리보기/결합/정보),
   `StatusBar`(작업 진행), `query/QueryModal`(쿼리 명령어 편집기), `settings/SettingsPanel`, `SourceDialog`, `Viewer`,
-  `people/PeopleView`(인물·캐릭터 그룹, 이름 붙이기·합치기·"이 사람 아님").
+  `people/PeopleView`(인물·캐릭터 그룹, 이름 붙이기·합치기·"이 사람 아님"), `dedup/DedupDialog`(중복 파일 찾기·처리·기록).
 - `views/`: 모든 보기는 `ViewProps`(`views/types.ts`)를 받고 `Selection`·`briefs` 캐시를 공유한다. 새 보기는 `views/index.ts`의
   `VIEWS`에, 새 열은 `views/columns.ts`의 `COLUMNS`에 항목 하나로 추가한다. 그리드·목록은 기본 스크롤바 대신
   `SectionScrollbar`(드래그, 구간 선, 드래그 중 구간 이름)를 쓴다. 구간은 검색 결과의 `sections`(가장 우선하는 정렬 키가
@@ -184,6 +186,7 @@ npm run tauri android build -- --apk --target aarch64          # 릴리즈. 디�
 - **샤드**(`.vpshard`, 설계는 ARCHITECTURE '샤드 저장소'): 번들 안(`shards/`)이나 밖 어디든 소스 하나 = 샤드 하나. 샤드 항목의
   썸네일·변환본은 샤드 안에 둔다(`THUMB_IN_SOURCE`, `VARIANT_IN_SHARD`). 샤드 마스터 키는 잠긴 번들의 소스 설정에만 기억한다.
   청크 형식을 바꾸면 `SHARD_FORMAT_VERSION`을 올리고, 옛 앱이 읽을 수 있는 추가라면 `min_reader_version`은 그대로 둔다.
+  새 샤드는 가장 낮은 형식(v1)으로 만들고, 옛 앱이 못 읽는 기능(링크, v2)은 처음 쓸 때 그 샤드만 `require_version`으로 올린다.
 - 하드웨어 가속은 `AppSettings.hardware`(기기별)로 제어한다: `gpu`, `gpu_rasterization`, `zero_copy`(WebView 인자),
   `video_decode` + `ffmpeg_hwaccel`(FFmpeg `-hwaccel`, 실패 시 소프트웨어 재시도), `video_encode` + `encoders`(시도 순서).
 
