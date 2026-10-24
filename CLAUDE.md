@@ -207,7 +207,7 @@ npm run tauri android build -- --apk --target aarch64          # 릴리즈. 디�
 1. `cargo test --workspace`와 `npm run check` 통과 확인.
 2. `main`에 커밋하고 `git push origin main`.
 3. APK 빌드(위 'APK 빌드 요령', 릴리즈 + `--target aarch64`, 샌드박스 밖에서)와 MSI 빌드
-   (`npm run tauri build -- --bundles msi`). 둘은 서로 독립이라 백그라운드로 돌려도 된다. APK 서명 인증서 SHA-256을 확인한다.
+   (`npm run tauri build -- --bundles msi`). 둘 다 `npm run build`로 같은 `.svelte-kit`을 만들므로 **동시에 돌리지 말고 하나씩** 돌린다(백그라운드는 괜찮음). APK 서명 인증서 SHA-256을 확인한다.
 4. **APK만** temp.hysong.dev에 올리고 링크를 사용자에게 알린다(MSI는 올리지 않고 `target/release/bundle/msi/` 경로만 알림):
    `python -I scripts/upload-temp.py src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk ViewPort-<버전>.apk 3`
    (마지막 인수는 최대 다운로드 횟수). 업로드는 네트워크가 필요하므로 샌드박스 밖에서 실행한다.
