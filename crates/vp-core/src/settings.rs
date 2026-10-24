@@ -355,6 +355,8 @@ pub struct ScanSettings {
     pub batch_size: u32,
     /// Generate missing thumbnails in the background after a scan.
     pub thumbnails_after_scan: bool,
+    /// Rescan every connected source when the bundle is opened.
+    pub rescan_on_open: bool,
 }
 
 impl Default for ScanSettings {
@@ -368,6 +370,7 @@ impl Default for ScanSettings {
             header_probe_bytes: 64 * 1024,
             batch_size: 500,
             thumbnails_after_scan: true,
+            rescan_on_open: false,
         }
     }
 }

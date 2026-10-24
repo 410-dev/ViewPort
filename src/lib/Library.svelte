@@ -18,6 +18,7 @@
     type MediaBrief,
     type SavedQuery,
     type ScanEvent,
+    type Sections,
     type Settings,
     type ShardStatus,
     type SourceRow,
@@ -51,6 +52,7 @@
   import { VIEWS } from "./views";
   import { Selection, type FolderRef } from "./views/selection.svelte";
   import type { FolderItem } from "./views/types";
+  import type { SectionMark } from "./views/scroll";
 
   let {
     bundle,
@@ -94,6 +96,10 @@
   let scans = $state<Record<number, ScanEvent>>({});
   let saved = $state<SavedQuery[]>([]);
   let resetKey = $state(0);
+  /** Set with the results it names, so a view never applies one listing's position to another's items. */
+  let scrollKey = $state("");
+  let sections = $state<Sections>({ kind: "none", marks: [] });
+  const sectionMarks = $derived<SectionMark[]>(sections.marks.map((m) => ({ index: m.index, label: sectionLabel(sections.kind, m.key) })));
 
   let viewing = $state<{ list: number[]; index: number } | null>(null);
   let modal = $state<{ editing: SavedQuery | null } | null>(null);
@@ -122,6 +128,15 @@
   let mirroring = $state<SourceRow | null>(null);
   /** Bumped when a new image decoder arrives: views remount and drop thumbnails they gave up on. */
   let decoderEpoch = $state(0);
+
+  /** A section key as shown on the scrollbar: days as "2026년 10월 24일", folders as paths. */
+  function sectionLabel(kind: Sections["kind"], key: string): string {
+    if (kind === "day") {
+      if (!key) return t("lib.noDate");
+      return new Date(Number(key) * 86_400_000).toLocaleDateString(i18n.locale, { timeZone: "UTC", year: "numeric", month: "long", day: "numeric" });
+    }
+    return key || "–";
+  }
 
   // ---- data
   async function refreshSources() {
@@ -205,10 +220,13 @@
   let revealAfterSearch: number | null = null;
   async function runSearch(reset: boolean) {
     const seq = ++searchSeq;
+    const key = `${selected}|${folder}|${ui().recursive}|${effectiveQuery}`;
     try {
       const r = await api.search(effectiveQuery, selected, selected === null ? null : folder, ui().recursive);
       if (seq !== searchSeq) return;
       ids = r.ids;
+      sections = r.sections;
+      scrollKey = key;
       elapsed = r.elapsed_ms;
       queryError = null;
       selection.retain(r.ids);
@@ -898,6 +916,8 @@
               {folders}
               {selection}
               {resetKey}
+              {scrollKey}
+              sections={sectionMarks}
               tile={settings.grid.tile_px}
               showNames={settings.grid.show_names}
               folderPreview={settings.grid.folder_preview ?? 2}

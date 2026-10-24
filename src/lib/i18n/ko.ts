@@ -78,6 +78,8 @@ const ko = {
   "col.duration": "길이",
   "col.modified": "수정한 날짜",
   "col.created": "만든 날짜",
+  "col.added": "추가한 날짜",
+  "lib.noDate": "날짜 없음",
   "col.folder": "폴더",
 
   "lib.items": "{n}개 항목",
@@ -388,6 +390,8 @@ const ko = {
   "set.videoExt": "영상 확장자",
   "set.skipHidden": "숨김 파일 건너뛰기",
   "set.thumbsAfterScan": "스캔 후 썸네일 생성",
+  "set.rescanOnOpen": "열 때 자동으로 새로 고침",
+  "set.rescanOnOpen.help": "번들을 열면 연결된 모든 소스를 다시 스캔해 추가·삭제된 파일을 반영합니다.",
   "set.batchSize": "기록 단위",
   "set.batchSize.help": "한 번에 데이터베이스에 쓰는 파일 수입니다.",
   "set.probeBytes": "이미지 헤더 읽기 크기",

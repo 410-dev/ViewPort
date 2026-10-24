@@ -64,7 +64,28 @@ fn install(app: &AppHandle, state: &AppState, ws: Workspace) -> CmdResult<Bundle
         std::thread::spawn(move || retire(old));
     }
     recent::push(app, &summary.path);
+    if let Some(ws) = state.workspace.read().unwrap().clone()
+        && ws.autosave()
+        && ws.settings.read().unwrap().scan.rescan_on_open
+    {
+        rescan_all(app, ws);
+    }
     Ok(summary)
+}
+
+/// Scans every enabled, connected source one after another (`scan.rescan_on_open`).
+fn rescan_all(app: &AppHandle, ws: Arc<Workspace>) {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let offline = ws.offline_sources();
+        let sources = ws.read_db.lock().unwrap().sources().unwrap_or_default();
+        for source in sources.into_iter().filter(|s| s.enabled && !offline.contains(&s.id)) {
+            if ws.closed.load(Ordering::Relaxed) {
+                return;
+            }
+            let _ = scan_now(&app, ws.clone(), source);
+        }
+    });
 }
 
 #[tauri::command]
@@ -405,6 +426,7 @@ pub(crate) fn scan_now(app: &AppHandle, ws: Arc<Workspace>, source: SourceRow) -
 pub struct SearchResult {
     pub ids: Vec<i64>,
     pub elapsed_ms: f64,
+    pub sections: vp_db::Sections,
 }
 
 /// Runs a query. Empty text lists everything. `tz_offset_minutes` is the local offset
@@ -439,8 +461,8 @@ pub async fn search(
         }
         let scope =
             vp_db::Scope { source_id, folder, recursive: recursive.unwrap_or(false), exclude_sources: offline };
-        let ids = db.search_in(&q, &reg, &Db::compile_context(now_ms(), tz_offset_minutes), &scope)?;
-        Ok(SearchResult { ids, elapsed_ms: started.elapsed().as_secs_f64() * 1000.0 })
+        let (ids, sections) = db.search_sections(&q, &reg, &Db::compile_context(now_ms(), tz_offset_minutes), &scope)?;
+        Ok(SearchResult { ids, elapsed_ms: started.elapsed().as_secs_f64() * 1000.0, sections })
     })
     .await
 }

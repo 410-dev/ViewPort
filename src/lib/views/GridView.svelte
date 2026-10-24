@@ -1,20 +1,23 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
   import { thumbUrl } from "../api";
   import { fmtDuration } from "../format";
   import Icon from "../ui/Icon.svelte";
   import { briefs, reportBroken, want } from "./briefs.svelte";
   import { folderSamples, sampleKey, wantFolders } from "./folders.svelte";
+  import { recallScroll, rememberScroll, sectionAt } from "./scroll";
+  import SectionScrollbar from "./SectionScrollbar.svelte";
   import { arrowStep } from "./selection.svelte";
   import type { ViewProps } from "./types";
 
-  let { ids, folders, selection, resetKey, tile, showNames, folderPreview, overscan, onopenwindow, onopen, onfolder }: ViewProps = $props();
+  let { ids, folders, selection, resetKey, scrollKey, sections, tile, showNames, folderPreview, overscan, onopenwindow, onopen, onfolder }: ViewProps = $props();
 
   const GAP = 10;
   const LABEL = 22;
   const PAD = 16;
 
-  let el: HTMLDivElement;
+  let el = $state<HTMLDivElement>() as HTMLDivElement;
   let width = $state(0);
   let height = $state(0);
   let scrollTop = $state(0);
@@ -38,10 +41,32 @@
     return out;
   });
 
+  const contentH = $derived(Math.max(0, totalRows * rowH - GAP + PAD * 2));
+
+  // New results, a remount or a new tile size: back to where this listing was.
   $effect(() => {
     resetKey;
-    if (el) el.scrollTop = 0;
+    const key = scrollKey;
+    if (!el || width === 0) return;
+    const top = (recallScroll(key) / cols) * rowH;
+    untrack(() => {
+      el.scrollTop = top;
+      scrollTop = el.scrollTop;
+    });
   });
+
+  function onScroll() {
+    scrollTop = el.scrollTop;
+    rememberScroll(scrollKey, (scrollTop / rowH) * cols);
+  }
+
+  const lines = $derived(sections.map((s) => PAD + Math.floor((folders.length + s.index) / cols) * rowH));
+  function label(top: number): string {
+    const slot = Math.min(count - 1, Math.floor(Math.max(0, top - PAD) / rowH) * cols);
+    const index = slot - folders.length;
+    if (index < 0) return folders[slot]?.name ?? "";
+    return sectionAt(sections, index) ?? `${(index + 1).toLocaleString()} / ${ids.length.toLocaleString()}`;
+  }
 
   $effect(() => {
     want(visible.filter((v) => v.id !== undefined).map((v) => v.id!));
@@ -91,18 +116,19 @@
 
 </script>
 
+<div class="wrap">
 <div
   class="grid"
   bind:this={el}
   bind:clientWidth={width}
   bind:clientHeight={height}
-  onscroll={() => (scrollTop = el.scrollTop)}
+  onscroll={onScroll}
   onkeydown={onKey}
   role="listbox"
   aria-multiselectable="true"
   tabindex="0"
 >
-  <div class="spacer" style:height="{Math.max(0, totalRows * rowH - GAP + PAD * 2)}px">
+  <div class="spacer" style:height="{contentH}px">
     {#each visible as v (v.folder ? `f:${v.folder.path}` : v.id)}
       {@const row = Math.floor(v.slot / cols)}
       {@const col = v.slot % cols}
@@ -195,14 +221,25 @@
     {/each}
   </div>
 </div>
+<SectionScrollbar {el} {scrollTop} viewH={height} {contentH} {lines} {label} />
+</div>
 
 <style>
+  .wrap {
+    position: relative;
+    height: 100%;
+  }
   .grid {
     height: 100%;
     overflow-y: auto;
     overflow-x: hidden;
     contain: strict;
     outline: none;
+    /* Replaced by `SectionScrollbar`. */
+    scrollbar-width: none;
+  }
+  .grid::-webkit-scrollbar {
+    display: none;
   }
   .spacer {
     position: relative;

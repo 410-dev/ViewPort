@@ -47,6 +47,8 @@ export interface MediaBrief {
   source_id: number;
   /** The built-in favorite is on. */
   favorite: boolean;
+  /** When a scan first found the item. */
+  added_ms: number;
 }
 
 /** Key of the built-in on/off favorite field. */
@@ -112,9 +114,19 @@ export interface LogInfo {
   bytes: number;
 }
 
+/**
+ * Where the result's most significant sort key changes: `day` keys are local days since
+ * 1970-01-01 ("" = no date), `text` keys are shown as they are.
+ */
+export interface Sections {
+  kind: "none" | "day" | "text";
+  marks: { index: number; key: string }[];
+}
+
 export interface SearchResult {
   ids: number[];
   elapsed_ms: number;
+  sections: Sections;
 }
 
 export interface ScanEvent {

@@ -74,6 +74,32 @@ fn spec_query_end_to_end() {
 }
 
 #[test]
+fn sections_follow_the_most_significant_sort() {
+    let lib = library();
+    let run = |src: &str, scope: &Scope, tz: i32| {
+        let q = vp_query::parse_query(src, &lib.reg).unwrap();
+        let (ids, s) = lib.db.search_sections(&q, &lib.reg, &Db::compile_context(OCT18, tz), scope).unwrap();
+        (ids, s.kind, s.marks.into_iter().map(|m| (m.index, m.key)).collect::<Vec<_>>())
+    };
+    let all = Scope::default();
+    let (ids, kind, marks) = run("sort(created)", &all, 0);
+    assert_eq!(ids, [4, 2, 5, 1, 3]);
+    assert_eq!(kind, SectionKind::Day);
+    let day = |d: i64| (20_744 + d).to_string();
+    assert_eq!(marks, [(0, day(-17)), (1, day(1)), (3, day(2)), (4, day(7))]);
+    // Days are local: midnight UTC is the previous day an hour west.
+    assert_eq!(run("sort(created)", &all, -60).2[0], (0, day(-18)));
+    // Folders across sources are named with their source; within one source, the path alone.
+    let (_, kind, marks) = run("sort(name) AND sort(folder) AND sort(source)", &all, 0);
+    assert_eq!(kind, SectionKind::Text);
+    assert_eq!(marks, [(0, "NAS › clips".into()), (1, "NAS › movies".into()), (2, "사진 › trip".into())]);
+    let one = Scope { source_id: Some(1), ..Default::default() };
+    assert_eq!(run("sort(name) AND sort(folder) AND sort(source)", &one, 0).2, [(0, "trip".to_string())]);
+    assert_eq!(run("sort(size)", &all, 0).1, SectionKind::None);
+    assert_eq!(run("sort(size)", &all, 0).2, []);
+}
+
+#[test]
 fn extension_and_negated_text_operators() {
     let lib = library();
     assert_eq!(lib.ids("이름(MP4:의 확장자를 가지고 있음)"), [3, 4, 5]);

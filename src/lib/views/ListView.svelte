@@ -1,15 +1,18 @@
 <script lang="ts">
   import { t } from "../i18n.svelte";
+  import { untrack } from "svelte";
   import { briefs, want } from "./briefs.svelte";
   import Cells from "./Cells.svelte";
   import HeaderRow from "./HeaderRow.svelte";
+  import { recallScroll, rememberScroll, sectionAt } from "./scroll";
+  import SectionScrollbar from "./SectionScrollbar.svelte";
   import { arrowStep } from "./selection.svelte";
   import type { ViewProps } from "./types";
 
-  let { ids, folders, selection, resetKey, overscan, columns, rowPx, sort, onsort, onopenwindow, onopen, onfolder }: ViewProps = $props();
+  let { ids, folders, selection, resetKey, scrollKey, sections, overscan, columns, rowPx, sort, onsort, onopenwindow, onopen, onfolder }: ViewProps = $props();
 
   const HEAD = 33;
-  let el: HTMLDivElement;
+  let el = $state<HTMLDivElement>() as HTMLDivElement;
   let height = $state(0);
   let scrollTop = $state(0);
 
@@ -26,10 +29,31 @@
     return out;
   });
 
+  const contentH = $derived(HEAD + count * rowPx + 16);
+
+  // New results or a remount: back to where this listing was.
   $effect(() => {
     resetKey;
-    if (el) el.scrollTop = 0;
+    const top = recallScroll(scrollKey) * rowPx;
+    if (!el || height === 0) return;
+    untrack(() => {
+      el.scrollTop = top;
+      scrollTop = el.scrollTop;
+    });
   });
+
+  function onScroll() {
+    scrollTop = el.scrollTop;
+    rememberScroll(scrollKey, scrollTop / rowPx);
+  }
+
+  const lines = $derived(sections.map((s) => (folders.length + s.index) * rowPx));
+  function label(top: number): string {
+    const slot = Math.min(count - 1, Math.floor(top / rowPx));
+    const index = slot - folders.length;
+    if (index < 0) return folders[slot]?.name ?? "";
+    return sectionAt(sections, index) ?? `${(index + 1).toLocaleString()} / ${ids.length.toLocaleString()}`;
+  }
   $effect(() => want(rows.filter((r) => r.id !== undefined).map((r) => r.id!)));
 
   function scrollToIndex(index: number, centre = false) {
@@ -69,11 +93,12 @@
   }
 </script>
 
+<div class="wrap">
 <div
   class="list"
   bind:this={el}
   bind:clientHeight={height}
-  onscroll={() => (scrollTop = el.scrollTop)}
+  onscroll={onScroll}
   onkeydown={onKey}
   role="grid"
   aria-multiselectable="true"
@@ -120,13 +145,25 @@
     {/each}
   </div>
 </div>
+<SectionScrollbar {el} {scrollTop} viewH={height} {contentH} {lines} {label} inset={HEAD} />
+</div>
 
 <style>
+  .wrap {
+    position: relative;
+    height: 100%;
+  }
   .list {
     height: 100%;
     overflow: auto;
     outline: none;
     contain: strict;
+    /* The vertical bar is `SectionScrollbar`; wide columns keep the horizontal one. */
+    scrollbar-width: auto;
+    scrollbar-color: auto;
+  }
+  .list::-webkit-scrollbar {
+    width: 0;
   }
   .spacer {
     position: relative;

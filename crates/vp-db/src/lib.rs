@@ -155,6 +155,8 @@ pub struct MediaBrief {
     pub source_id: i64,
     /// The built-in favorite (`FAVORITE_FIELD`) is on.
     pub favorite: bool,
+    /// When the item was first found by a scan.
+    pub added_ms: i64,
 }
 
 /// Key of the built-in on/off favorite field.
@@ -260,6 +262,67 @@ impl ToSql for Bind<'_> {
             SqlValue::Real(r) => ToSqlOutput::from(*r),
             SqlValue::Text(t) => ToSqlOutput::from(t.as_str()),
         })
+    }
+}
+
+/// How the section keys of a search are to be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SectionKind {
+    /// The order has no meaningful groups.
+    #[default]
+    None,
+    /// Local days since 1970-01-01 (`""` = no date).
+    Day,
+    /// Text shown as is (folder path, first letter, extension...).
+    Text,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SectionMark {
+    /// Position in the result where the section starts.
+    pub index: u32,
+    pub key: String,
+}
+
+/// Where the result's most significant sort key changes value.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Sections {
+    pub kind: SectionKind,
+    pub marks: Vec<SectionMark>,
+}
+
+/// The SQL expression giving each row's section key for `query`'s most significant sort.
+fn section_expr(query: &Query, reg: &FieldRegistry, ctx: &CompileContext, scope: &Scope) -> (SectionKind, String) {
+    let none = (SectionKind::None, "NULL".to_string());
+    let mut sorts = query.sorts.iter().rev().map(|s| s.field.as_str());
+    let Some(mut key) = sorts.next() else { return none };
+    // Within one source the source sort is a no-op: group by what comes next.
+    if key == "source" && scope.source_id.is_some() {
+        match sorts.next() {
+            Some(k) => key = k,
+            None => return none,
+        }
+    }
+    let folder = |with_source: bool| {
+        let path = "CASE WHEN m.parent_path = '' THEN '/' ELSE m.parent_path END";
+        if with_source { format!("src.name || ' › ' || {path}") } else { path.to_string() }
+    };
+    match key {
+        "folder" => (SectionKind::Text, folder(scope.source_id.is_none())),
+        // Sources sorted, then their folders: one section per folder.
+        "source" if sorts.next() == Some("folder") => (SectionKind::Text, folder(true)),
+        "source" => (SectionKind::Text, "src.name".into()),
+        "name" => (SectionKind::Text, "upper(substr(m.name, 1, 1))".into()),
+        "ext" => (SectionKind::Text, "upper(m.ext)".into()),
+        "kind" => (SectionKind::Text, "m.kind".into()),
+        _ => match reg.by_key(key) {
+            Some(FieldDef { ty: FieldType::Date, source: vp_query::FieldSource::Column { expr }, .. }) => {
+                let offset = ctx.tz_offset_minutes as i64 * 60_000;
+                (SectionKind::Day, format!("(({expr}) + {offset}) / 86400000"))
+            }
+            _ => none,
+        },
     }
 }
 
@@ -472,6 +535,19 @@ impl Db {
 
     /// Like [`Db::search`], limited to a source and optionally one of its folders.
     pub fn search_in(&self, query: &Query, reg: &FieldRegistry, ctx: &CompileContext, scope: &Scope) -> Result<Vec<i64>> {
+        Ok(self.search_sections(query, reg, ctx, scope)?.0)
+    }
+
+    /// Like [`Db::search_in`], also marking where the most significant sort key changes
+    /// (folder, day, first letter...), for section lines on the scrollbar.
+    pub fn search_sections(
+        &self,
+        query: &Query,
+        reg: &FieldRegistry,
+        ctx: &CompileContext,
+        scope: &Scope,
+    ) -> Result<(Vec<i64>, Sections)> {
+        let (kind, expr) = section_expr(query, reg, ctx, scope);
         let mut c = vp_query::compile(query, reg, ctx)?;
         let mut source_filter = String::new();
         if let Some(id) = scope.source_id {
@@ -494,7 +570,7 @@ impl Db {
             source_filter.push_str(&format!(" AND m.source_id NOT IN ({})", ids.join(",")));
         }
         let sql = format!(
-            "SELECT m.id FROM media m
+            "SELECT m.id, {expr} FROM media m
              JOIN source src ON src.id = m.source_id
              LEFT JOIN media_stats s ON s.media_id = m.id
              WHERE src.enabled AND NOT m.missing{source_filter} AND ({})
@@ -504,8 +580,27 @@ impl Db {
         let mut stmt = self.conn.prepare_cached(&sql)?;
         let binds: Vec<Bind> = c.params.iter().map(Bind).collect();
         let refs: Vec<&dyn ToSql> = binds.iter().map(|b| b as &dyn ToSql).collect();
-        let ids = stmt.query_map(refs.as_slice(), |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
-        Ok(ids)
+        let mut ids = Vec::new();
+        let mut sections = Sections { kind, marks: Vec::new() };
+        let mut last: Option<String> = None;
+        let mut rows = stmt.query(refs.as_slice())?;
+        while let Some(r) = rows.next()? {
+            ids.push(r.get::<_, i64>(0)?);
+            if kind == SectionKind::None {
+                continue;
+            }
+            let key = match r.get_ref(1)? {
+                rusqlite::types::ValueRef::Null => String::new(),
+                rusqlite::types::ValueRef::Integer(i) => i.to_string(),
+                rusqlite::types::ValueRef::Real(f) => (f as i64).to_string(),
+                v => String::from_utf8_lossy(v.as_bytes().unwrap_or_default()).into_owned(),
+            };
+            if last.as_deref() != Some(key.as_str()) {
+                sections.marks.push(SectionMark { index: ids.len() as u32 - 1, key: key.clone() });
+                last = Some(key);
+            }
+        }
+        Ok((ids, sections))
     }
 
     /// Runs `f` inside one transaction; rolls back if it fails.
@@ -641,7 +736,8 @@ impl Db {
                         EXISTS (SELECT 1 FROM media_flag f WHERE f.media_id = m.id AND f.flag = '{FLAG_IGNORE_PLAYBACK_WARNING}'),
                         m.size, m.created_ms, m.modified_ms, m.parent_path, m.ext, m.source_id,
                         EXISTS (SELECT 1 FROM ext_value e JOIN ext_field xf ON xf.id = e.field_id
-                                WHERE e.media_id = m.id AND xf.key = '{FAVORITE_FIELD}' AND e.int_val = 1)
+                                WHERE e.media_id = m.id AND xf.key = '{FAVORITE_FIELD}' AND e.int_val = 1),
+                        m.added_ms
                  FROM media m LEFT JOIN thumbnail t ON t.media_id = m.id
                  LEFT JOIN media_probe p ON p.media_id = m.id AND p.ok
                  LEFT JOIN media_variant v ON v.media_id = m.id
@@ -667,6 +763,7 @@ impl Db {
                     ext: r.get::<_, Option<String>>(14)?.unwrap_or_default(),
                     source_id: r.get(15)?,
                     favorite: r.get(16)?,
+                    added_ms: r.get(17)?,
                 })
             })?;
             for row in rows {

@@ -1,4 +1,5 @@
 import type { Column, SortSpec } from "./columns";
+import type { SectionMark } from "./scroll";
 import type { Selection } from "./selection.svelte";
 
 export interface FolderItem {
@@ -24,6 +25,10 @@ export interface ViewProps {
   folders: FolderItem[];
   selection: Selection;
   resetKey: unknown;
+  /** Names the listing shown (source, folder, query): its scroll position is remembered under it. */
+  scrollKey: string;
+  /** Where sections of the current order start (scrollbar lines and drag label). */
+  sections: SectionMark[];
   tile: number;
   showNames: boolean;
   /** Folder tiles show an N x N grid of thumbnails (0 = icon only). */

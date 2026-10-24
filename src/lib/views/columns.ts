@@ -32,6 +32,7 @@ export const COLUMNS: Column[] = [
   { key: "duration", label: "col.duration", width: 80, align: "right", sort: "duration", value: (b) => fmtDuration(b.duration_ms) },
   { key: "modified", label: "col.modified", width: 150, sort: "modified", value: (b) => fmtDate(b.modified_ms) },
   { key: "created", label: "col.created", width: 150, sort: "created", value: (b) => fmtDate(b.created_ms) },
+  { key: "added", label: "col.added", width: 150, sort: "added", value: (b) => fmtDate(b.added_ms) },
   { key: "folder", label: "col.folder", width: 180, sort: "folder", value: (b) => b.folder || "/" },
 ];
 

@@ -80,6 +80,8 @@ const en: Record<Key, string> = {
   "col.duration": "Duration",
   "col.modified": "Date modified",
   "col.created": "Date created",
+  "col.added": "Date added",
+  "lib.noDate": "No date",
   "col.folder": "Folder",
 
   "lib.items": "{n} items",
@@ -389,6 +391,8 @@ const en: Record<Key, string> = {
   "set.videoExt": "Video extensions",
   "set.skipHidden": "Skip hidden files",
   "set.thumbsAfterScan": "Generate thumbnails after scanning",
+  "set.rescanOnOpen": "Refresh automatically on open",
+  "set.rescanOnOpen.help": "Opening the bundle rescans every connected source to pick up added and removed files.",
   "set.batchSize": "Write batch size",
   "set.batchSize.help": "Files written to the database per transaction.",
   "set.probeBytes": "Image header read size",

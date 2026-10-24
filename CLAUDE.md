@@ -77,7 +77,10 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
   `StatusBar`(작업 진행), `query/QueryModal`(쿼리 명령어 편집기), `settings/SettingsPanel`, `SourceDialog`, `Viewer`,
   `people/PeopleView`(인물·캐릭터 그룹, 이름 붙이기·합치기·"이 사람 아님").
 - `views/`: 모든 보기는 `ViewProps`(`views/types.ts`)를 받고 `Selection`·`briefs` 캐시를 공유한다. 새 보기는 `views/index.ts`의
-  `VIEWS`에, 새 열은 `views/columns.ts`의 `COLUMNS`에 항목 하나로 추가한다.
+  `VIEWS`에, 새 열은 `views/columns.ts`의 `COLUMNS`에 항목 하나로 추가한다. 그리드·목록은 기본 스크롤바 대신
+  `SectionScrollbar`(드래그, 구간 선, 드래그 중 구간 이름)를 쓴다. 구간은 검색 결과의 `sections`(가장 우선하는 정렬 키가
+  바뀌는 위치: 폴더·날짜·첫 글자, `vp-db::search_sections`)이고, 스크롤 위치는 `views/scroll.ts`가 `scrollKey`(소스·폴더·쿼리)별로
+  기억해 결과가 다시 오거나 보기가 다시 만들어져도 그 자리로 돌아간다.
 - `settings/schema.ts`: 설정 패널 레이아웃(데이터). 각 필드는 `bundle`(번들 `Settings`) 또는 `app`(기기 `AppSettings`) 경로를 가리킨다.
 - `tasks.svelte.ts`: 백엔드 작업 레지스트리(`src-tauri/src/tasks.rs`, `task` 이벤트)의 미러.
 - `lib/api.ts`: 모든 `invoke` 래퍼와 백엔드 타입 미러. 커맨드를 추가·변경하면 여기 타입도 맞춘다.
