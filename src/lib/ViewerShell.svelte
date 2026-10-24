@@ -67,6 +67,13 @@
   /** The large pane before the last switch: the one sliding aside. */
   let prevMain = $state<number | null>(null);
   let animating = $state(false);
+  /**
+   * While a divider is dragged: each pane's size when the drag started. Panes keep that
+   * layout and are scaled to their slot instead of being laid out again every frame, which
+   * made the WebView decode and rasterize large pictures over and over (flicker).
+   */
+  let frozen = $state<{ w: number; h: number }[] | null>(null);
+  const inners: HTMLDivElement[] = [];
   let animTimer: ReturnType<typeof setTimeout> | undefined;
 
   const win = $derived(prefs.app?.windows);
@@ -114,6 +121,10 @@
     el.setPointerCapture(e.pointerId);
     e.preventDefault();
     e.stopPropagation();
+    frozen = panes.map((_, j) => {
+      const r = inners[j]?.getBoundingClientRect();
+      return { w: r?.width ?? 0, h: r?.height ?? 0 };
+    });
     main = prevMain = null;
     animating = false;
     const from = cols ? e.clientX : e.clientY;
@@ -129,6 +140,7 @@
       el.removeEventListener("pointermove", move);
       el.removeEventListener("pointerup", up);
       el.removeEventListener("pointercancel", up);
+      frozen = null;
       const big = sizes.findIndex((x) => x > switchAt);
       if (big >= 0) switchTo(big);
     };
@@ -145,6 +157,15 @@
     if (main === null) return null;
     if (i !== main) return i > main ? "start" : "end";
     return prevMain !== null && prevMain > i ? "end" : "start";
+  }
+
+  /** Scale of a frozen pane in its current slot (never enlarged: the rest stays black). */
+  function frozenScale(i: number) {
+    const f = frozen?.[i];
+    if (!f?.w || !f.h) return 1;
+    const slot = (sizes[i] ?? 0) * avail;
+    const [w, h] = cols ? [slot, height] : [width, slot];
+    return Math.min(1, w / f.w, h / f.h);
   }
 
   /** Where a new explorer pane starts. */
@@ -240,7 +261,18 @@
       ></div>
     {/if}
     <div class="pane" style:flex-grow={sizes[i] ?? 1} onpointerdowncapture={() => (active = i)} role="presentation">
-      <div class="inner" class:browse={!!p.browse} class:start={side === "start"} class:end={side === "end"} style:--big="{avail * mainShare}px">
+      <div
+        class="inner"
+        bind:this={inners[i]}
+        class:browse={!!p.browse}
+        class:start={side === "start"}
+        class:end={side === "end"}
+        class:frozen={!!frozen?.[i]?.w}
+        style:--big="{avail * mainShare}px"
+        style:--fw="{frozen?.[i]?.w ?? 0}px"
+        style:--fh="{frozen?.[i]?.h ?? 0}px"
+        style:--fs={frozenScale(i)}
+      >
         {#if p.browse}
           {#if bundle}
             <Library
@@ -331,6 +363,16 @@
     overflow: hidden;
     background: var(--bg);
     color: var(--fg);
+  }
+  /* Dragging a divider: the size from the drag start, scaled into the slot. */
+  .inner.frozen {
+    inset: auto;
+    left: 50%;
+    top: 50%;
+    width: var(--fw);
+    height: var(--fh);
+    transform: translate(-50%, -50%) scale(var(--fs));
+    will-change: transform;
   }
   .peek {
     position: absolute;

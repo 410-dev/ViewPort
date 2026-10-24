@@ -73,6 +73,8 @@
   const id = $derived(ids[index]);
   let brief = $state<MediaBrief | null>(null);
   let video = $state<HTMLVideoElement | null>(null);
+  /** The current video is paused (the dock's play/pause button). */
+  let paused = $state(false);
   let fullscreen = $state(false);
   let hud = $state(true);
   let error = $state(false);
@@ -831,6 +833,9 @@
               controls={showHud && swipe === 0}
               onloadedmetadata={onLoaded}
               onvolumechange={onVolumeChange}
+              onplay={() => (paused = false)}
+              onpause={() => (paused = true)}
+              oncanplay={(e) => (paused = e.currentTarget.paused)}
               ontimeupdate={onTime}
               onerror={() => (error = true)}
             ></video>
@@ -988,8 +993,11 @@
       <VolumeControl dark />
     </span>
     <span class="tools">
-      <button class="hb" class:on={slideshow} onclick={toggleSlideshow} title={t("viewer.slideshow")}><Icon name={slideshow ? "stop" : "play"} size={15} /></button>
+      <button class="hb" class:on={slideshow} onclick={toggleSlideshow} title={t("viewer.slideshow")}><Icon name={slideshow ? "stop" : "film"} size={15} /></button>
       {#if brief?.kind === "video"}
+        <button class="hb" onclick={togglePlay} title={paused ? t("viewer.play") : t("viewer.pause")} aria-label={paused ? t("viewer.play") : t("viewer.pause")}
+          ><Icon name={paused ? "play" : "pause"} size={15} /></button
+        >
         <button class="hb" class:on={showLoops} onclick={() => (showLoops = !showLoops)} title={t("viewer.loops")}><Icon name="loop" size={15} /></button>
       {/if}
       <button class="hb fav" class:on={isFav} aria-pressed={isFav} onclick={() => setFav(!isFav)} title={t("viewer.favorite")}

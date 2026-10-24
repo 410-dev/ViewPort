@@ -96,8 +96,10 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
   공용 `ui/Dropdown.svelte`(body로 portal, 고정 위치)를 쓴다.
 - 쿼리 편집기 모달은 열에서 고르거나 입력할 때마다 미완성 조건을 텍스트에 바로 쓴다(`live()`). '조건 완료하기'는 초안을
   확정하고 열을 비우며, '다음 조건'은 연결어(그리고/혹은)까지 미리 쓴다.
-- 오버레이 열림·닫힘 모션은 `ui/motion.ts`(`fade`/`pop`/`slide`, 대화 상자는 CSS로 열리고 `out:`으로 닫힘), 작은 오버레이의
-  바깥 누름 닫기는 `ui/dismiss.ts`(`use:dismiss`)를 쓴다.
+- 오버레이 열림·닫힘 모션은 `ui/motion.ts`(`fade`/`pop`/`slide`, 대화 상자는 CSS로 열리고 `out:`으로 닫힘, 길이는 `--t-pop`),
+  작은 오버레이의 바깥 누름 닫기는 `ui/dismiss.ts`(`use:dismiss`)를 쓴다. 모션은 OS 설정(`prefers-reduced-motion`)이 아니라
+  앱 설정 `ui.reduce_motion`만 따른다(Windows에서 애니메이션 효과가 꺼져 있으면 OS 설정은 늘 reduce).
+- 분할 보기 분할선을 끄는 동안 패널은 다시 배치하지 않고 시작 크기 그대로 축소해 그린다(큰 이미지 재래스터화 깜빡임 방지).
 - 폴더는 여러 개 선택할 수 있다(`Selection.folders`, 항목과는 함께 선택하지 않음). `Selection.folder`는 하나만 선택됐을 때만 값이 있다.
 - 뷰어 확대·패닝은 `zoom.svelte.ts`(`ZoomPan`, 배율 1 = 화면 맞춤). 확대 중에는 드래그가 넘기기가 아니라 패닝이다.
 - 모바일(Android): 파일·폴더 선택은 항상 `pick.svelte.ts`를 쓴다(`@tauri-apps/plugin-dialog`의 `open`/`save` 직접 호출 금지).

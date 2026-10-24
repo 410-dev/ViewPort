@@ -24,6 +24,9 @@
   --ease: cubic-bezier(0.2, 0, 0, 1);
   --t-fast: 90ms;
   --t-med: 160ms;
+  /* Overlays opening and closing (dialogs, menus, popovers). */
+  --t-pop: 220ms;
+  --ease-pop: cubic-bezier(0.2, 0.9, 0.3, 1.1);
 }
 
 /* Dark is the default theme. */
@@ -236,6 +239,10 @@ button {
 /* A light press: buttons give a little under the pointer. */
 .icon-btn:active:not(:disabled) {
   transform: scale(0.9);
+}
+:root[data-motion="reduce"] .btn:active:not(:disabled),
+:root[data-motion="reduce"] .icon-btn:active:not(:disabled) {
+  transform: none;
 }
 .icon-btn.on {
   color: var(--accent);
@@ -466,7 +473,7 @@ input.input[type="date"] {
   padding: 24px;
   background: var(--scrim);
   backdrop-filter: blur(2px);
-  animation: vp-fade var(--t-med) var(--ease);
+  animation: vp-fade var(--t-pop) var(--ease);
 }
 .dialog {
   display: flex;
@@ -478,7 +485,7 @@ input.input[type="date"] {
   border: 1px solid var(--border);
   box-shadow: var(--shadow);
   overflow: hidden;
-  animation: vp-pop var(--t-med) var(--ease);
+  animation: vp-pop var(--t-pop) var(--ease-pop);
 }
 .dialog > header {
   display: flex;
@@ -520,16 +527,10 @@ input.input[type="date"] {
     opacity: 0;
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  .btn:active:not(:disabled),
-  .icon-btn:active:not(:disabled) {
-    transform: none;
-  }
-}
 @keyframes vp-pop {
   from {
     opacity: 0;
-    transform: translateY(6px) scale(0.985);
+    transform: translateY(12px) scale(0.94);
   }
 }
 

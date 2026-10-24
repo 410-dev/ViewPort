@@ -918,7 +918,7 @@
     </main>
 
     {#if panelVisible}
-      <div class="panel">
+      <div class="panel" out:slide={{ y: compact ? 80 : 0, duration: compact ? undefined : 0 }}>
         <div class="resizer left" role="separator" aria-orientation="vertical" onpointerdown={(e) => drag(e, "panel")}></div>
         <RightPanel
           focus={selection.focus}

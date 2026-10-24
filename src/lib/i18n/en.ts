@@ -467,6 +467,8 @@ const en: Record<Key, string> = {
   "audio.volumeLabel": "App volume",
   "viewer.split": "Add split pane",
   "viewer.switchPane": "Switch to this pane",
+  "viewer.play": "Play",
+  "viewer.pause": "Pause",
   "viewer.browse": "Browse other items in this pane",
   "viewer.popOut": "Move to new window",
   "set.audio": "Sound",

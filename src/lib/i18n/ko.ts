@@ -466,6 +466,8 @@ const ko = {
   "audio.volumeLabel": "앱 음량",
   "viewer.split": "화면 분할 추가",
   "viewer.switchPane": "이 화면으로 전환",
+  "viewer.play": "재생",
+  "viewer.pause": "일시정지",
   "viewer.browse": "이 창에서 다른 항목 찾아보기",
   "viewer.popOut": "새 창으로 분리",
   "set.audio": "소리",

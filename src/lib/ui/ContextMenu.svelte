@@ -69,7 +69,8 @@
     background: var(--surface);
     border: 1px solid var(--border);
     box-shadow: var(--shadow);
-    animation: vp-pop var(--t-fast) var(--ease);
+    animation: vp-pop var(--t-med) var(--ease-pop);
+    transform-origin: top left;
   }
   button {
     width: 100%;

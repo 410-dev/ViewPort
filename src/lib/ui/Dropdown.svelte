@@ -123,7 +123,8 @@
     font-family: var(--font-ui);
     font-size: var(--font-size);
     color: var(--fg);
-    animation: vp-pop var(--t-fast) var(--ease);
+    animation: vp-pop var(--t-med) var(--ease-pop);
+    transform-origin: top left;
   }
   .dropdown.above {
     transform: translateY(-100%);
