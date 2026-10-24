@@ -1,7 +1,7 @@
 <script lang="ts">
   import { fade, pop } from "../ui/motion";
   import { onMount } from "svelte";
-  import { api, type MirrorRow, type SourceRow } from "../api";
+  import { api, type MirrorRow, type MirrorTriggers, type SourceRow } from "../api";
   import { onBack } from "../back.svelte";
   import { fmtDate } from "../format";
   import { t } from "../i18n.svelte";
@@ -12,8 +12,9 @@
 
   /**
    * Mirrors of one source (`mirror.rs`): kept copied into a folder of another source,
-   * synced whenever both are connected. Only what a mirror copied is ever replaced or
-   * deleted in the target.
+   * synced by itself as its triggers say (bundle opened, both connected again, source
+   * changed in a scan, every so often) or by hand. Only what a mirror copied is ever
+   * replaced or deleted in the target.
    */
   let { source, sources, onclose }: { source: SourceRow; sources: SourceRow[]; onclose: () => void } = $props();
 
@@ -25,6 +26,13 @@
   let target = $state("");
   let folder = $state("");
   let deletes = $state(true);
+  let triggers = $state<MirrorTriggers>({ on_open: true, on_connect: true, on_scan: false, interval_mins: null });
+  /** Mirror whose trigger settings are open. */
+  let editing = $state<number | null>(null);
+  /** The library's interval, which mirrors follow unless they set their own. */
+  let defaultMins = $state(30);
+  /** Interval choices offered, in minutes ("" follows the library, 0 never). */
+  const INTERVALS = [0, 15, 30, 60, 180, 360, 720, 1440];
 
   /** Writable places: shards and local folders. */
   const targets = $derived(sources.filter((s) => s.id !== source.id && (s.driver === "shard" || s.driver === "local" || s.driver === "bundle")));
@@ -39,6 +47,7 @@
     // svelte-ignore state_referenced_locally
     folder = source.name;
     refresh();
+    api.getSettings().then((s) => (defaultMins = Number(s.mirror?.resync_mins ?? 30)), () => {});
   });
   // Results arrive when a sync ends.
   let was = false;
@@ -64,13 +73,42 @@
 
   const add = () =>
     run(async () => {
-      await api.mirrorSave(null, source.id, Number(target), folder.trim(), true, deletes);
+      await api.mirrorSave(null, source.id, Number(target), folder.trim(), true, deletes, { ...triggers });
       target = "";
     });
   const update = (m: MirrorRow, change: Partial<MirrorRow>) => {
     const n = { ...m, ...change };
     return run(() => api.mirrorSave(n.id, n.source_id, n.target_id, n.target_folder, n.enabled, n.propagate_deletes));
   };
+  const setTriggers = (m: MirrorRow, change: Partial<MirrorTriggers>) => {
+    const tr = { ...m.triggers, ...change };
+    // Shown at once; the list refreshes when saved.
+    mirrors = mirrors.map((x) => (x.id === m.id ? { ...x, triggers: tr } : x));
+    return run(() => api.mirrorSave(m.id, m.source_id, m.target_id, m.target_folder, m.enabled, m.propagate_deletes, tr));
+  };
+
+  function fmtMins(n: number): string {
+    if (n % 1440 === 0) return t("mirror.everyDays", { n: n / 1440 });
+    if (n % 60 === 0) return t("mirror.everyHours", { n: n / 60 });
+    return t("mirror.everyMins", { n });
+  }
+
+  /** One line saying when a mirror syncs by itself. */
+  function triggerSummary(tr: MirrorTriggers): string {
+    const mins = tr.interval_mins ?? defaultMins;
+    const parts = [
+      tr.on_open && t("mirror.onOpenShort"),
+      tr.on_connect && t("mirror.onConnectShort"),
+      tr.on_scan && t("mirror.onScanShort"),
+      mins > 0 && fmtMins(mins),
+    ].filter(Boolean);
+    return parts.length ? parts.join(" · ") : t("mirror.manualOnly");
+  }
+
+  const intervalOptions = $derived([
+    { value: "", label: t("mirror.intervalDefault", { every: defaultMins > 0 ? fmtMins(defaultMins) : t("mirror.intervalOff") }) },
+    ...INTERVALS.map((n) => ({ value: String(n), label: n === 0 ? t("mirror.intervalOff") : fmtMins(n) })),
+  ]);
 </script>
 
 <div out:fade class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && !busy && onclose()}>
@@ -95,6 +133,16 @@
               onclick={() => update(m, { propagate_deletes: !m.propagate_deletes })}></button>
             <span>{t("mirror.deletes")}</span>
           </label>
+          <div class="when">
+            <button class="when-head" aria-expanded={editing === m.id} onclick={() => (editing = editing === m.id ? null : m.id)}>
+              <Icon name="zap" size={13} />
+              <span class="grow"><span class="faint">{t("mirror.when")}</span> {triggerSummary(m.triggers)}</span>
+              <span class="chev" class:open={editing === m.id}><Icon name="chevronDown" size={13} /></span>
+            </button>
+            {#if editing === m.id}
+              {@render triggerEditor(m.triggers, (c) => setTriggers(m, c))}
+            {/if}
+          </div>
           <p class="hint">
             {m.last_sync_ms ? t("mirror.last", { at: fmtDate(m.last_sync_ms) }) : t("mirror.never")}
             {#if m.last_result}· {m.last_result}{/if}
@@ -128,6 +176,8 @@
           <span>{t("mirror.deletes")}</span>
         </label>
         <p class="hint">{t("mirror.deletesHint")}</p>
+        <span class="eyebrow">{t("mirror.when")}</span>
+        {@render triggerEditor(triggers, (c) => (triggers = { ...triggers, ...c }))}
         <div class="line">
           <span class="grow"></span>
           <button class="btn sm primary" disabled={busy || !target} onclick={add}><Icon name="plus" size={13} />{t("mirror.addBtn")}</button>
@@ -139,7 +189,82 @@
   </div>
 </div>
 
+{#snippet triggerEditor(tr: MirrorTriggers, set: (c: Partial<MirrorTriggers>) => void)}
+  <div class="triggers">
+    {#each [["on_open", "mirror.onOpen"], ["on_connect", "mirror.onConnect"], ["on_scan", "mirror.onScan"]] as const as [key, label] (key)}
+      <label class="check">
+        <button type="button" class="switch" class:on={tr[key]} aria-label={t(label)} onclick={() => set({ [key]: !tr[key] })}></button>
+        <span>{t(label)}</span>
+      </label>
+    {/each}
+    <div class="interval">
+      <span>{t("mirror.interval")}</span>
+      <Select
+        value={tr.interval_mins == null ? "" : String(tr.interval_mins)}
+        label={t("mirror.interval")}
+        options={intervalOptions}
+        onchange={(v) => set({ interval_mins: v === "" ? null : Number(v) })}
+      />
+    </div>
+    <p class="hint">{t("mirror.whenHint")}</p>
+  </div>
+{/snippet}
+
 <style>
+  .when {
+    display: grid;
+    gap: 8px;
+  }
+  .when-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    padding: 6px 8px;
+    margin: 0 -8px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--fg-2);
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .when-head:hover {
+    background: var(--hover);
+  }
+  .faint {
+    color: var(--faint);
+  }
+  .chev {
+    display: inline-flex;
+    transition: transform var(--t-fast) var(--ease);
+  }
+  .chev.open {
+    transform: rotate(180deg);
+  }
+  .triggers {
+    display: grid;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    border: 1px solid var(--border);
+  }
+  .interval {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .interval > span {
+    flex: 1;
+    min-width: 120px;
+  }
+  .interval :global(.select) {
+    flex: 1 1 220px;
+    min-width: 0;
+  }
   .mirror {
     width: min(520px, 100%);
   }

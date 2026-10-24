@@ -100,7 +100,8 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
 - 드롭다운은 WebView 기본 `<select>`/`<datalist>`를 쓰지 않는다. `ui/Select.svelte`, `ui/Combobox.svelte`(목록 값 제안·전체 목록 버튼·인라인 자동완성, IME 조합 중에는 강조만),
   공용 `ui/Dropdown.svelte`(body로 portal, 고정 위치)를 쓴다.
 - 쿼리 편집기 모달은 열에서 고르거나 입력할 때마다 미완성 조건을 텍스트에 바로 쓴다(`live()`). '조건 완료하기'는 초안을
-  확정하고 열을 비우며, '다음 조건'은 연결어(그리고/혹은)까지 미리 쓴다.
+  확정하고 열을 비우며, '다음 조건'은 연결어(그리고/혹은)까지 미리 쓴다. 폭 640px 이하에서는 네 열이 슬라이드(조건 → 값 →
+  비교 → 연결)가 되고, 조건을 고르면 값으로 넘어가며 연결어를 고르면 다음 조건으로 첫 슬라이드에 돌아온다.
 - 오버레이 열림·닫힘 모션은 `ui/motion.ts`(`fade`/`pop`/`slide`, 대화 상자는 CSS로 열리고 `out:`으로 닫힘, 길이는 `--t-pop`),
   작은 오버레이의 바깥 누름 닫기는 `ui/dismiss.ts`(`use:dismiss`)를 쓴다. 모션은 OS 설정(`prefers-reduced-motion`)이 아니라
   앱 설정 `ui.reduce_motion`만 따른다(Windows에서 애니메이션 효과가 꺼져 있으면 OS 설정은 늘 reduce).

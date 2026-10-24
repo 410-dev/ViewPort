@@ -1,8 +1,9 @@
 //! Source mirrors (`vp_db::mirror`): a source kept copied into a folder of another source,
 //! e.g. a phone's photo folder into a shard on a USB drive that is only sometimes connected.
 //!
-//! A sync runs when the bundle opens, when the target (or source) comes back after being
-//! away, every `mirror.resync_mins` while both stay, and by hand. It needs both connected
+//! A sync runs by hand, and by itself as each mirror's triggers say (`MirrorTriggers`):
+//! when the bundle opens, when the target (or source) comes back after being away, when a
+//! scan finds the source changed, and every so often while both stay. It needs both connected
 //! (and the target writable): a source that is away is never read as "everything deleted".
 //! The source is scanned first, then:
 //! - files gone from the source are deleted from the target if the mirror's copy there is
@@ -22,7 +23,7 @@ use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Manager};
 use vp_db::SourceRow;
-use vp_db::mirror::{MirrorItem, MirrorRow};
+use vp_db::mirror::{MirrorItem, MirrorRow, MirrorTriggers};
 
 use crate::AppState;
 use crate::error::{CmdError, CmdResult};
@@ -55,9 +56,12 @@ pub async fn mirror_save(
     target_folder: String,
     enabled: bool,
     propagate_deletes: bool,
+    triggers: Option<MirrorTriggers>,
 ) -> CmdResult<i64> {
     let ws = workspace(&app)?;
     let ws2 = ws.clone();
+    let is_new = id.is_none();
+    let has_triggers = triggers.is_some();
     let id = blocking(move || {
         if source_id == target_id {
             return Err(CmdError::new("invalid", "a source cannot mirror into itself"));
@@ -67,10 +71,16 @@ pub async fn mirror_save(
         for s in [source_id, target_id] {
             db.source(s)?.ok_or_else(|| CmdError::new("not_found", "source"))?;
         }
-        Ok(db.save_mirror(id, source_id, target_id, &folder, enabled, propagate_deletes, now_ms())?)
+        let saved = db.save_mirror(id, source_id, target_id, &folder, enabled, propagate_deletes, now_ms())?;
+        if let Some(t) = &triggers {
+            db.set_mirror_triggers(saved, t)?;
+        }
+        Ok(saved)
     })
     .await?;
-    if enabled {
+    // A new mirror, or one switched on or pointed elsewhere, catches up at once; changing
+    // only when it syncs does not start one.
+    if enabled && (is_new || !has_triggers) {
         spawn_sync(&app, ws, id);
     }
     Ok(id)
@@ -115,14 +125,38 @@ fn spawn_sync(app: &AppHandle, ws: Arc<Workspace>, id: i64) {
     });
 }
 
-/// Watches the bundle's mirrors until it closes: syncs each when the bundle opens, when
-/// its source and target are both there again after one was away, and every
-/// `mirror.resync_mins` while they stay.
+/// Syncs the mirrors of a source that a scan just found changed (`on_scan`). A mirror's
+/// own scan of its source, during its sync, starts nothing: that mirror is running.
+pub fn scanned(app: &AppHandle, ws: &Arc<Workspace>, source_id: i64) {
+    let Ok(mirrors) = ws.read_db.lock().unwrap().mirrors() else { return };
+    for m in mirrors.iter().filter(|m| m.enabled && m.source_id == source_id && m.triggers.on_scan) {
+        spawn_sync(app, ws.clone(), m.id);
+    }
+}
+
+/// Whether a mirror syncs at this look: `first` is the first look since the bundle opened,
+/// `was` whether both ends were connected at the last look, `since` how long ago it last
+/// synced (or the watch began).
+fn wants_sync(t: &MirrorTriggers, default_mins: u64, first: bool, was: bool, since: std::time::Duration) -> bool {
+    if first {
+        return t.on_open;
+    }
+    if !was && t.on_connect {
+        return true;
+    }
+    let mins = t.interval_mins.unwrap_or(default_mins);
+    mins > 0 && since.as_secs() >= mins * 60
+}
+
+/// Watches the bundle's mirrors until it closes and syncs each as its triggers say: when
+/// the bundle opens, when its source and target are both there again after one was away,
+/// and every so often while they stay.
 pub fn start(app: &AppHandle, ws: Arc<Workspace>) {
     let app = app.clone();
     std::thread::spawn(move || {
-        // Mirror id -> (was reachable at the last look, when it last started a sync).
-        let mut seen: HashMap<i64, (bool, Option<std::time::Instant>)> = HashMap::new();
+        // Mirror id -> (was reachable at the last look, when it last synced or the watch began).
+        let mut seen: HashMap<i64, (bool, std::time::Instant)> = HashMap::new();
+        let mut first = true;
         loop {
             let settings = ws.settings.read().unwrap().mirror.clone();
             let mirrors = ws.read_db.lock().unwrap().mirrors().unwrap_or_default();
@@ -130,16 +164,17 @@ pub fn start(app: &AppHandle, ws: Arc<Workspace>) {
                 let offline: HashSet<i64> = ws.offline_sources().into_iter().chain(ws.locked_sources()).collect();
                 for m in mirrors.iter().filter(|m| m.enabled) {
                     let reachable = !offline.contains(&m.source_id) && !offline.contains(&m.target_id);
-                    let (was, last) = seen.get(&m.id).copied().unwrap_or((false, None));
-                    let due = settings.resync_mins > 0 && last.is_some_and(|t| t.elapsed().as_secs() >= settings.resync_mins * 60);
-                    if reachable && (!was || due) {
+                    // A mirror added since the bundle opened synced when it was saved.
+                    let (was, last) = seen.get(&m.id).copied().unwrap_or((first || reachable, std::time::Instant::now()));
+                    if reachable && wants_sync(&m.triggers, settings.resync_mins, first, was, last.elapsed()) {
                         spawn_sync(&app, ws.clone(), m.id);
-                        seen.insert(m.id, (true, Some(std::time::Instant::now())));
+                        seen.insert(m.id, (true, std::time::Instant::now()));
                     } else {
                         seen.insert(m.id, (reachable, last));
                     }
                 }
             }
+            first = false;
             for _ in 0..settings.check_secs.max(1) * 10 {
                 if ws.closed.load(Ordering::Relaxed) {
                     return;
@@ -473,6 +508,24 @@ mod tests {
         let _ = src;
         drop(shard);
         ws.close_shard(usb_id).unwrap();
+    }
+
+    #[test]
+    fn triggers_decide_when_a_mirror_syncs() {
+        use std::time::Duration;
+        let t = MirrorTriggers::default();
+        let min = Duration::from_secs(60);
+        assert!(wants_sync(&t, 30, true, false, Duration::ZERO), "on open");
+        assert!(wants_sync(&t, 30, false, false, Duration::ZERO), "back after being away");
+        assert!(!wants_sync(&t, 30, false, true, 29 * min));
+        assert!(wants_sync(&t, 30, false, true, 30 * min), "the library's interval");
+        let quiet = MirrorTriggers { on_open: false, on_connect: false, on_scan: true, interval_mins: Some(0) };
+        assert!(!wants_sync(&quiet, 30, true, false, Duration::ZERO));
+        assert!(!wants_sync(&quiet, 30, false, false, Duration::ZERO));
+        assert!(!wants_sync(&quiet, 30, false, true, 1000 * min), "never repeats");
+        let hourly = MirrorTriggers { interval_mins: Some(60), ..quiet };
+        assert!(!wants_sync(&hourly, 30, false, true, 59 * min));
+        assert!(wants_sync(&hourly, 30, false, true, 60 * min));
     }
 
     #[test]

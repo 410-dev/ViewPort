@@ -23,6 +23,28 @@ pub struct MirrorRow {
     pub last_sync_ms: Option<i64>,
     /// Summary of the last sync (or why it did not run).
     pub last_result: Option<String>,
+    pub triggers: MirrorTriggers,
+}
+
+/// When a mirror syncs by itself (it can always be synced by hand).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MirrorTriggers {
+    /// When the bundle opens.
+    pub on_open: bool,
+    /// When the source and the target are both connected again after one was away.
+    pub on_connect: bool,
+    /// When a scan of the source finds files added, changed or gone.
+    pub on_scan: bool,
+    /// Again after this many minutes while both stay connected: `None` follows the
+    /// library setting (`mirror.resync_mins`), 0 never.
+    pub interval_mins: Option<u64>,
+}
+
+impl Default for MirrorTriggers {
+    fn default() -> Self {
+        Self { on_open: true, on_connect: true, on_scan: false, interval_mins: None }
+    }
 }
 
 /// A file the mirror copied.
@@ -52,7 +74,8 @@ pub struct PresentFile {
 impl Db {
     pub fn mirrors(&self) -> Result<Vec<MirrorRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, source_id, target_id, target_folder, enabled, propagate_deletes, created_ms, last_sync_ms, last_result
+            "SELECT id, source_id, target_id, target_folder, enabled, propagate_deletes, created_ms, last_sync_ms, last_result,
+                    on_open, on_connect, on_scan, interval_mins
              FROM mirror ORDER BY id",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -66,6 +89,12 @@ impl Db {
                 created_ms: r.get(6)?,
                 last_sync_ms: r.get(7)?,
                 last_result: r.get(8)?,
+                triggers: MirrorTriggers {
+                    on_open: r.get(9)?,
+                    on_connect: r.get(10)?,
+                    on_scan: r.get(11)?,
+                    interval_mins: r.get::<_, Option<i64>>(12)?.map(|m| m.max(0) as u64),
+                },
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -101,6 +130,14 @@ impl Db {
                 Ok(id)
             }
         }
+    }
+
+    pub fn set_mirror_triggers(&self, id: i64, t: &MirrorTriggers) -> Result<()> {
+        self.conn.execute(
+            "UPDATE mirror SET on_open = ?2, on_connect = ?3, on_scan = ?4, interval_mins = ?5 WHERE id = ?1",
+            params![id, t.on_open, t.on_connect, t.on_scan, t.interval_mins.map(|m| m as i64)],
+        )?;
+        Ok(())
     }
 
     pub fn delete_mirror(&self, id: i64) -> Result<()> {

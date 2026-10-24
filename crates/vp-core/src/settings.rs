@@ -62,8 +62,8 @@ impl Default for DedupSettings {
 pub struct MirrorSettings {
     /// How often the app looks whether a mirror's source and target are both there.
     pub check_secs: u64,
-    /// While both stay connected, sync again after this long (0: only when the target
-    /// comes back, when the bundle opens, or by hand).
+    /// While both stay connected, sync again after this long (0: never repeat), for
+    /// mirrors that set no interval of their own (`MirrorTriggers::interval_mins`).
     pub resync_mins: u64,
 }
 

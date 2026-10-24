@@ -610,6 +610,10 @@
     flex-direction: column;
     gap: 10px;
   }
+  /* A scrolling flex column would squeeze its children to fit (groups clip their rows). */
+  .results > * {
+    flex-shrink: 0;
+  }
   .sum {
     display: grid;
     gap: 2px;
@@ -788,12 +792,34 @@
     background: color-mix(in srgb, var(--accent) 12%, transparent);
   }
   @media (max-width: 560px) {
+    .dedup {
+      height: 100%;
+    }
+    .bulk {
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    .bulk > :global(*) {
+      flex-shrink: 0;
+    }
+    .bulk :global(.select) {
+      width: 130px;
+    }
     .row {
       flex-wrap: wrap;
     }
     .marks {
       width: 100%;
       justify-content: flex-end;
+    }
+    .pick-sum,
+    .confirm {
+      flex-basis: 100%;
+    }
+    .pick-sum + .btn,
+    .confirm + .btn {
+      margin-left: auto;
     }
   }
 </style>

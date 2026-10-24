@@ -684,8 +684,16 @@ export const api = {
   /** Average bytes of a face's identity vector here (what keeping vectors in a shard costs per face). */
   faceEmbeddingBytes: () => invoke<number>("face_embedding_bytes"),
   mirrorList: () => invoke<MirrorRow[]>("mirror_list"),
-  mirrorSave: (id: number | null, sourceId: number, targetId: number, targetFolder: string, enabled: boolean, propagateDeletes: boolean) =>
-    invoke<number>("mirror_save", { id, sourceId, targetId, targetFolder, enabled, propagateDeletes }),
+  /** `triggers` absent keeps them (and syncs a mirror that is on); given, only they change. */
+  mirrorSave: (
+    id: number | null,
+    sourceId: number,
+    targetId: number,
+    targetFolder: string,
+    enabled: boolean,
+    propagateDeletes: boolean,
+    triggers?: MirrorTriggers,
+  ) => invoke<number>("mirror_save", { id, sourceId, targetId, targetFolder, enabled, propagateDeletes, triggers: triggers ?? null }),
   mirrorDelete: (id: number) => invoke<void>("mirror_delete", { id }),
   mirrorSync: (id: number) => invoke<void>("mirror_sync", { id }),
   dupScan: (sources: number[], across: boolean) => invoke<DupScan>("dup_scan", { sources, across }),
@@ -796,6 +804,17 @@ export interface MirrorRow {
   created_ms: number;
   last_sync_ms: number | null;
   last_result: string | null;
+  triggers: MirrorTriggers;
+}
+
+/** When a mirror syncs by itself (`vp_db::mirror::MirrorTriggers`). */
+export interface MirrorTriggers {
+  on_open: boolean;
+  on_connect: boolean;
+  /** When a scan finds the source changed. */
+  on_scan: boolean;
+  /** Minutes between syncs while both stay connected: null follows the library setting, 0 never. */
+  interval_mins: number | null;
 }
 
 export interface VerifyReport {

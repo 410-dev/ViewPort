@@ -14,7 +14,8 @@
    * Query command editor: the text at the top is the source of truth; the four columns
    * below build one condition at a time (condition type → parameters → operator →
    * connective) and write it into the text. Putting the caret on an existing condition
-   * loads it into the columns for editing.
+   * loads it into the columns for editing. On phones the columns become slides, one step
+   * at a time: condition → value → operator → connective, then back to the first.
    */
   let {
     initial,
@@ -30,7 +31,39 @@
     onsaved: () => void;
   } = $props();
 
-  $effect(() => onBack(onclose));
+  $effect(() => onBack(() => (mobile && step > 0 ? go(step - 1) : onclose())));
+
+  // ---- phone layout: one column per slide
+  const narrow = matchMedia("(max-width: 640px)");
+  let mobile = $state(narrow.matches);
+  $effect(() => {
+    const on = () => (mobile = narrow.matches);
+    narrow.addEventListener("change", on);
+    return () => narrow.removeEventListener("change", on);
+  });
+  const STEPS = ["query.stepField", "query.stepValue", "query.stepOp", "query.stepJoin"] as const;
+  let step = $state(0);
+  let track = $state<HTMLElement>();
+  let settle: ReturnType<typeof setTimeout> | undefined;
+
+  function go(i: number) {
+    step = Math.max(0, Math.min(STEPS.length - 1, i));
+    track?.scrollTo({ left: step * track.clientWidth, behavior: "smooth" });
+  }
+
+  /** A swipe moves between slides too; the step follows where it comes to rest. */
+  function onTrackScroll() {
+    clearTimeout(settle);
+    settle = setTimeout(() => {
+      if (track && track.clientWidth) step = Math.round(track.scrollLeft / track.clientWidth);
+    }, 90);
+  }
+
+  /** Sources the `source` condition can name: the ones in use. */
+  let sourceNames = $state<string[]>([]);
+  $effect(() => {
+    api.listSources().then((l) => (sourceNames = l.filter((x) => x.enabled).map((x) => x.name)), () => {});
+  });
 
   /** Values a multi-value operator accepts in the builder. */
   const MULTI_MAX = 4;
@@ -92,7 +125,8 @@
   const slots = $derived(Math.min(arity[1], Math.max(arity[0], filled + (filled < arity[1] ? 1 : 0))));
   const complete = $derived(!!field && required === 0);
 
-  const ops = $derived(vocab && ty ? vocab.ops.filter((o) => opAllowed(o.op, ty)) : []);
+  // An item is in one source: "contains all" of several never matches.
+  const ops = $derived(vocab && ty ? vocab.ops.filter((o) => opAllowed(o.op, ty) && !(fieldKey === "source" && o.op === "contains_all")) : []);
 
   function opLabel(o: string) {
     if (o === SORT_ASC) return t("qop.sort_asc");
@@ -106,9 +140,10 @@
   // Every change in the columns rewrites the condition being built (the draft) in the text
   // right away, complete or not. `target` is the draft's span; `appendAt` is set when the
   // draft was appended to the end, so the joiner (AND/OR) before it follows the connective.
-  let appendAt: number | null = null;
+  let appendAt = $state<number | null>(null);
 
   function pickField(key: string) {
+    if (mobile) go(1);
     if (key === fieldKey) return;
     fieldKey = key;
     op = null;
@@ -137,6 +172,27 @@
   function setConnective(c: "and" | "or") {
     connective = c;
     live();
+  }
+
+  /** Picks the sources the condition names; extra picks push out the oldest past the operator's limit. */
+  function toggleSource(name: string) {
+    const kept = params.filter((p) => p.trim() !== "");
+    let next = kept.includes(name) ? kept.filter((p) => p !== name) : [...kept, name];
+    if (next.length > arity[1]) next = next.slice(next.length - arity[1]);
+    params = next;
+    live();
+  }
+
+  /** Phones: the connective ends this condition and starts the next with it. */
+  function joinNext(c: "and" | "or") {
+    connective = c;
+    nextCondition();
+    go(0);
+  }
+
+  function finishStep() {
+    finish();
+    if (mobile) go(0);
   }
 
   function resetBuilder() {
@@ -191,7 +247,8 @@
     target = null;
     appendAt = null;
     resetBuilder();
-    queueMicrotask(() => input.focus());
+    // Phones would raise the keyboard over the slides.
+    if (!mobile) queueMicrotask(() => input.focus());
   }
 
   /** Ends the draft and starts the next one right away, joined with the chosen connective. */
@@ -286,7 +343,10 @@
 
 <div out:fade class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
   <div out:pop class="dialog modal" role="dialog" aria-modal="true" aria-label={t("query.title")}>
-    <header class="title"><h2>{t("query.title")}</h2></header>
+    <header class="title">
+      <h2>{t("query.title")}</h2>
+      {#if mobile}<button class="icon-btn close" onclick={onclose} aria-label={t("common.close")}><Icon name="x" size={15} /></button>{/if}
+    </header>
 
     <div class="content">
       <div class="editor">
@@ -329,7 +389,17 @@
         <span>{t("query.colExtraLabel")}</span>
       </div>
 
-      <div class="cols">
+      {#if mobile}
+        <div class="steps" role="tablist">
+          {#each STEPS as key, i (key)}
+            <button role="tab" aria-selected={step === i} aria-label={t(key)} title={t(key)} class:on={step === i} class:done={i === 0 ? !!field : i === 1 ? filled > 0 : i === 2 ? op !== null : false} onclick={() => go(i)}>
+              <span class="n">{i + 1}</span><span class="label">{t(key)}</span>
+            </button>
+          {/each}
+        </div>
+      {/if}
+
+      <div class="cols" class:carousel={mobile} bind:this={track} onscroll={mobile ? onTrackScroll : undefined}>
         <section class="col">
           <h3>{t("query.colKind")}</h3>
           <div class="items">
@@ -342,7 +412,16 @@
         <section class="col">
           <h3>{typeLabel}</h3>
           <div class="items">
-            {#if field && !isSort}
+            {#if field && !isSort && field.key === "source" && arity[1] > 0}
+              <p class="hint">{t("query.pickSources")}</p>
+              {#each [...sourceNames, ...params.filter((p) => p.trim() && !sourceNames.includes(p))] as name (name)}
+                <button class="item" class:on={params.includes(name)} onclick={() => toggleSource(name)}>
+                  <Icon name={params.includes(name) ? "check" : "folder"} size={14} /><span class="label">{name}</span>
+                </button>
+              {:else}
+                <p class="hint">{t("query.noSources")}</p>
+              {/each}
+            {:else if field && !isSort}
               {#each Array.from({ length: slots }, (_, i) => i) as i (i)}
                 <div class="param">
                   {#if ty === "kind"}
@@ -395,7 +474,7 @@
             {:else if isSort}
               <p class="hint">{t("query.sortParamHint")}</p>
             {:else}
-              <p class="hint">{t("query.pickKind")}</p>
+              <p class="hint">{mobile ? t("query.pickFirst") : t("query.pickKind")}</p>
             {/if}
           </div>
         </section>
@@ -413,7 +492,7 @@
               <button class="item" class:on={op === SORT_ASC} onclick={() => pickOp(SORT_ASC)}><Icon name="sortAsc" size={14} />{opLabel(SORT_ASC)}</button>
               <button class="item" class:on={op === SORT_DESC} onclick={() => pickOp(SORT_DESC)}><Icon name="sortDesc" size={14} />{opLabel(SORT_DESC)}</button>
             {:else}
-              <p class="hint">{t("query.pickKind")}</p>
+              <p class="hint">{mobile ? t("query.pickFirst") : t("query.pickKind")}</p>
             {/if}
           </div>
         </section>
@@ -421,15 +500,24 @@
         <section class="col">
           <h3>{t("query.colExtra")}</h3>
           <div class="items">
-            <button class="item" class:on={connective === "and"} onclick={() => setConnective("and")}>{vocab?.and ?? "AND"}</button>
-            <button class="item" class:on={connective === "or"} onclick={() => setConnective("or")}>{vocab?.or ?? "OR"}</button>
+            {#if mobile}
+              <p class="hint">{t("query.joinHint")}</p>
+              {#each [["and", vocab?.and ?? "AND"], ["or", vocab?.or ?? "OR"]] as [c, word] (c)}
+                <button class="item join" disabled={!!target && !complete} onclick={() => joinNext(c as "and" | "or")}>
+                  <Icon name="plus" size={14} />{t("query.joinNext", { word })}
+                </button>
+              {/each}
+            {:else}
+              <button class="item" class:on={connective === "and"} onclick={() => setConnective("and")}>{vocab?.and ?? "AND"}</button>
+              <button class="item" class:on={connective === "or"} onclick={() => setConnective("or")}>{vocab?.or ?? "OR"}</button>
+            {/if}
             <div class="divider"></div>
             <button class="item" class:on={negate} disabled={isSort} onclick={() => {
                 negate = !negate;
                 live();
               }}>{t("query.negate", { not: vocab?.not ?? "NOT" })}</button>
             <p class="hint">{t("query.precedence", { and: vocab?.and ?? "AND", or: vocab?.or ?? "OR" })}</p>
-            {#if target}
+            {#if target && appendAt === null}
               <p class="hint edit"><Icon name="pencil" size={12} />{t("query.editingHint")}</p>
             {/if}
           </div>
@@ -437,12 +525,24 @@
       </div>
     </div>
 
-    <footer>
-      <button class="btn wide-1" disabled={!target || !complete} onclick={finish}>{t("query.finish")}</button>
-      <button class="btn wide-2" disabled={!!target && !complete} onclick={nextCondition}>{t("query.next")}</button>
-      <button class="btn primary wide-3" disabled={!status.ok} onclick={apply}>{t("query.apply")}</button>
-      <button class="btn wide-4" onclick={onclose}>{t("common.close")}</button>
-    </footer>
+    {#if mobile}
+      <footer class="phone">
+        <button class="btn" disabled={step === 0} onclick={() => go(step - 1)}><Icon name="chevronLeft" size={14} />{t("query.prevStep")}</button>
+        {#if step < STEPS.length - 1}
+          <button class="btn" disabled={step === 0 && !field} onclick={() => go(step + 1)}>{t("query.nextStep")}<Icon name="chevronRight" size={14} /></button>
+        {:else}
+          <button class="btn" disabled={!target || !complete} onclick={finishStep}>{t("query.finish")}</button>
+        {/if}
+        <button class="btn primary" disabled={!status.ok} onclick={apply}>{t("query.apply")}</button>
+      </footer>
+    {:else}
+      <footer>
+        <button class="btn wide-1" disabled={!target || !complete} onclick={finish}>{t("query.finish")}</button>
+        <button class="btn wide-2" disabled={!!target && !complete} onclick={nextCondition}>{t("query.next")}</button>
+        <button class="btn primary wide-3" disabled={!status.ok} onclick={apply}>{t("query.apply")}</button>
+        <button class="btn wide-4" onclick={onclose}>{t("common.close")}</button>
+      </footer>
+    {/if}
   </div>
 </div>
 
@@ -688,6 +788,129 @@
     footer {
       grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
     }
+  }
+  .item .label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .title {
+    position: relative;
+  }
+  .title .close {
+    position: absolute;
+    right: 10px;
+  }
+  /* Phones: the four columns are slides of one track, a step bar above them. */
+  .steps {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+  /* The current step is named; the others show their number. */
+  .steps button:not(.on) .label {
+    display: none;
+  }
+  .steps button:not(.on) {
+    flex: 0 0 40px;
+  }
+  .steps button.on {
+    flex: 1;
+  }
+  .steps button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    min-width: 0;
+    padding: 0 6px;
+    height: 34px;
+    border: 0;
+    border-radius: var(--radius-pill);
+    background: transparent;
+    color: var(--faint);
+    font-size: 12px;
+    white-space: nowrap;
+    transition:
+      background var(--t-fast) var(--ease),
+      color var(--t-fast) var(--ease);
+  }
+  .steps .label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .steps .n {
+    flex-shrink: 0;
+    display: grid;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 1px solid currentColor;
+    font-size: 10px;
+    font-weight: 600;
+  }
+  .steps button.done {
+    color: var(--fg-2);
+  }
+  .steps button.done .n {
+    background: var(--accent-soft);
+    border-color: var(--accent-line);
+  }
+  .steps button.on {
+    background: var(--accent-soft);
+    color: var(--fg);
+    font-weight: 600;
+  }
+  .steps button.on .n {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-fg);
+  }
+  .cols.carousel {
+    display: flex;
+    gap: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scroll-snap-type: x mandatory;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    margin: 0 -20px;
+    padding: 0 0 12px;
+  }
+  .cols.carousel::-webkit-scrollbar {
+    display: none;
+  }
+  .cols.carousel > .col {
+    flex: 0 0 100%;
+    scroll-snap-align: start;
+    scroll-snap-stop: always;
+    background: transparent;
+    border-radius: 0;
+    padding: 0 20px;
+  }
+  .cols.carousel .col h3 {
+    display: none;
+  }
+  .cols.carousel .items {
+    padding: 4px 0;
+  }
+  .cols.carousel .item {
+    min-height: 46px;
+  }
+  .item.join {
+    justify-content: center;
+    font-weight: 600;
+  }
+  footer.phone {
+    grid-template-columns: minmax(0, 0.8fr) minmax(0, 1fr) minmax(0, 1fr) !important;
+    padding-top: 10px !important;
+    border-top: 1px solid var(--border) !important;
+  }
+  footer.phone .btn {
+    gap: 4px;
   }
   /* Phones: a shorter editor, and the status message gets its own line above saving. */
   @media (max-width: 600px) {

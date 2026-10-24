@@ -136,6 +136,10 @@ fn items_found_missing_are_hidden() {
 fn base_fields_and_sources() {
     let lib = library();
     assert_eq!(lib.ids("소스(NAS)"), [3, 5]);
+    // Source names match whole (any case), several at once, not in part.
+    assert_eq!(lib.ids("소스(nas:사진)"), [1, 2, 3, 4, 5]);
+    assert!(lib.ids("소스(NA)").is_empty());
+    assert_eq!(lib.ids("소스(다음을 제외:NAS)"), [1, 2, 4]);
     // "Media only" wraps the query and keeps its sorts (the app's own query text).
     assert_eq!(lib.ids("(source(NAS) AND sort desc(name)) AND NOT type(nonmedia)"), lib.ids("소스(NAS) 그리고 내림차순(이름)"));
     let all = vp_query::Query::default();
@@ -779,6 +783,11 @@ fn mirrors_track_what_they_copied() {
     };
     lib.db.put_mirror_item(id, &item).unwrap();
     assert_eq!(lib.db.mirror_items(id).unwrap()["trip/b2.jpg"], item);
+    // Triggers: on open and on reconnect, the library's interval, until changed.
+    assert_eq!(lib.db.mirror(id).unwrap().unwrap().triggers, mirror::MirrorTriggers::default());
+    let t = mirror::MirrorTriggers { on_open: false, on_connect: true, on_scan: true, interval_mins: Some(0) };
+    lib.db.set_mirror_triggers(id, &t).unwrap();
+    assert_eq!(lib.db.mirror(id).unwrap().unwrap().triggers, t);
     // Same target: kept. Another target folder: starts over.
     lib.db.save_mirror(Some(id), 1, 2, "phone", false, true, 1).unwrap();
     assert_eq!(lib.db.mirror_items(id).unwrap().len(), 1);

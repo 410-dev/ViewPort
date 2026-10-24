@@ -491,6 +491,14 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX dup_entry_report ON dup_entry(report_id, grp);
     CREATE INDEX dup_entry_media  ON dup_entry(media_id);
     "#,
+    // v11: when each mirror syncs. `interval_mins` NULL follows the library setting
+    // (`mirror.resync_mins`), 0 never repeats.
+    r#"
+    ALTER TABLE mirror ADD COLUMN on_open       INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE mirror ADD COLUMN on_connect    INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE mirror ADD COLUMN on_scan       INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE mirror ADD COLUMN interval_mins INTEGER;
+    "#,
 ];
 
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;

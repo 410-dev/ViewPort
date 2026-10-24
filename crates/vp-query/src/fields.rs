@@ -221,7 +221,8 @@ pub fn base_fields() -> Vec<FieldDef> {
             .alias("부모 폴더")
             .alias("parent folder")
             .alias("same folder"),
-        FieldDef::column("source", Text, "src.name").name("ko", "소스").name("en", "source").alias("위치"),
+        // A source is one of a known set: values match whole names, not parts of them.
+        FieldDef::column("source", Enum, "src.name").name("ko", "소스").name("en", "source").alias("위치"),
         FieldDef::column("kind", Kind, "m.kind").name("ko", "유형").name("en", "type").alias("종류").alias("kind"),
         FieldDef::column("size", Size, "m.size").name("ko", "크기").name("en", "size").alias("용량"),
         FieldDef::column("created", Date, "m.created_ms").name("ko", "생성 날짜").name("en", "created").alias("생성일"),

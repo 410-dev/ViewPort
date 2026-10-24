@@ -411,6 +411,12 @@ pub(crate) fn scan_now(app: &AppHandle, ws: Arc<Workspace>, source: SourceRow) -
             Err(e) => crate::applog::warn("props", format!("could not take in properties of '{}': {}", source.name, e.message)),
         }
     }
+    if let Ok(p) = &result
+        && ws.autosave()
+        && p.added + p.updated + p.missing.unwrap_or(0) > 0
+    {
+        crate::mirror::scanned(app, &ws, source.id);
+    }
     if result.is_ok() && ws.autosave() {
         crate::video::spawn_probe_backfill(app, ws.clone());
     }
@@ -675,7 +681,15 @@ pub async fn edit_folder_values(
 #[tauri::command]
 pub fn suggest_values(state: State<'_, AppState>, key: String, prefix: String, limit: Option<u32>) -> CmdResult<Vec<String>> {
     let limit = limit.unwrap_or(crate::recent::cached_app_settings().ui.suggest_limit).max(1) as usize;
-    Ok(workspace(&state)?.read_db.lock().unwrap().suggest_values(&key, &prefix, limit)?)
+    let ws = workspace(&state)?;
+    let db = ws.read_db.lock().unwrap();
+    // The `source` condition takes the names of the sources in use.
+    if key == "source" {
+        let prefix = prefix.to_lowercase();
+        let names = db.sources()?.into_iter().filter(|s| s.enabled).map(|s| s.name).filter(|n| n.to_lowercase().starts_with(&prefix));
+        return Ok(names.take(limit).collect());
+    }
+    Ok(db.suggest_values(&key, &prefix, limit)?)
 }
 
 /// Words the query editor offers as completions, in the given locale.
