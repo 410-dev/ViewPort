@@ -798,6 +798,7 @@ mod tests {
             include_nonmedia: false,
             now_ms: 1,
             cancel: &cancel,
+            added_times: None,
         }
         .run(&mut |_| {})
         .unwrap();
@@ -909,7 +910,7 @@ mod shard_tests {
         let drv = ws.driver(registry, &source).unwrap();
         let settings = ws.settings.read().unwrap().scan.clone();
         let cancel = AtomicBool::new(false);
-        vp_scan::Scanner { db: &ws.write_db, driver: drv.as_ref(), settings: &settings, source_id: id, include_nonmedia: true, now_ms: 1, cancel: &cancel }
+        vp_scan::Scanner { db: &ws.write_db, driver: drv.as_ref(), settings: &settings, source_id: id, include_nonmedia: true, now_ms: 1, cancel: &cancel, added_times: None }
             .run(&mut |_| {})
             .unwrap()
     }

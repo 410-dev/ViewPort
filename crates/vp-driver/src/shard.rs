@@ -42,7 +42,7 @@ impl ShardDriver {
 }
 
 fn entry(e: EntryInfo) -> Entry {
-    Entry { path: e.path, is_dir: e.is_dir, size: e.size, created_ms: e.created_ms, modified_ms: e.modified_ms }
+    Entry { path: e.path, is_dir: e.is_dir, size: e.size, created_ms: e.created_ms, modified_ms: e.modified_ms, added_ms: None }
 }
 
 struct Reader(ShardReader);

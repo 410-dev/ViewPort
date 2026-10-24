@@ -121,6 +121,17 @@ mod imp {
         HANDLE.get()?.run_mobile_plugin("probe", json!({ "path": path })).ok()
     }
 
+    #[derive(Deserialize)]
+    struct Added {
+        paths: Vec<String>,
+        times: Vec<i64>,
+    }
+
+    pub fn media_added(root: &Path) -> Option<Vec<(String, i64)>> {
+        let out: Added = HANDLE.get()?.run_mobile_plugin("mediaAdded", json!({ "path": root })).ok()?;
+        Some(out.paths.into_iter().zip(out.times).collect())
+    }
+
     pub fn frame(path: &Path, at_ms: i64, max_edge: u32, quality: u8) -> Option<Vec<u8>> {
         let args = json!({ "path": path, "atMs": at_ms, "maxEdge": max_edge, "quality": quality });
         let out: FramePath = HANDLE.get()?.run_mobile_plugin("frame", args).ok()?;
@@ -181,6 +192,10 @@ mod imp {
         None
     }
 
+    pub fn media_added(_root: &Path) -> Option<Vec<(String, i64)>> {
+        None
+    }
+
     pub fn frame(_path: &Path, _at_ms: i64, _max_edge: u32, _quality: u8) -> Option<Vec<u8>> {
         None
     }
@@ -191,6 +206,16 @@ mod imp {
 }
 
 pub use imp::{frame, media_available, probe, scaled_image};
+
+/// Android: when the media store first saw each file under folder `root`, by path relative
+/// to it (ms). The file system there keeps no usable birth time. `None` elsewhere.
+pub fn media_added(root: &Path) -> Option<std::collections::HashMap<String, i64>> {
+    // The media store names files by their canonical path (/storage/emulated/0/...).
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let prefix = format!("{}/", root.display().to_string().trim_end_matches('/'));
+    let list = imp::media_added(&root)?;
+    Some(list.into_iter().filter_map(|(p, secs)| Some((p.strip_prefix(&prefix)?.to_string(), secs * 1000))).collect())
+}
 
 /// The Tauri plugin that connects to the native side.
 pub fn init() -> TauriPlugin<tauri::Wry> {

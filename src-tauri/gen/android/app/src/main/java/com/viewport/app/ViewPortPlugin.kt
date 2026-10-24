@@ -19,6 +19,7 @@ import android.os.Build
 import android.os.Environment
 import android.os.storage.StorageManager
 import android.provider.DocumentsContract
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.provider.Settings
 import android.view.View
@@ -286,6 +287,40 @@ class ViewPortPlugin(private val activity: Activity) : Plugin(activity) {
       controller.isAppearanceLightStatusBars = !args.dark
       controller.isAppearanceLightNavigationBars = !args.dark
       invoke.resolve()
+    }
+  }
+
+  /**
+   * When the media store first saw each file under `path` (DATE_ADDED, seconds): the
+   * closest Android has to "when this file arrived". Paths are absolute.
+   */
+  @Command
+  fun mediaAdded(invoke: Invoke) {
+    val args = invoke.parseArgs(PathArgs::class.java)
+    pool.execute {
+      try {
+        val root = args.path.trimEnd('/')
+        val like = root.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "/%"
+        val paths = JSArray()
+        val times = JSArray()
+        activity.contentResolver.query(
+          MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL),
+          arrayOf(MediaStore.MediaColumns.DATA, MediaStore.MediaColumns.DATE_ADDED),
+          "${MediaStore.MediaColumns.DATA} LIKE ? ESCAPE '\\'",
+          arrayOf(like),
+          null,
+        )?.use { c ->
+          while (c.moveToNext()) {
+            val path = c.getString(0) ?: continue
+            if (c.isNull(1)) continue
+            paths.put(path)
+            times.put(c.getLong(1))
+          }
+        }
+        invoke.resolve(JSObject().put("paths", paths).put("times", times))
+      } catch (e: Exception) {
+        invoke.reject(e.message ?: "media store query failed")
+      }
     }
   }
 

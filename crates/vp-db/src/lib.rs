@@ -83,6 +83,7 @@ pub struct KnownFile {
     pub modified_ms: Option<i64>,
     /// Width and height are recorded (images scanned by older versions may lack them).
     pub has_size: bool,
+    pub added_ms: i64,
 }
 
 /// An extension field as shown in the UI.
@@ -472,7 +473,7 @@ impl Db {
                 kind = excluded.kind, size = excluded.size, created_ms = excluded.created_ms,
                 modified_ms = excluded.modified_ms, duration_ms = excluded.duration_ms,
                 width = excluded.width, height = excluded.height, seen_gen = excluded.seen_gen,
-                missing = 0
+                added_ms = MIN(added_ms, excluded.added_ms), missing = 0
              RETURNING id",
             params![
                 m.source_id,
@@ -681,14 +682,41 @@ impl Db {
     }
 
     pub fn known_files(&self, source_id: i64) -> Result<std::collections::HashMap<String, KnownFile>> {
-        let mut stmt = self.conn.prepare("SELECT rel_path, id, size, modified_ms, width IS NOT NULL FROM media WHERE source_id = ?1")?;
+        let mut stmt = self.conn.prepare("SELECT rel_path, id, size, modified_ms, width IS NOT NULL, added_ms FROM media WHERE source_id = ?1")?;
         let rows = stmt.query_map([source_id], |r| {
             Ok((
                 r.get::<_, String>(0)?,
-                KnownFile { id: r.get(1)?, size: r.get::<_, i64>(2)? as u64, modified_ms: r.get(3)?, has_size: r.get(4)? },
+                KnownFile {
+                    id: r.get(1)?,
+                    size: r.get::<_, i64>(2)? as u64,
+                    modified_ms: r.get(3)?,
+                    has_size: r.get(4)?,
+                    added_ms: r.get(5)?,
+                },
             ))
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Gives copies (in source `to`, by path) the added time of the items they were copied
+    /// from, when that is earlier: a mirror's copy arrived when its original did.
+    pub fn copy_added_to(&self, to: i64, pairs: &[(i64, String)]) -> Result<()> {
+        let mut stmt = self.conn.prepare_cached(
+            "UPDATE media SET added_ms = MIN(added_ms, (SELECT o.added_ms FROM media o WHERE o.id = ?1))
+             WHERE source_id = ?2 AND rel_path = ?3",
+        )?;
+        for (from, rel) in pairs {
+            stmt.execute(params![from, to, rel])?;
+        }
+        Ok(())
+    }
+
+    /// Moves an item's added time back to `added_ms` (the file system knew an earlier one).
+    pub fn set_added(&self, media_id: i64, added_ms: i64) -> Result<()> {
+        self.conn
+            .prepare_cached("UPDATE media SET added_ms = ?2 WHERE id = ?1 AND added_ms > ?2")?
+            .execute(params![media_id, added_ms])?;
+        Ok(())
     }
 
     /// Records the pixel size of an image found unchanged but scanned without one.

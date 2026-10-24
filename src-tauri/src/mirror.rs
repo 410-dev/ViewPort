@@ -340,6 +340,10 @@ fn sync_with(
                 meta_rev: -1,
             })?;
         }
+        // Copies count as added when their originals were.
+        let mut added: Vec<(i64, String)> = report.copied.clone();
+        added.extend(adopted.iter().map(|(rel, target, _)| (present[rel].id, target.clone())));
+        db.copy_added_to(tgt.id, &added)?;
     }
 
     // Property changes of items already mirrored.
@@ -389,7 +393,7 @@ mod tests {
         let drv = ws.driver(registry, s).map_err(|e| e.message)?;
         let settings = ws.settings.read().unwrap().scan.clone();
         let cancel = AtomicBool::new(false);
-        vp_scan::Scanner { db: &ws.write_db, driver: drv.as_ref(), settings: &settings, source_id: s.id, include_nonmedia: true, now_ms: now_ms(), cancel: &cancel }
+        vp_scan::Scanner { db: &ws.write_db, driver: drv.as_ref(), settings: &settings, source_id: s.id, include_nonmedia: true, now_ms: now_ms(), cancel: &cancel, added_times: None }
             .run(&mut |_| {})
             .map(|_| ())
             .map_err(|e| e.to_string())
@@ -453,6 +457,8 @@ mod tests {
         let copy = ws.read_db.lock().unwrap().known_files(usb_id).unwrap()["phone/sub/c.jpg"].id;
         let props = ws.read_db.lock().unwrap().item_props(copy).unwrap();
         assert!(props.values.iter().any(|v| v.field == "x.rating" && v.int == Some(5)), "properties follow");
+        let added = |s: i64, p: &str| ws.read_db.lock().unwrap().known_files(s).unwrap()[p].added_ms;
+        assert_eq!(added(usb_id, "phone/sub/c.jpg"), added(src_id, "sub/c.jpg"), "added when the original was");
 
         // A copy someone changed is not deleted with its source.
         shard.put("phone/sub/c.jpg", b"edited on the usb", None, None).unwrap();

@@ -45,15 +45,77 @@ impl LocalDriver {
         Ok(p)
     }
 
-    fn entry(path: String, meta: &Metadata) -> Entry {
+    fn entry(path: String, full: &Path, meta: &Metadata) -> Entry {
+        let created_ms = meta.created().ok().and_then(to_ms);
         Entry {
             path,
             is_dir: meta.is_dir(),
             size: if meta.is_dir() { 0 } else { meta.len() },
-            created_ms: meta.created().ok().and_then(to_ms),
+            created_ms,
             modified_ms: meta.modified().ok().and_then(to_ms),
+            added_ms: if meta.is_dir() { None } else { added_ms(full).or(created_ms) },
         }
     }
+}
+
+/// macOS: the "Date Added" Finder shows, when the file was put in its folder.
+#[cfg(target_os = "macos")]
+fn added_ms(full: &Path) -> Option<i64> {
+    use std::ffi::{CString, c_char, c_void};
+    use std::os::unix::ffi::OsStrExt;
+
+    #[repr(C)]
+    struct AttrList {
+        bitmapcount: u16,
+        reserved: u16,
+        commonattr: u32,
+        volattr: u32,
+        dirattr: u32,
+        fileattr: u32,
+        forkattr: u32,
+    }
+    #[repr(C, packed(4))]
+    struct Out {
+        len: u32,
+        sec: i64,
+        nsec: i64,
+    }
+    const ATTR_BIT_MAP_COUNT: u16 = 5;
+    const ATTR_CMN_ADDEDTIME: u32 = 0x1000_0000;
+    unsafe extern "C" {
+        fn getattrlist(path: *const c_char, list: *mut c_void, buf: *mut c_void, size: usize, options: u32) -> i32;
+    }
+
+    let path = CString::new(full.as_os_str().as_bytes()).ok()?;
+    let mut list = AttrList {
+        bitmapcount: ATTR_BIT_MAP_COUNT,
+        reserved: 0,
+        commonattr: ATTR_CMN_ADDEDTIME,
+        volattr: 0,
+        dirattr: 0,
+        fileattr: 0,
+        forkattr: 0,
+    };
+    let mut out = Out { len: 0, sec: 0, nsec: 0 };
+    // SAFETY: both buffers are valid for the sizes given; the call only writes into `out`.
+    let rc = unsafe {
+        getattrlist(
+            path.as_ptr(),
+            (&mut list as *mut AttrList).cast(),
+            (&mut out as *mut Out).cast(),
+            std::mem::size_of::<Out>(),
+            0,
+        )
+    };
+    // A volume without the attribute returns just the length word.
+    let (len, sec, nsec) = (out.len, out.sec, out.nsec);
+    (rc == 0 && len as usize >= std::mem::size_of::<Out>() && sec > 0).then(|| sec * 1000 + nsec / 1_000_000)
+}
+
+/// Elsewhere the birth time stands in: copying or downloading a file creates it anew.
+#[cfg(not(target_os = "macos"))]
+fn added_ms(_full: &Path) -> Option<i64> {
+    None
 }
 
 fn to_ms(t: SystemTime) -> Option<i64> {
@@ -87,15 +149,17 @@ impl MediaDriver for LocalDriver {
             let item = item?;
             let Ok(name) = item.file_name().into_string() else { continue }; // skip non-UTF-8 names
             // Follow symlinks so linked folders and files behave like real ones.
-            let Ok(meta) = fs::metadata(item.path()) else { continue };
-            out.push(Self::entry(join(dir, &name), &meta));
+            let full = item.path();
+            let Ok(meta) = fs::metadata(&full) else { continue };
+            out.push(Self::entry(join(dir, &name), &full, &meta));
         }
         Ok(out)
     }
 
     fn stat(&self, path: &str) -> Result<Entry> {
-        let meta = fs::metadata(self.resolve(path)?).map_err(|e| not_found(e, path))?;
-        Ok(Self::entry(path.trim_matches('/').to_string(), &meta))
+        let full = self.resolve(path)?;
+        let meta = fs::metadata(&full).map_err(|e| not_found(e, path))?;
+        Ok(Self::entry(path.trim_matches('/').to_string(), &full, &meta))
     }
 
     fn open(&self, path: &str) -> Result<Box<dyn MediaReader>> {

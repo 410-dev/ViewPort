@@ -377,6 +377,8 @@ pub(crate) fn scan_now(app: &AppHandle, ws: Arc<Workspace>, source: SourceRow) -
         if let Some(s) = shard {
             s.refresh().map_err(|e| e.to_string())?;
         }
+        // Android keeps no birth times; the media store knows when files arrived.
+        let added_times = if source.driver == "local" { driver.local_path("").and_then(|root| crate::platform::media_added(&root)) } else { None };
         let scanner = vp_scan::Scanner {
             db: &ws.write_db,
             driver: driver.as_ref(),
@@ -386,6 +388,7 @@ pub(crate) fn scan_now(app: &AppHandle, ws: Arc<Workspace>, source: SourceRow) -
             include_nonmedia: settings.include_nonmedia || source.driver == crate::shards::DRIVER,
             now_ms: now_ms(),
             cancel: &cancel,
+            added_times: added_times.as_ref(),
         };
         scanner.run(&mut |p| emit(p, false, None)).map_err(|e| e.to_string())
     });
@@ -1562,7 +1565,7 @@ mod folder_tests {
         let drv = ws.driver(&registry, &source).unwrap();
         let settings = ws.settings.read().unwrap().scan.clone();
         let cancel = AtomicBool::new(false);
-        vp_scan::Scanner { db: &ws.write_db, driver: drv.as_ref(), settings: &settings, source_id: src, include_nonmedia: false, now_ms: 1, cancel: &cancel }
+        vp_scan::Scanner { db: &ws.write_db, driver: drv.as_ref(), settings: &settings, source_id: src, include_nonmedia: false, now_ms: 1, cancel: &cancel, added_times: None }
             .run(&mut |_| {})
             .unwrap();
         let id = ws.read_db.lock().unwrap().folder_media(src, "a").unwrap()[0];
@@ -1620,6 +1623,7 @@ mod folder_tests {
             include_nonmedia: false,
             now_ms: 1,
             cancel: &cancel,
+            added_times: None,
         }
         .run(&mut |_| {})
         .unwrap();

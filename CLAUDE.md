@@ -135,6 +135,9 @@ npm run tauri android build -- --apk --target aarch64          # 릴리즈. 디�
   새로 만들거나 덮어쓰지 않는다.
 - 결과물: `src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk`. 서명 확인:
   `& "$sdk\build-tools\36.0.0\apksigner.bat" verify --print-certs <apk>`(인증서 SHA-256 `619e672c…e9a24d6f`).
+- 추가한 날짜(`media.added_ms`)는 파일이 그 자리에 들어온 시각: macOS는 Finder의 '추가된 날짜'(`ATTR_CMN_ADDEDTIME`),
+  Windows·Linux는 만든 시각(birth time), Android는 MediaStore `DATE_ADDED`(`platform::media_added`), 모르면 처음 스캔한 시각.
+  스캔은 더 이른 값으로만 고친다. SMB·샤드는 스캔 시각이고, 미러가 만든 사본은 원본의 값을 받는다(`copy_added_to`).
 - 미디어 종류는 `image`/`video`/`nonmedia`. `nonmedia`(기타 파일)는 미리보기·뷰어에 넣지 않고 내보내기만 한다.
 - 이미지를 화면에 그릴 때는 원본 `mediaUrl` 대신 `displayUrl(brief, viewer.display_max_px)`를 쓴다(큰 이미지는 축소 사본).
 - 글꼴: 한국어 고정폭 글꼴을 쓰지 않는다. 기본은 시스템 고딕, 사용자가 설정에서 바꾼다(`ui.font_ui`, `ui.font_editor`).
@@ -196,3 +199,15 @@ npm run tauri android build -- --apk --target aarch64          # 릴리즈. 디�
 - 변경 후 `cargo test --workspace`와 `npm run check`가 통과해야 한다. 쿼리 언어를 바꾸면 `vp-query` 단위 테스트와
   `vp-db/src/tests.rs`(실제 SQLite 검색) 양쪽에 케이스를 추가한다.
 - 코드 주석·식별자는 영어, 문서(README, ARCHITECTURE)와 UI 기본 로케일은 한국어.
+
+### 작업 완료 루틴
+
+빌드해도 될 만큼 작업이 끝나면(사용자가 따로 말하지 않아도) 다음을 순서대로 한다.
+
+1. `cargo test --workspace`와 `npm run check` 통과 확인.
+2. `main`에 커밋하고 `git push origin main`.
+3. APK 빌드(위 'APK 빌드 요령', 릴리즈 + `--target aarch64`, 샌드박스 밖에서)와 MSI 빌드
+   (`npm run tauri build -- --bundles msi`). 둘은 서로 독립이라 백그라운드로 돌려도 된다. APK 서명 인증서 SHA-256을 확인한다.
+4. **APK만** temp.hysong.dev에 올리고 링크를 사용자에게 알린다(MSI는 올리지 않고 `target/release/bundle/msi/` 경로만 알림):
+   `python -I scripts/upload-temp.py src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk ViewPort-<버전>.apk 3`
+   (마지막 인수는 최대 다운로드 횟수). 업로드는 네트워크가 필요하므로 샌드박스 밖에서 실행한다.

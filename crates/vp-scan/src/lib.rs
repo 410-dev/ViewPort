@@ -69,6 +69,8 @@ enum Action {
     /// Unchanged, but its pixel size was missing and is now known.
     SeenWithSize(i64, u32, u32),
     Upsert(NewMedia),
+    /// The file system knows an earlier added time than the one recorded.
+    Added(i64, i64),
 }
 
 /// Pixel size from a JPEG's frame header, walking the file marker by marker. Camera photos
@@ -116,6 +118,8 @@ pub struct Scanner<'a> {
     /// Also used as the scan generation id.
     pub now_ms: i64,
     pub cancel: &'a AtomicBool,
+    /// Added times by path the driver cannot see (Android: the media store's).
+    pub added_times: Option<&'a HashMap<String, i64>>,
 }
 
 impl Scanner<'_> {
@@ -155,7 +159,13 @@ impl Scanner<'_> {
                     continue;
                 };
                 p.files += 1;
-                batch.push(self.action(&e, kind, &known, &mut p));
+                let added = self.added_times.and_then(|m| m.get(&e.path).copied()).or(e.added_ms).map(|t| t.min(self.now_ms));
+                if let (Some(t), Some(k)) = (added, known.get(&e.path))
+                    && t < k.added_ms
+                {
+                    batch.push(Action::Added(k.id, t));
+                }
+                batch.push(self.action(&e, kind, added, &known, &mut p));
                 if batch.len() >= self.settings.batch_size.max(1) as usize {
                     self.flush(&mut batch)?;
                     progress(&p);
@@ -171,7 +181,7 @@ impl Scanner<'_> {
         Ok(p)
     }
 
-    fn action(&self, e: &Entry, kind: MediaKind, known: &HashMap<String, KnownFile>, p: &mut ScanProgress) -> Action {
+    fn action(&self, e: &Entry, kind: MediaKind, added: Option<i64>, known: &HashMap<String, KnownFile>, p: &mut ScanProgress) -> Action {
         if let Some(k) = known.get(&e.path) {
             if k.size == e.size && k.modified_ms == e.modified_ms {
                 p.unchanged += 1;
@@ -198,7 +208,7 @@ impl Scanner<'_> {
             size: e.size,
             created_ms: e.created_ms.or(e.modified_ms),
             modified_ms: e.modified_ms,
-            added_ms: self.now_ms,
+            added_ms: added.unwrap_or(self.now_ms),
             duration_ms: None,
             width,
             height,
@@ -234,6 +244,7 @@ impl Scanner<'_> {
                     Action::Upsert(m) => {
                         db.upsert_media(m)?;
                     }
+                    Action::Added(id, t) => db.set_added(*id, *t)?,
                 }
             }
             Ok(())
@@ -256,6 +267,40 @@ mod tests {
         v.extend(h.to_be_bytes());
         v.extend([8, 6, 0, 0, 0, 0, 0, 0, 0]);
         v
+    }
+
+    #[test]
+    fn added_time_comes_from_the_file_system_and_only_moves_back() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.png"), png(1, 1)).unwrap();
+        let born = fs::metadata(dir.path().join("a.png")).unwrap().created().ok();
+        let db = Mutex::new(Db::open_in_memory().unwrap());
+        let source_id = db
+            .lock()
+            .unwrap()
+            .add_source(&NewSource { name: "t".into(), driver: "local".into(), config: serde_json::json!({}), root: String::new() })
+            .unwrap();
+        let driver = LocalDriver::new(dir.path());
+        let settings = ScanSettings::default();
+        let cancel = AtomicBool::new(false);
+        let later = 4_000_000_000_000; // 2096
+        let scan = |now_ms, added_times| {
+            Scanner { db: &db, driver: &driver, settings: &settings, source_id, include_nonmedia: false, now_ms, cancel: &cancel, added_times }
+                .run(&mut |_| {})
+                .unwrap();
+            db.lock().unwrap().known_files(source_id).unwrap()["a.png"].added_ms
+        };
+        let first = scan(later, None);
+        // Where the file system has a birth time, that is when the file was added.
+        if born.is_some() {
+            assert!(first < later);
+        } else {
+            assert_eq!(first, later);
+        }
+        let hints = HashMap::from([("a.png".to_string(), 1_000)]);
+        assert_eq!(scan(later + 1, Some(&hints)), 1_000, "an earlier time is taken");
+        let hints = HashMap::from([("a.png".to_string(), 5_000)]);
+        assert_eq!(scan(later + 2, Some(&hints)), 1_000, "a later one is not");
     }
 
     #[test]
@@ -286,7 +331,7 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let scan = |now_ms| {
             let mut events = 0;
-            let s = Scanner { db: &db, driver: &driver, settings: &settings, source_id, include_nonmedia: false, now_ms, cancel: &cancel };
+            let s = Scanner { db: &db, driver: &driver, settings: &settings, source_id, include_nonmedia: false, now_ms, cancel: &cancel, added_times: None };
             let p = s.run(&mut |_| events += 1).unwrap();
             (p, events)
         };
@@ -314,7 +359,7 @@ mod tests {
         assert_eq!(p.unchanged + p.updated, 2);
 
         // With non-media files included, notes.txt is listed as such and found by kind.
-        let s = Scanner { db: &db, driver: &driver, settings: &settings, source_id, include_nonmedia: true, now_ms: 3, cancel: &cancel };
+        let s = Scanner { db: &db, driver: &driver, settings: &settings, source_id, include_nonmedia: true, now_ms: 3, cancel: &cancel, added_times: None };
         let p = s.run(&mut |_| {}).unwrap();
         assert_eq!((p.files, p.added), (3, 1));
         let db = db.lock().unwrap();
@@ -388,7 +433,7 @@ mod tests {
         let settings = ScanSettings::default();
         let cancel = AtomicBool::new(false);
         let scan = |now_ms| {
-            let s = Scanner { db: &db, driver: &driver, settings: &settings, source_id, include_nonmedia: false, now_ms, cancel: &cancel };
+            let s = Scanner { db: &db, driver: &driver, settings: &settings, source_id, include_nonmedia: false, now_ms, cancel: &cancel, added_times: None };
             s.run(&mut |_| {}).unwrap()
         };
         let size = || {
@@ -416,7 +461,7 @@ mod tests {
         let driver = LocalDriver::new(dir.path());
         let settings = ScanSettings::default();
         let cancel = AtomicBool::new(true);
-        let s = Scanner { db: &db, driver: &driver, settings: &settings, source_id: 1, include_nonmedia: false, now_ms: 1, cancel: &cancel };
+        let s = Scanner { db: &db, driver: &driver, settings: &settings, source_id: 1, include_nonmedia: false, now_ms: 1, cancel: &cancel, added_times: None };
         assert!(matches!(s.run(&mut |_| {}), Err(ScanError::Cancelled)));
     }
 }

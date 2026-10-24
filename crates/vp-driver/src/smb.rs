@@ -176,6 +176,7 @@ impl MediaDriver for SmbDriver {
                 size: if e.is_directory { 0 } else { e.size },
                 created_ms: to_ms(e.created),
                 modified_ms: to_ms(e.modified),
+                added_ms: None,
             })
             .collect())
     }
@@ -194,6 +195,7 @@ impl MediaDriver for SmbDriver {
             size: info.size,
             created_ms: to_ms(info.created),
             modified_ms: to_ms(info.modified),
+            added_ms: None,
         })
     }
 

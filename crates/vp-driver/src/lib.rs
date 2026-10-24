@@ -47,6 +47,9 @@ pub struct Entry {
     pub size: u64,
     pub created_ms: Option<i64>,
     pub modified_ms: Option<i64>,
+    /// When the file arrived where it is, if the file system knows (macOS "Date Added",
+    /// otherwise its birth time on this volume). `None`: the scan time is used.
+    pub added_ms: Option<i64>,
 }
 
 impl Entry {
