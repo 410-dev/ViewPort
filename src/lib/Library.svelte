@@ -8,6 +8,7 @@
   import { fade, pop, slide } from "./ui/motion";
   import { ask } from "@tauri-apps/plugin-dialog";
   import { pickFolder } from "./pick.svelte";
+  import { tasks } from "./tasks.svelte";
   import { onBack, PASS } from "./back.svelte";
   import { onDestroy } from "svelte";
   import {
@@ -601,9 +602,50 @@
 
   // ---- copy to another source: into a shard, or out of one (only while the bundle has a shard)
   type FolderPick = { sourceId: number; path: string };
-  let copying = $state<{ ids: number[]; folders: FolderPick[]; targets: { id: number; name: string }[] } | null>(null);
+  let copying = $state<{
+    ids: number[];
+    folders: FolderPick[];
+    targets: { id: number; name: string }[];
+    /** The items are deleted where they were once copied. */
+    move?: boolean;
+    /** Told whether the copy started (the duplicate finder waits for it). */
+    started?: (ok: boolean) => void;
+  } | null>(null);
   $effect(() => {
-    if (copying) return onBack(() => (copying = null));
+    if (copying) return onBack(() => cancelCopy());
+  });
+
+  function cancelCopy() {
+    copying?.started?.(false);
+    copying = null;
+  }
+
+  /** Writable sources an item can go to from the duplicate finder: any but its own. */
+  async function startTransfer(list: number[], move: boolean): Promise<boolean> {
+    const origin = new Set((await briefsOf(list)).map((b) => b.source_id));
+    const targets = sources
+      .filter((s) => !origin.has(s.id) && s.enabled && !offline.includes(s.id) && ["shard", "local", "bundle"].includes(s.driver))
+      .map((s) => ({ id: s.id, name: s.name }));
+    if (targets.length === 0) {
+      alert(t("copy.noTargetAny"));
+      return false;
+    }
+    return new Promise((started) => (copying = { ids: list, folders: [], targets, move, started }));
+  }
+
+  // A move deletes the originals after copying: look again once it is done.
+  let pendingMove = false;
+  let moveRunning = false;
+  $effect(() => {
+    const now = tasks.list.some((x) => x.kind === "copy_to_source" && x.state === "running");
+    if (moveRunning && !now) {
+      moveRunning = false;
+      runSearch(false);
+    }
+    if (now && pendingMove) {
+      pendingMove = false;
+      moveRunning = true;
+    }
   });
 
   /** Items of shards may go anywhere else; anything else only into a shard. */
@@ -623,7 +665,17 @@
     copying = null;
     if (!c) return;
     // Runs in the background (status bar); the target's rescan brings the copies in.
-    api.copyToSource(c.ids, c.folders, to, dest).catch((e) => alert(asCmdError(e).message));
+    try {
+      await api.copyToSource(c.ids, c.folders, to, dest, c.move);
+      if (c.move) {
+        pendingMove = true;
+        broadcast("media", c.ids);
+      }
+      c.started?.(true);
+    } catch (e) {
+      c.started?.(false);
+      alert(asCmdError(e).message);
+    }
   }
 
   // ---- folder actions (a folder's context menu)
@@ -1056,18 +1108,6 @@
   </div>
 {/if}
 
-{#if copying}
-  <MoveDialog
-    sourceId={copying.targets[0].id}
-    sourceName={copying.targets[0].name}
-    start=""
-    targets={copying.targets}
-    title={t("copy.title")}
-    action={t("copy.here")}
-    onpick={commitCopy}
-    onclose={() => (copying = null)}
-  />
-{/if}
 
 {#if moving}
   <MoveDialog
@@ -1168,16 +1208,42 @@
   <SettingsPanel {settings} {bundle} {onbundle} onclose={() => (showSettings = false)} />
 {/if}
 
-{#if !embedded}
-  <CopyConflict />
-{/if}
 
 {#if mirroring}
   <MirrorDialog source={mirroring} {sources} onclose={() => (mirroring = null)} />
 {/if}
 
 {#if showDedup}
-  <DedupDialog {sources} initial={selected} onchange={() => runSearch(false)} onclose={() => (showDedup = false)} />
+  <DedupDialog
+    {sources}
+    initial={selected}
+    onchange={() => runSearch(false)}
+    onclose={() => (showDedup = false)}
+    onreveal={(id) => {
+      showDedup = false;
+      revealInLibrary(id);
+    }}
+    onexport={exportSelected}
+    ontransfer={startTransfer}
+  />
+{/if}
+
+<!-- Above the duplicate finder, which can start a copy. -->
+{#if copying}
+  <MoveDialog
+    sourceId={copying.targets[0].id}
+    sourceName={copying.targets[0].name}
+    start=""
+    targets={copying.targets}
+    title={copying.move ? t("copy.moveTitle") : t("copy.title")}
+    action={copying.move ? t("copy.moveHere") : t("copy.here")}
+    onpick={commitCopy}
+    onclose={cancelCopy}
+  />
+{/if}
+
+{#if !embedded}
+  <CopyConflict />
 {/if}
 
 {#if showPeople}

@@ -1002,9 +1002,11 @@ pub(crate) struct CopyJob {
 /// A picked item or folder lands in `dest` by its own name; a whole source (`path` "")
 /// lands with its contents directly in `dest`. Files already at the target are skipped.
 /// Tags, ratings, statistics and loop segments follow; thumbnails and (into a shard)
-/// converted copies too, so nothing is made twice.
+/// converted copies too, so nothing is made twice. With `remove` (moving), each item copied
+/// is then deleted where it was; ones skipped or failed stay.
 #[tauri::command]
-pub async fn copy_to_source(app: AppHandle, ids: Vec<i64>, folders: Vec<FolderPick>, to: i64, dest: String) -> CmdResult<()> {
+pub async fn copy_to_source(app: AppHandle, ids: Vec<i64>, folders: Vec<FolderPick>, to: i64, dest: String, remove: Option<bool>) -> CmdResult<()> {
+    let remove = remove.unwrap_or(false);
     let ws = workspace(&app)?;
     let registry = app.state::<AppState>().drivers.clone();
     let (ws2, reg2) = (ws.clone(), registry.clone());
@@ -1029,7 +1031,21 @@ pub async fn copy_to_source(app: AppHandle, ids: Vec<i64>, folders: Vec<FolderPi
         let rescan = || {
             let _ = crate::commands::scan_now(&app, ws.clone(), target.clone());
         };
-        let result = copy_files(&ws, &registry, &target, jobs, Conflicts::Ask(app.clone()), &task, &cancel, rescan).map(|r| (r.failed, r.skipped));
+        let result = copy_files(&ws, &registry, &target, jobs, Conflicts::Ask(app.clone()), &task, &cancel, rescan).map(|r| {
+            let mut failed = r.failed;
+            if remove {
+                for (id, _) in &r.copied {
+                    if cancel.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    if let Err(e) = crate::commands::delete_one(&ws, &registry, *id, &task) {
+                        crate::applog::warn("copy", format!("moved #{id} but could not delete the original: {}", e.message));
+                        failed += 1;
+                    }
+                }
+            }
+            (failed, r.skipped)
+        });
         match result {
             Ok((0, 0)) => task.finish(),
             // Skipping is what the user chose: done, not failed.

@@ -18,6 +18,7 @@
   import { t } from "../i18n.svelte";
   import { broadcast } from "../sync";
   import { fraction, tasks } from "../tasks.svelte";
+  import ContextMenu, { type MenuItem } from "../ui/ContextMenu.svelte";
   import Icon from "../ui/Icon.svelte";
   import Select from "../ui/Select.svelte";
   import { errText } from "../shard/shared";
@@ -26,14 +27,30 @@
    * Duplicate finder (`dedup.rs`): finds files with the same contents within each source or
    * across sources, and lets the user pick per file what to do. Every file can be marked for
    * deletion; a shard file can instead share another copy's stored data ("save space",
-   * copy-on-write), which keeps the file. Nothing happens until "Apply".
+   * copy-on-write), which keeps the file. Nothing happens until "Apply". A file's own menu
+   * (right click, long press) shows it in the library, exports it, or copies or moves it
+   * to another source right away.
    */
   let {
     sources,
     initial,
     onchange,
     onclose,
-  }: { sources: SourceRow[]; initial: number | null; /** Files were deleted. */ onchange?: () => void; onclose: () => void } = $props();
+    onreveal,
+    onexport,
+    ontransfer,
+  }: {
+    sources: SourceRow[];
+    initial: number | null;
+    /** Files were deleted. */
+    onchange?: () => void;
+    onclose: () => void;
+    /** Shows an item in its folder (the finder closes). */
+    onreveal?: (id: number) => void;
+    onexport?: (ids: number[]) => void;
+    /** Copies or moves items to another source; resolves once started (false: not started). */
+    ontransfer?: (ids: number[], move: boolean) => Promise<boolean>;
+  } = $props();
 
   type Mark = "delete" | "link";
   type Basis = "added" | "modified" | "created";
@@ -62,6 +79,64 @@
   const scanTask = $derived(tasks.list.find((x) => x.kind === "dedup_scan" && x.state === "running"));
   const applyTask = $derived(tasks.list.find((x) => x.kind === "dedup_apply" && x.state === "running"));
   const live = (it: DupItem) => !it.action || it.action === "linked";
+
+  // ------------------------------------------------------------ an item's menu
+
+  let menu = $state<{ x: number; y: number; item: DupItem } | null>(null);
+  /** Items being moved away: once the copy ends, those gone from here show as moved. */
+  let moving = $state<number[]>([]);
+  const copyTask = $derived(tasks.list.find((x) => x.kind === "copy_to_source" && x.state === "running"));
+
+  function openMenu(e: MouseEvent, it: DupItem) {
+    if (!live(it) || busy) return;
+    e.preventDefault();
+    if (matchMedia("(hover: none)").matches) navigator.vibrate?.(12);
+    menu = { x: e.clientX, y: e.clientY, item: it };
+  }
+
+  const menuItems = $derived.by<MenuItem[]>(() => {
+    if (!menu) return [];
+    const it = menu.item;
+    const list: MenuItem[] = [];
+    if (onreveal) list.push({ label: t("dup.reveal"), icon: "folder", action: () => onreveal(it.media_id) });
+    if (onexport) list.push({ label: t("sel.export"), icon: "download", action: () => onexport([it.media_id]) });
+    if (ontransfer) {
+      list.push({ label: t("dup.copyTo"), icon: "copy", action: () => transfer(it, false) });
+      list.push({ label: t("dup.moveTo"), icon: "upload", action: () => transfer(it, true) });
+    }
+    return list;
+  });
+
+  async function transfer(it: DupItem, move: boolean) {
+    if (!ontransfer) return;
+    error = null;
+    try {
+      if ((await ontransfer([it.media_id], move)) && move) {
+        moving = [...moving, it.media_id];
+        setMark(it, "delete", false);
+      }
+    } catch (e) {
+      error = errText(e);
+    }
+  }
+
+  // When the copy ends, items moved away are no longer in the library under their old id.
+  let copyWas = false;
+  $effect(() => {
+    const now = !!copyTask;
+    if (copyWas && !now && moving.length) settleMoves();
+    copyWas = now;
+  });
+
+  async function settleMoves() {
+    const ids = moving;
+    const still = new Set((await api.mediaBrief(ids).catch(() => [])).map((b) => b.id));
+    const gone = new Set(ids.filter((id) => !still.has(id)));
+    moving = ids.filter((id) => still.has(id));
+    if (!gone.size || !groups) return;
+    groups = groups.map((g) => ({ ...g, items: g.items.map((x) => (gone.has(x.media_id) ? { ...x, action: "moved" } : x)) }));
+    onchange?.();
+  }
 
   onMount(() => {
     // svelte-ignore state_referenced_locally
@@ -266,7 +341,7 @@
       for (const it of g.items) {
         entries.push({
           grp,
-          media_id: it.action === "gone" ? null : it.media_id,
+          media_id: it.action === "gone" || it.action === "moved" ? null : it.media_id,
           source_id: it.source_id,
           rel_path: it.rel_path,
           size: g.size,
@@ -446,7 +521,7 @@
             </div>
             {#each items as it (it.media_id + it.rel_path)}
               {@const m = marks[it.media_id]}
-              <div class="row" class:del={m === "delete"} class:off={!live(it)}>
+              <div class="row" class:del={m === "delete"} class:off={!live(it)} role="listitem" oncontextmenu={(e) => openMenu(e, it)}>
                 <img class="thumb" src={live(it) ? thumbUrl(it.media_id) : ""} alt="" loading="lazy" />
                 <div class="what">
                   <div class="name" title={it.rel_path}>{fileName(it.rel_path)}</div>
@@ -459,6 +534,8 @@
                     {#if it.action === "deleted"}<span class="badge">{t("dup.wasDeleted")}</span>{/if}
                     {#if it.action === "linked"}<span class="badge">{t("dup.wasLinked")}</span>{/if}
                     {#if it.action === "gone"}<span class="badge">{t("dup.gone")}</span>{/if}
+                    {#if it.action === "moved"}<span class="badge">{t("dup.wasMoved")}</span>{/if}
+                    {#if moving.includes(it.media_id)}<span class="badge">{t("dup.moving")}</span>{/if}
                   </div>
                 </div>
                 {#if live(it)}
@@ -519,6 +596,10 @@
     {/if}
   </div>
 </div>
+
+{#if menu && menuItems.length}
+  <ContextMenu x={menu.x} y={menu.y} items={menuItems} onclose={() => (menu = null)} />
+{/if}
 
 {#snippet bar(f: number | null)}
   <div class="bar" class:indeterminate={f == null}><span style:width={f == null ? "30%" : `${(f * 100).toFixed(1)}%`}></span></div>
@@ -664,6 +745,11 @@
     padding: 6px 10px;
     border-top: 1px solid var(--border);
     min-width: 0;
+  }
+  /* A long press opens the item's menu, not the system's. */
+  .row {
+    -webkit-touch-callout: none;
+    user-select: none;
   }
   .row.del {
     background: color-mix(in srgb, var(--danger) 8%, transparent);

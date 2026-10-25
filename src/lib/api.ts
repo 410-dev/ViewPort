@@ -714,8 +714,9 @@ export const api = {
     invoke<void>("shard_from_source", { from, to, dest, mode }),
   shardExport: (sourceId: number, paths: string[], dest: string) => invoke<void>("shard_export", { sourceId, paths, dest }),
   /** Copies items and folders (`path` "" = a whole source) into folder `dest` of source `to`, in the background. */
-  copyToSource: (ids: number[], folders: { sourceId: number; path: string }[], to: number, dest: string) =>
-    invoke<void>("copy_to_source", { ids, folders, to, dest }),
+  /** `move`: each item copied is then deleted where it was. */
+  copyToSource: (ids: number[], folders: { sourceId: number; path: string }[], to: number, dest: string, move = false) =>
+    invoke<void>("copy_to_source", { ids, folders, to, dest, remove: move }),
   /** Answers a copy conflict; `null` cancels the copy. `all`: the same for every remaining one. */
   copyConflictAnswer: (id: number, choice: OnConflict | null, all: boolean) => invoke<void>("copy_conflict_answer", { id, choice, all }),
   mlStatus: () => invoke<MlStatus>("ml_status"),
