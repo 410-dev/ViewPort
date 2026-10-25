@@ -641,6 +641,13 @@ pub struct ViewerSettings {
     pub tap_to_advance: bool,
     /// Touch screens: swiping an item up marks it as a favorite, down unmarks it.
     pub swipe_favorite: bool,
+    /// Phones: dragging an item down past `pull_close_threshold` closes the viewer, back to
+    /// the grid or list. Past the favorite swipe's distance the item shrinks as it follows.
+    pub pull_close: bool,
+    /// How far down (fraction of the height) a drag must go to close the viewer.
+    pub pull_close_threshold: f32,
+    /// Smallest size (fraction) the item shrinks to while being pulled down.
+    pub pull_close_min_scale: f32,
     /// Two taps within this time are a double tap (zoom), not two single taps; a single
     /// tap acts only after it has passed.
     pub double_tap_ms: u32,
@@ -678,6 +685,9 @@ impl Default for ViewerSettings {
             wheel_zoom: true,
             tap_to_advance: true,
             swipe_favorite: true,
+            pull_close: true,
+            pull_close_threshold: 0.4,
+            pull_close_min_scale: 0.4,
             double_tap_ms: 280,
             swipe_threshold: 0.2,
             swipe_ms: 220,

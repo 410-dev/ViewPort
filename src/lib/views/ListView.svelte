@@ -56,6 +56,12 @@
   }
   $effect(() => want(rows.filter((r) => r.id !== undefined).map((r) => r.id!)));
 
+  /** Item `index`'s row is wholly in view. */
+  function shown(index: number) {
+    const top = (index + folders.length) * rowPx;
+    return top >= el.scrollTop && top + rowPx <= el.scrollTop + height - HEAD;
+  }
+
   function scrollToIndex(index: number, centre = false) {
     const top = (index + folders.length) * rowPx;
     const view = height - HEAD;
@@ -70,7 +76,7 @@
     if (id == null || !el || height === 0) return;
     const i = ids.indexOf(id);
     if (i < 0) return;
-    scrollToIndex(i, true);
+    scrollToIndex(i, !shown(i));
     scrollTop = el.scrollTop;
     selection.revealing = null;
   });

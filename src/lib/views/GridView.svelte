@@ -77,6 +77,12 @@
     wantFolders(visible.flatMap((v) => (v.folder ? [v.folder] : [])), sampleCount);
   });
 
+  /** Item `index`'s row is wholly in view. */
+  function shown(index: number) {
+    const top = Math.floor((index + folders.length) / cols) * rowH;
+    return top >= el.scrollTop && top + rowH <= el.scrollTop + height;
+  }
+
   function scrollToIndex(index: number, centre = false) {
     const row = Math.floor((index + folders.length) / cols);
     const top = row * rowH;
@@ -91,7 +97,7 @@
     if (id == null || !el || height === 0) return;
     const i = ids.indexOf(id);
     if (i < 0) return;
-    scrollToIndex(i, true);
+    scrollToIndex(i, !shown(i));
     scrollTop = el.scrollTop;
     selection.revealing = null;
   });

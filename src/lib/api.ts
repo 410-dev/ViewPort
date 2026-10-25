@@ -341,6 +341,9 @@ export interface AppSettings {
     wheel_zoom: boolean;
     tap_to_advance: boolean;
     swipe_favorite: boolean;
+    pull_close: boolean;
+    pull_close_threshold: number;
+    pull_close_min_scale: number;
     double_tap_ms: number;
     swipe_threshold: number;
     swipe_ms: number;

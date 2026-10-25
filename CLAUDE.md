@@ -176,6 +176,8 @@ npm run tauri android build -- --apk --target aarch64          # 릴리즈. 디�
 - 기본 조건은 `fields.rs`의 `base_fields()`, 확장 조건(태그·점수·장르·메모·사용자 정의)은 DB의 필드 정의에서 레지스트리로 들어온다.
   확장 필드 타입: 정수, 실수, 문자열, 열거형(다중 값), 범위 정수(min/max), 켬/끔(`toggle`, 켬만 1로 저장하고 끔은 값 없음 → `좋아요(아니오)`는 부정으로 컴파일).
   기본 필드 `x.favorite`(좋아요): 모바일 뷰어에서 위로 쓸면 표시, 아래로 쓸면 해제(`viewer.swipe_favorite`).
+  휴대폰에서는 해제 거리보다 더 내리면 항목이 작아지며 놓으면 뷰어를 닫는다(`viewer.pull_close*`). 뷰어를 닫으면 보기는
+  마지막으로 본 항목 위치로 스크롤한다(`selection.revealing`).
 
 ## 확장 지점 (향후 기능을 위해 유지할 것)
 

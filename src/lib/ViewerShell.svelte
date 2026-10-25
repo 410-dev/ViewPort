@@ -237,6 +237,8 @@
     resetImmersive();
     if (isMobile) platformApi.setSystemFullscreen(false).catch(() => {});
   });
+  /** Pull-to-close progress of the (single) pane: the library shows through as it grows. */
+  let pulled = $state(0);
 </script>
 
 <div
@@ -246,6 +248,7 @@
   bind:clientWidth={width}
   bind:clientHeight={height}
   style:--anim="{animMs}ms"
+  style:background={pulled > 0 ? "transparent" : undefined}
   role="dialog"
   aria-modal="true"
 >
@@ -297,6 +300,7 @@
             onsplit={panes.length < max ? split : undefined}
             onpop={isMobile ? undefined : () => pop(i)}
             onbrowse={panes.length > 1 ? () => (p.browse = lastBrowse.get(p.key) ?? start()) : undefined}
+            onpull={(v) => (pulled = v)}
           />
         {/if}
       </div>

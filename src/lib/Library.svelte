@@ -1277,6 +1277,8 @@
         // On touch a selection means selection mode; just remember where the viewer was.
         if (!selection.touch) selection.set.add(id);
         selection.focus = id;
+        // Back to where the last viewed item is in the listing, not where the viewer opened.
+        selection.revealing = id;
       }
     }}
     onchanged={() => {

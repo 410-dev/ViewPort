@@ -259,17 +259,28 @@ fn sync_with(
     scan(&src).map_err(|e| CmdError::new("scan", e))?;
 
     let cancel = Arc::new(AtomicBool::new(false));
-    let task = tasks::begin_with_cancel("mirror", format!("{} → {}", src.name, tgt.name), Unit::Bytes, None, Some(cancel.clone()));
+    let label = format!("{} → {}", src.name, tgt.name);
+    // Working out what to copy looks at every file in the target and may read existing
+    // ones whole to compare them: its own task, counted in files, so it is not a copy
+    // stuck at 0 bytes.
+    let plan = tasks::begin_with_cancel("mirror_plan", label.clone(), Unit::Items, None, Some(cancel.clone()));
     // The source's and the target's own shard folders, when they lie inside the source,
     // are never copied (the target would copy into itself). Other shards are just files.
     let mut present = ws.read_db.lock().unwrap().present_files(src.id)?;
     let skip = own_shards(ws, registry, &src, &tgt);
     present.retain(|rel, _| !skip.iter().any(|d| rel.starts_with(d.as_str())));
     let tracked = ws.read_db.lock().unwrap().mirror_items(m.id)?;
+    let gone = tracked.keys().filter(|rel| !present.contains_key(*rel)).count();
+    plan.set(0, Some((gone + present.len()) as u64));
 
     // Deletions: only copies the mirror made and nobody changed since.
     let mut deleted = 0;
     for (rel, item) in tracked.iter().filter(|(rel, _)| !present.contains_key(*rel)) {
+        if cancel.load(Ordering::Relaxed) || ws.closed.load(Ordering::Relaxed) {
+            return Err(CmdError::new("cancelled", "cancelled"));
+        }
+        plan.detail(&item.target_path);
+        plan.add(1);
         if m.propagate_deletes
             && let Ok(e) = out.stat(&item.target_path)
             && untouched(&e, item)
@@ -295,6 +306,8 @@ fn sync_with(
         if cancel.load(Ordering::Relaxed) || ws.closed.load(Ordering::Relaxed) {
             return Err(CmdError::new("cancelled", "cancelled"));
         }
+        plan.detail(rel);
+        plan.add(1);
         let f = &present[rel];
         let place = crate::shards::join_rel(&m.target_folder, rel);
         let target = match tracked.get(rel) {
@@ -333,6 +346,8 @@ fn sync_with(
             modified_ms: f.modified_ms,
         });
     }
+    drop(plan);
+    let task = tasks::begin_with_cancel("mirror", label, Unit::Bytes, None, Some(cancel.clone()));
     let rels: HashMap<i64, String> = jobs.iter().map(|j| (j.id, j.rel.clone())).collect();
     let wanted = jobs.len();
     let report = if jobs.is_empty() {

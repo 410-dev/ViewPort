@@ -50,6 +50,7 @@
     onsplit,
     onpop,
     onbrowse,
+    onpull,
   }: {
     ids: number[];
     index: number;
@@ -66,6 +67,8 @@
     onpop?: () => void;
     /** Shows an explorer in this pane to pick other items (split view). */
     onbrowse?: () => void;
+    /** How far a pull-to-close drag has gone (0 none .. 1 smallest), so the shell can fade. */
+    onpull?: (progress: number) => void;
   } = $props();
 
   let showInfo = $state(false);
@@ -555,6 +558,18 @@
   /** Vertical drag offset while swiping for favorite (touch). */
   let pull = $state(0);
   const favSwipe = (g: { type: string } | null) => g?.type === "touch" && (prefs.app?.viewer.swipe_favorite ?? true);
+  // ---- pull to close (phones): past the favorite swipe's distance, the item shrinks as it
+  // follows the finger down, and letting go past `pull_close_threshold` closes the viewer.
+  const pullClose = (g: { type: string } | null) =>
+    g?.type === "touch" && isMobile && panes <= 1 && (prefs.app?.viewer.pull_close ?? true);
+  /** Scale of the item while pulled down to close (1 = not shrinking). */
+  let shrink = $state(1);
+  const favDistance = () => (prefs.app?.viewer.swipe_threshold ?? 0.2) * stageH;
+  const closeDistance = () => Math.max((prefs.app?.viewer.pull_close_threshold ?? 0.4) * stageH, favDistance() + 40);
+  const minShrink = () => Math.min(0.95, Math.max(0.05, prefs.app?.viewer.pull_close_min_scale ?? 0.4));
+  /** Where the pull-to-close shrinking starts: the favorite swipe's distance, if it is on. */
+  const shrinkFrom = (g: { type: string } | null) => (favSwipe(g) ? favDistance() : 0);
+  $effect(() => onpull?.((1 - shrink) / (1 - minShrink())));
   let pinch: { dist: number; scale: number } | null = null;
   const distance = () => {
     const [a, b] = [...pointers.values()];
@@ -705,15 +720,25 @@
       const dx = e.clientX - gesture.x;
       const dy = e.clientY - gesture.y;
       if (!lock && gesture.moved) lock = Math.abs(dx) > Math.abs(dy) ? "h" : "v";
-      const vertical = lock === "v" && favSwipe(gesture);
+      const vertical = lock === "v" && (favSwipe(gesture) || pullClose(gesture));
       if ((lock === "h" && ids.length > 1) || vertical) {
         // Videos are not captured on pointerdown (their seek bar needs drags); capture now.
         const el = e.currentTarget as HTMLElement;
         if (!el.hasPointerCapture(e.pointerId)) el.setPointerCapture(e.pointerId);
       }
       if (lock === "h" && ids.length > 1) swipe = snap(dx);
-      // The item follows a vertical drag at a third of the distance.
-      else if (vertical) pull = snap(dy / 3);
+      else if (vertical) {
+        const from = shrinkFrom(gesture);
+        if (pullClose(gesture) && dy > from) {
+          // Pulling to close: the item follows the finger and shrinks with the distance.
+          pull = snap(from / 3 + (dy - from));
+          shrink = Math.max(minShrink(), 1 - (dy - from) / Math.max(1, stageH));
+        } else {
+          // The item follows a vertical drag at a third of the distance.
+          shrink = 1;
+          pull = favSwipe(gesture) ? snap(dy / 3) : 0;
+        }
+      }
     }
   }
 
@@ -725,9 +750,15 @@
     gesture = null;
     const dx = e.clientX - g.x;
     const dt = Math.max(1, performance.now() - g.t);
-    if (pull !== 0 || (lock === "v" && favSwipe(g))) {
+    if (pull !== 0 || (lock === "v" && (favSwipe(g) || pullClose(g)))) {
       pull = 0;
+      shrink = 1;
       const dy = e.clientY - g.y;
+      if (lock === "v" && e.type !== "pointercancel" && pullClose(g) && dy > closeDistance()) {
+        close();
+        return;
+      }
+      if (!favSwipe(g)) return;
       // Far enough (the same fraction as sideways swipes), or flicked.
       const far = Math.abs(dy) > (prefs.app?.viewer.swipe_threshold ?? 0.2) * stageH;
       const flick = Math.abs(dy) > 30 && Math.abs(dy) / dt > 0.5;
@@ -796,6 +827,8 @@
 <div
   class="viewer"
   class:hide-cursor={!showHud}
+  class:pulling={shrink < 1}
+  style:background={shrink < 1 ? `rgb(0 0 0 / ${1 - (1 - shrink) / (1 - minShrink())})` : undefined}
   class:active={active && panes > 1}
   role="dialog"
   aria-modal="true"
@@ -817,7 +850,7 @@
     ondblclick={onDoubleClick}
   >
     <!-- Keyed by id, so an image sliding in keeps its element: no reload, no flash. -->
-    <div class="strip" class:sliding style:transform="translate({swipe}px, {pull}px)" style:--slide-ms="{slideMs()}ms">
+    <div class="strip" class:sliding style:transform="translate({swipe}px, {pull}px) scale({shrink})" style:--slide-ms="{slideMs()}ms">
       {#each strip as s (s.id)}
         {@const b = known.get(s.id) ?? (brief?.id === s.id ? brief : null)}
         <div class="slot" style:transform="translateX({s.pos * 100}%)">
@@ -1062,6 +1095,11 @@
   }
   .hide-cursor {
     cursor: none;
+  }
+  /* Pulled down to close: only the shrinking item, over the library showing through. */
+  .viewer.pulling > :not(.stage) {
+    opacity: 0;
+    pointer-events: none;
   }
   /* The media always fits the pane (long images included); zoom is a transform on top. */
   .stage {
