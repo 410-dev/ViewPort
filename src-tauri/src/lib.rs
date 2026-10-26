@@ -115,6 +115,7 @@ pub fn run() {
             heif::heif_install,
             heif::heif_retry_failed,
             applog::log_read,
+            applog::log_slow_view,
             applog::log_open,
             applog::log_clear,
             commands::convert_media,

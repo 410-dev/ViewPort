@@ -502,11 +502,14 @@ pub struct LogSettings {
     /// When the log grows past this, it becomes `viewport.old.log` (replacing the previous
     /// one) and a new log starts.
     pub max_bytes: u64,
+    /// A picture the viewer waits longer than this for is logged with where the time
+    /// went (0: never).
+    pub slow_view_ms: u32,
 }
 
 impl Default for LogSettings {
     fn default() -> Self {
-        Self { max_bytes: 4 * MIB }
+        Self { max_bytes: 4 * MIB, slow_view_ms: 400 }
     }
 }
 

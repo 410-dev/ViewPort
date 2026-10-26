@@ -771,6 +771,8 @@ const en: Record<Key, string> = {
   "set.mirrorResync": "Mirror resync interval",
   "set.mirrorResync.help": "While both stay connected, sync again this often (0: never repeat). Used by mirrors that set no interval of their own.",
   "set.logMax": "Maximum log size",
+  "set.slowView": "Log slow pictures",
+  "set.slowView.help": "When a picture takes longer than this to show in the viewer, the log notes where the time went (0 = off).",
   "side.mirror": "Mirror",
   "sel.goToFolder": "Go to parent folder",
   "mirror.title": "Mirrors of {name}",

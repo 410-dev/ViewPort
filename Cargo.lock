@@ -5283,6 +5283,7 @@ version = "0.1.0"
 dependencies = [
  "image",
  "keyring",
+ "libc",
  "libloading 0.9.0",
  "serde",
  "serde_json",
@@ -5308,6 +5309,7 @@ dependencies = [
  "vp-scan",
  "vp-shard",
  "vp-thumb",
+ "windows-sys 0.59.0",
  "zip",
 ]
 

@@ -116,8 +116,33 @@ fn needs_conversion(rel_path: &str) -> bool {
     crate::recent::cached_app_settings().viewer.convert_image_extensions.iter().any(|e| e.eq_ignore_ascii_case(ext))
 }
 
-/// One display copy is made at a time: decoding a huge image takes a lot of memory.
+/// Display copies are made one at a time for the viewer and one for its look-ahead
+/// (decoding a huge image takes a lot of memory), so a picture the viewer waits for never
+/// queues behind one it may want later.
 static DISPLAY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static LOOKAHEAD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// Display copies being made now (cache keys).
+static MAKING: std::sync::Mutex<Vec<i64>> = std::sync::Mutex::new(Vec::new());
+
+struct Making(i64);
+impl Drop for Making {
+    fn drop(&mut self) {
+        MAKING.lock().unwrap_or_else(|e| e.into_inner()).retain(|k| *k != self.0);
+    }
+}
+
+thread_local! {
+    /// Where the time of the request on this thread went, for the slow-view log.
+    static STAGES: std::cell::RefCell<Vec<(&'static str, std::time::Duration)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Runs `f` as stage `name` of the request, for the slow-view log.
+fn stage<T>(name: &'static str, f: impl FnOnce() -> T) -> T {
+    let start = std::time::Instant::now();
+    let r = f();
+    STAGES.with(|s| s.borrow_mut().push((name, start.elapsed())));
+    r
+}
 
 /// Image `id` scaled to fit `edge` px (EXIF orientation applied), made once and kept in the
 /// memory cache. The OS decoder subsamples while decoding where available (Android);
@@ -128,15 +153,40 @@ fn display_copy(
     id: i64,
     loc: &vp_db::MediaLocation,
     edge: u32,
+    urgent: bool,
 ) -> CmdResult<Option<Vec<u8>>> {
     let key = display_key(id, edge);
     if let Some(c) = ws.cache.get(key) {
         return Ok(Some(c.to_vec(0, c.len())));
     }
-    let _one = DISPLAY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _one = stage("copy_wait", || {
+        // The other queue is making this very copy: wait for it rather than decode twice.
+        while MAKING.lock().unwrap_or_else(|e| e.into_inner()).contains(&key) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        if urgent {
+            DISPLAY_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+        } else {
+            crate::sched::wait_urgent(std::time::Duration::from_secs(5));
+            LOOKAHEAD_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+        }
+    });
     if let Some(c) = ws.cache.get(key) {
         return Ok(Some(c.to_vec(0, c.len())));
     }
+    MAKING.lock().unwrap_or_else(|e| e.into_inner()).push(key);
+    let _making = Making(key);
+    stage("copy_make", || make_display_copy(ws, drivers, id, loc, edge, key))
+}
+
+fn make_display_copy(
+    ws: &Workspace,
+    drivers: &vp_driver::DriverRegistry,
+    id: i64,
+    loc: &vp_db::MediaLocation,
+    edge: u32,
+    key: i64,
+) -> CmdResult<Option<Vec<u8>>> {
     let quality = crate::recent::cached_app_settings().viewer.display_quality.clamp(1, 100);
     let source =
         ws.read_db.lock().unwrap().source(loc.source_id)?.ok_or_else(|| CmdError::new("not_found", "source"))?;
@@ -235,7 +285,7 @@ pub fn warm(ws: &Workspace, drivers: &vp_driver::DriverRegistry, id: i64, screen
             _ => None,
         };
         if let Some(edge) = copy {
-            return Ok(display_copy(ws, drivers, id, &loc, edge)?.map_or(0, |d| d.len() as u64));
+            return Ok(display_copy(ws, drivers, id, &loc, edge, false)?.map_or(0, |d| d.len() as u64));
         }
     }
     Ok(ws.load_into_cache(drivers, id)?.map_or(0, |c| c.len()))
@@ -248,17 +298,17 @@ fn serve(
     range: Option<String>,
     fit: Option<u32>,
 ) -> CmdResult<Option<Body>> {
-    let Some(loc) = ws.read_db.lock().unwrap().media_location(id)? else { return Ok(None) };
+    let Some(loc) = stage("db", || ws.read_db.lock().unwrap().media_location(id))? else { return Ok(None) };
     // Formats the WebView cannot decode are always served as a copy, at full size when
     // no size was asked for.
     let convert = loc.kind == vp_core::MediaKind::Image && needs_conversion(&loc.rel_path);
     let edge = match fit.filter(|_| loc.kind == vp_core::MediaKind::Image) {
-        Some(e) if convert || larger_than(ws, drivers, id, &loc, e)? => Some(e),
+        Some(e) if convert || stage("size", || larger_than(ws, drivers, id, &loc, e))? => Some(e),
         None if convert => Some(MAX_DISPLAY_EDGE),
         _ => None,
     };
     if let Some(edge) = edge
-        && let Some(data) = display_copy(ws, drivers, id, &loc, edge)?
+        && let Some(data) = display_copy(ws, drivers, id, &loc, edge, true)?
     {
         let mime = if data.starts_with(b"\x89PNG") { "image/png" } else { "image/jpeg" };
         let total = data.len() as u64;
@@ -275,7 +325,7 @@ fn serve(
     // Images are needed whole, so cache them right away. Videos start streaming at once
     // and are cached in the background (see `handle`).
     let cached = match loc.kind {
-        vp_core::MediaKind::Image => ws.load_into_cache(drivers, id)?,
+        vp_core::MediaKind::Image => stage("load", || ws.load_into_cache(drivers, id))?,
         vp_core::MediaKind::Video | vp_core::MediaKind::NonMedia => ws.cache.get(id),
     };
     let total = cached.as_ref().map(|c| c.len()).unwrap_or(loc.size);
@@ -291,13 +341,13 @@ fn serve(
     };
     let data = match &cached {
         Some(c) => c.to_vec(start, want),
-        None => {
+        None => stage("read", || -> CmdResult<Vec<u8>> {
             let reader = ws.open_media(drivers, &loc)?;
             let mut buf = vec![0u8; want.min(stream_max) as usize];
             let n = reader.read_full_at(start, &mut buf)?;
             buf.truncate(n);
-            buf
-        }
+            Ok(buf)
+        })?,
     };
     let partial = partial || (data.len() as u64) < total;
     Ok(Some(Body { data, start, total, partial, mime }))
@@ -321,10 +371,32 @@ pub fn answer<R: Runtime>(app: &AppHandle<R>, id: Option<i64>, range: Option<Str
         return status(StatusCode::SERVICE_UNAVAILABLE);
     };
     // A panic must still answer: a dropped responder leaves the WebView request hanging.
+    let started = std::time::Instant::now();
+    let busy = crate::sched::busy_now();
+    let was_cached = ws.cache.contains(id);
+    STAGES.with(|s| s.borrow_mut().clear());
     let served = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        crate::sched::run(crate::sched::Class::Viewer, || serve(&ws, &state.drivers, id, range, fit))
+        crate::sched::urgent(|| crate::sched::run(crate::sched::Class::Viewer, || serve(&ws, &state.drivers, id, range.clone(), fit)))
     }))
-        .unwrap_or_else(|_| Err(CmdError::new("panic", "media handler panicked")));
+    .unwrap_or_else(|_| Err(CmdError::new("panic", "media handler panicked")));
+    let slow_ms = crate::recent::cached_app_settings().log.slow_view_ms as u128;
+    let took = started.elapsed();
+    if slow_ms > 0 && took.as_millis() >= slow_ms {
+        let stages: Vec<String> =
+            STAGES.with(|s| s.borrow().iter().map(|(n, d)| format!("{n} {}ms", d.as_millis())).collect());
+        crate::applog::info(
+            "viewer",
+            format!(
+                "slow item {id}{}{}: {}ms [{}] busy before: {} original cached: {}",
+                fit.map(|f| format!(" fit {f}")).unwrap_or_default(),
+                range.as_deref().map(|r| format!(" {r}")).unwrap_or_default(),
+                took.as_millis(),
+                stages.join(", "),
+                if busy.is_empty() { "-" } else { &busy },
+                was_cached,
+            ),
+        );
+    }
     let response = match served {
         Ok(Some(b)) => {
             let end = b.start + b.data.len().max(1) as u64 - 1;

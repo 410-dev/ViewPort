@@ -56,9 +56,14 @@ ureq = { version = "3.5", default-features = false, features = ["rustls"] }
 # Optional HEIF decoder (libheif), loaded at run time and checked against its manifest.
 libloading = "0.9"
 
+# Lowering background threads' OS priority (`sched`).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # OS credential stores for driver secrets (network passwords never go into the bundle).
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
+windows-sys = { version = "0.59", features = ["Win32_System_Threading"] }
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }

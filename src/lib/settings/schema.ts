@@ -103,6 +103,7 @@ export const SECTIONS: Section[] = [
         fields: [
           { kind: "custom", id: "log" },
           { kind: "number", ...app({ path: "log.max_bytes", label: "set.logMax" }), min: 1, max: 64, step: 1, scale: MB, unit: "MB" },
+          { kind: "number", ...app({ path: "log.slow_view_ms", label: "set.slowView", help: "set.slowView.help" }), min: 0, max: 10000, step: 50, unit: "ms" },
         ],
       },
       {

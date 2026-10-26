@@ -71,6 +71,13 @@ pub struct LogInfo {
 }
 
 /// The last `max_bytes` of the log, for copying.
+/// The viewer took `ms` to show a picture (`log.slow_view_ms`); the backend logs its
+/// own part of the wait separately (`media::answer`).
+#[tauri::command]
+pub fn log_slow_view(id: i64, ms: u64, detail: String) {
+    info("viewer", format!("slow picture {id}: shown after {ms}ms ({detail})"));
+}
+
 #[tauri::command]
 pub async fn log_read(max_bytes: Option<u64>) -> CmdResult<LogInfo> {
     let path = PATH.get().cloned().ok_or_else(|| CmdError::new("not_found", "no log"))?;

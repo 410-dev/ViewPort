@@ -384,6 +384,7 @@ export interface AppSettings {
   };
   log: {
     max_bytes: number;
+    slow_view_ms: number;
   };
 }
 
@@ -635,6 +636,8 @@ export const api = {
   /** Makes failed HEIF thumbnails again; returns how many. */
   heifRetryFailed: () => invoke<number>("heif_retry_failed"),
   logRead: (maxBytes?: number) => invoke<LogInfo>("log_read", { maxBytes }),
+  /** Notes in the app log that a picture took `ms` to show in the viewer. */
+  logSlowView: (id: number, ms: number, detail: string) => invoke<void>("log_slow_view", { id, ms, detail }),
   logOpen: (folder: boolean) => invoke<void>("log_open", { folder }),
   logClear: () => invoke<void>("log_clear"),
   convertMedia: (ids: number[]) => invoke<void>("convert_media", { ids }),

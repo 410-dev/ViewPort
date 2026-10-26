@@ -770,6 +770,8 @@ const ko = {
   "set.mirrorResync": "미러 재동기화 간격",
   "set.mirrorResync.help": "둘 다 계속 연결돼 있으면 이 간격마다 다시 동기화합니다(0이면 반복하지 않음). 미러마다 자기 간격을 정하지 않았을 때 씁니다.",
   "set.logMax": "로그 최대 크기",
+  "set.slowView": "느린 사진 기록",
+  "set.slowView.help": "뷰어에서 사진이 뜨기까지 이보다 오래 걸리면 어디서 시간이 걸렸는지 로그에 남깁니다(0 = 끔).",
   "side.mirror": "미러",
   "sel.goToFolder": "부모 폴더로 이동",
   "mirror.title": "{name} 미러",

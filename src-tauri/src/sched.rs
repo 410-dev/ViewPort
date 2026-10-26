@@ -4,10 +4,19 @@
 //!
 //! Work runs in a [`Class`]. Reads through any source driver (see [`Paced`]) and whole
 //! operations wrapped in [`run`] are timed; while another class is busy, a class whose
-//! share is below half waits after its work in proportion to the time it took
-//! (duty cycling), so over time it holds the device for about its share. A class with no
-//! competition never waits, so idle bandwidth is never left unused. Shares come from
-//! `HardwareSettings` (`viewer_share_*` by scheduler mode, `thumb_share`).
+//! share is below half (or exactly half, against a class that comes first) waits after
+//! its work in proportion to the time it took (duty cycling), so over time it holds the
+//! device for about its share. A class with no competition never waits, so idle
+//! bandwidth is never left unused. Shares come from `HardwareSettings` (`viewer_share_*`
+//! by scheduler mode, `thumb_share`), so every rule here follows the mode.
+//!
+//! CPU: thumbnails are timed whole (decoding included). Background work is timed by its
+//! reads, and the time a background thread spends between two reads (parsing, hashing)
+//! is booked as its use too. While background work has to make room, its threads also
+//! run at a lower OS priority ([`lower_priority`]).
+//!
+//! A viewer request being answered ([`urgent`]) also holds back the viewer's own
+//! look-ahead ([`wait_urgent`]).
 
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -35,19 +44,32 @@ struct Config {
     idle_ms: u64,
 }
 
-static CONFIG: RwLock<Config> = RwLock::new(Config { viewer: 0.5, thumb: 0.7, idle_ms: 500 });
-static INFLIGHT: [AtomicUsize; 3] = [AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0)];
-/// When each class last finished something, in ms since `epoch()` plus one (0 = never).
-static LAST_END: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
-/// Until when each class holds off, after the time it used while others waited.
-static NEXT_FREE: [Mutex<Option<Instant>>; 3] = [Mutex::new(None), Mutex::new(None), Mutex::new(None)];
+/// The books of one scheduler; the app has one ([`GLOBAL`]).
+struct Sched {
+    config: RwLock<Config>,
+    inflight: [AtomicUsize; 3],
+    /// When each class last finished something, in ms since `epoch()` plus one (0 = never).
+    last_end: [AtomicU64; 3],
+    /// Until when each class holds off, after the time it used while others waited.
+    next_free: [Mutex<Option<Instant>>; 3],
+}
+
+static GLOBAL: Sched = Sched::new();
+
 /// Longest a class holds off for one piece of work.
 const MAX_DEBT: Duration = Duration::from_secs(2);
 const POLL: Duration = Duration::from_millis(20);
+/// A gap between two background reads on one thread longer than this was not work
+/// (the thread was idle or picked up something else).
+const MAX_GAP: Duration = Duration::from_millis(250);
 
 thread_local! {
     /// The class of the work running on this thread, inside [`run`].
     static CURRENT: Cell<Option<Class>> = const { Cell::new(None) };
+    /// When this thread last finished a background read.
+    static BG_LAST: Cell<Option<Instant>> = const { Cell::new(None) };
+    /// This thread runs at a lower OS priority.
+    static LOWERED: Cell<bool> = const { Cell::new(false) };
 }
 
 fn epoch() -> Instant {
@@ -61,92 +83,207 @@ fn now_ms() -> u64 {
 
 /// Takes the shares from the device settings (called whenever they are loaded or saved).
 pub fn configure(h: &HardwareSettings) {
-    *CONFIG.write().unwrap_or_else(|e| e.into_inner()) =
-        Config { viewer: h.viewer_share(), thumb: h.thumb_share.clamp(0.05, 0.95), idle_ms: h.sched_idle_ms as u64 };
-}
-
-fn config() -> Config {
-    *CONFIG.read().unwrap_or_else(|e| e.into_inner())
-}
-
-fn busy(c: Class, cfg: &Config) -> bool {
-    let i = c as usize;
-    if INFLIGHT[i].load(Ordering::Relaxed) > 0 {
-        return true;
-    }
-    let last = LAST_END[i].load(Ordering::Relaxed);
-    last > 0 && now_ms() < last - 1 + cfg.idle_ms
-}
-
-/// `c`'s share of the device against the classes busy now, when it is below half (it
-/// must then make room); `None` when it may go at full speed.
-fn share(c: Class) -> Option<f32> {
-    let cfg = config();
-    let (v, t, b) = (busy(Class::Viewer, &cfg), busy(Class::Thumb, &cfg), busy(Class::Background, &cfg));
-    let s = match c {
-        Class::Viewer if t || b => cfg.viewer,
-        Class::Viewer => 1.0,
-        Class::Thumb => (if v { 1.0 - cfg.viewer } else { 1.0 }) * (if b { cfg.thumb } else { 1.0 }),
-        Class::Background => (if v { 1.0 - cfg.viewer } else { 1.0 }) * (if t { 1.0 - cfg.thumb } else { 1.0 }),
-    };
-    (s < 0.5).then_some(s)
-}
-
-/// Waits while `c` owes time to busier classes; returns early once they go idle.
-fn wait(c: Class) {
-    loop {
-        let until = *NEXT_FREE[c as usize].lock().unwrap_or_else(|e| e.into_inner());
-        let Some(until) = until else { return };
-        let now = Instant::now();
-        if now >= until {
-            return;
-        }
-        if share(c).is_none() {
-            *NEXT_FREE[c as usize].lock().unwrap_or_else(|e| e.into_inner()) = None;
-            return;
-        }
-        std::thread::sleep((until - now).min(POLL));
-    }
-}
-
-/// Records that `c` used the device for `used`: with competition, it holds off for
-/// `used × (1 − share) / share` before its next piece of work.
-fn owe(c: Class, used: Duration) {
-    let Some(s) = share(c) else { return };
-    let debt = used.mul_f32((1.0 - s) / s).min(MAX_DEBT);
-    let mut next = NEXT_FREE[c as usize].lock().unwrap_or_else(|e| e.into_inner());
-    let now = Instant::now();
-    let from = next.filter(|n| *n > now).unwrap_or(now);
-    *next = Some(from + debt);
-}
-
-/// Restores the thread's class and settles the books even if the work panics.
-struct Running {
-    class: Class,
-    start: Instant,
-}
-
-impl Drop for Running {
-    fn drop(&mut self) {
-        let i = self.class as usize;
-        INFLIGHT[i].fetch_sub(1, Ordering::Relaxed);
-        LAST_END[i].store(now_ms() + 1, Ordering::Relaxed);
-        CURRENT.with(|c| c.set(None));
-        owe(self.class, self.start.elapsed());
-    }
+    GLOBAL.configure(h);
 }
 
 /// Runs `f` as work of class `c`: waits for its turn, counts it as busy meanwhile, and
 /// books the time it took. Nested calls (and reads inside) count as the outer work.
 pub fn run<T>(c: Class, f: impl FnOnce() -> T) -> T {
-    if CURRENT.with(|x| x.get()).is_some() {
-        return f();
+    GLOBAL.run(c, f)
+}
+
+impl Sched {
+    const fn new() -> Self {
+        Self {
+            config: RwLock::new(Config { viewer: 0.5, thumb: 0.7, idle_ms: 500 }),
+            inflight: [AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0)],
+            last_end: [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)],
+            next_free: [Mutex::new(None), Mutex::new(None), Mutex::new(None)],
+        }
     }
-    wait(c);
-    CURRENT.with(|x| x.set(Some(c)));
-    INFLIGHT[c as usize].fetch_add(1, Ordering::Relaxed);
-    let _running = Running { class: c, start: Instant::now() };
+
+    fn configure(&self, h: &HardwareSettings) {
+        *self.config.write().unwrap_or_else(|e| e.into_inner()) =
+            Config { viewer: h.viewer_share(), thumb: h.thumb_share.clamp(0.05, 0.95), idle_ms: h.sched_idle_ms as u64 };
+    }
+
+    fn config(&self) -> Config {
+        *self.config.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn busy(&self, c: Class, cfg: &Config) -> bool {
+        let i = c as usize;
+        if self.inflight[i].load(Ordering::Relaxed) > 0 {
+            return true;
+        }
+        let last = self.last_end[i].load(Ordering::Relaxed);
+        last > 0 && now_ms() < last - 1 + cfg.idle_ms
+    }
+
+    /// `c`'s share of the device against the classes busy now, when it must make room:
+    /// below half, or exactly half against a class that comes first (viewer > thumbnails
+    /// > background). `None` when it may go at full speed.
+    fn share(&self, c: Class) -> Option<f32> {
+        let cfg = self.config();
+        let (v, t, b) = (self.busy(Class::Viewer, &cfg), self.busy(Class::Thumb, &cfg), self.busy(Class::Background, &cfg));
+        let (s, before) = match c {
+            Class::Viewer if t || b => (cfg.viewer, false),
+            Class::Viewer => (1.0, false),
+            Class::Thumb => ((if v { 1.0 - cfg.viewer } else { 1.0 }) * (if b { cfg.thumb } else { 1.0 }), v),
+            Class::Background => ((if v { 1.0 - cfg.viewer } else { 1.0 }) * (if t { 1.0 - cfg.thumb } else { 1.0 }), v || t),
+        };
+        (s < 0.5 || (s <= 0.5 && before)).then_some(s.max(0.01))
+    }
+
+    /// Waits while `c` owes time to busier classes; returns early once they go idle.
+    fn wait(&self, c: Class) {
+        loop {
+            let until = *self.next_free[c as usize].lock().unwrap_or_else(|e| e.into_inner());
+            let Some(until) = until else { return };
+            let now = Instant::now();
+            if now >= until {
+                return;
+            }
+            if self.share(c).is_none() {
+                *self.next_free[c as usize].lock().unwrap_or_else(|e| e.into_inner()) = None;
+                return;
+            }
+            std::thread::sleep((until - now).min(POLL));
+        }
+    }
+
+    /// Records that `c` used the device for `used`: with competition, it holds off for
+    /// `used × (1 − share) / share` before its next piece of work.
+    fn owe(&self, c: Class, used: Duration) {
+        let Some(s) = self.share(c) else { return };
+        let debt = used.mul_f32((1.0 - s) / s).min(MAX_DEBT);
+        let mut next = self.next_free[c as usize].lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        let from = next.filter(|n| *n > now).unwrap_or(now);
+        *next = Some(from + debt);
+    }
+
+    fn run<T>(&self, c: Class, f: impl FnOnce() -> T) -> T {
+        if CURRENT.with(|x| x.get()).is_some() {
+            return f();
+        }
+        if c == Class::Background {
+            // What the thread did since its last read (parsing, hashing) used the CPU.
+            if let Some(gap) = BG_LAST.with(|l| l.take()).map(|t| t.elapsed()).filter(|g| *g < MAX_GAP) {
+                self.owe(c, gap);
+            }
+            set_lowered(self.share(c).is_some());
+        } else {
+            set_lowered(false);
+        }
+        self.wait(c);
+        CURRENT.with(|x| x.set(Some(c)));
+        self.inflight[c as usize].fetch_add(1, Ordering::Relaxed);
+        let _running = Running { sched: self, class: c, start: Instant::now() };
+        f()
+    }
+}
+
+/// Restores the thread's class and settles the books even if the work panics.
+struct Running<'a> {
+    sched: &'a Sched,
+    class: Class,
+    start: Instant,
+}
+
+impl Drop for Running<'_> {
+    fn drop(&mut self) {
+        let i = self.class as usize;
+        self.sched.inflight[i].fetch_sub(1, Ordering::Relaxed);
+        self.sched.last_end[i].store(now_ms() + 1, Ordering::Relaxed);
+        CURRENT.with(|c| c.set(None));
+        self.sched.owe(self.class, self.start.elapsed());
+        if self.class == Class::Background {
+            BG_LAST.with(|l| l.set(Some(Instant::now())));
+        }
+    }
+}
+
+/// Viewer requests being answered now.
+static URGENT: AtomicUsize = AtomicUsize::new(0);
+
+/// Runs `f`, a request the viewer is waiting for: its look-ahead holds back meanwhile.
+pub fn urgent<T>(f: impl FnOnce() -> T) -> T {
+    struct Done;
+    impl Drop for Done {
+        fn drop(&mut self) {
+            URGENT.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+    URGENT.fetch_add(1, Ordering::Relaxed);
+    let _done = Done;
     f()
+}
+
+/// Whether a viewer request is being answered.
+pub fn urgent_waiting() -> bool {
+    URGENT.load(Ordering::Relaxed) > 0
+}
+
+/// Waits (up to `max`) while a viewer request is being answered.
+pub fn wait_urgent(max: Duration) {
+    let start = Instant::now();
+    while urgent_waiting() && start.elapsed() < max {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Which classes are busy now, for diagnostics (`v`, `t`, `b`).
+pub fn busy_now() -> String {
+    let cfg = GLOBAL.config();
+    [(Class::Viewer, 'v'), (Class::Thumb, 't'), (Class::Background, 'b')]
+        .iter()
+        .filter(|(c, _)| GLOBAL.busy(*c, &cfg))
+        .map(|(_, n)| *n)
+        .collect()
+}
+
+/// Lowering failed to be undone once (Linux without the right to raise priority):
+/// threads are left alone from then on.
+static PRIORITY_STUCK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Lowers (or restores) this thread's OS priority, only when it changes.
+fn set_lowered(low: bool) {
+    if LOWERED.with(|l| l.get()) == low || (low && PRIORITY_STUCK.load(Ordering::Relaxed)) {
+        return;
+    }
+    if lower_priority(low) {
+        LOWERED.with(|l| l.set(low));
+    } else if !low {
+        PRIORITY_STUCK.store(true, Ordering::Relaxed);
+        crate::applog::warn("sched", "could not restore a thread's priority; background threads keep theirs from now on");
+    }
+}
+
+/// Sets this thread to background (or normal) OS priority; false if that failed.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn lower_priority(low: bool) -> bool {
+    // SAFETY: plain syscalls on the calling thread.
+    unsafe { libc::setpriority(libc::PRIO_PROCESS, libc::gettid() as libc::id_t, if low { 10 } else { 0 }) == 0 }
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn lower_priority(low: bool) -> bool {
+    let class = if low { libc::qos_class_t::QOS_CLASS_UTILITY } else { libc::qos_class_t::QOS_CLASS_USER_INITIATED };
+    // SAFETY: changes only the calling thread's QoS class.
+    unsafe { libc::pthread_set_qos_class_self_np(class, 0) == 0 }
+}
+
+#[cfg(windows)]
+fn lower_priority(low: bool) -> bool {
+    use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL, THREAD_PRIORITY_NORMAL};
+    // SAFETY: the pseudo handle of the calling thread.
+    unsafe { SetThreadPriority(GetCurrentThread(), if low { THREAD_PRIORITY_BELOW_NORMAL } else { THREAD_PRIORITY_NORMAL }) != 0 }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos", target_os = "ios", windows)))]
+fn lower_priority(_low: bool) -> bool {
+    true
 }
 
 /// A source driver whose reads are scheduled: reads outside [`run`] count as
@@ -203,33 +340,71 @@ impl MediaDriver for Paced {
 mod tests {
     use super::*;
 
-    // One test: the counters are global.
+    fn settings(mode: vp_core::settings::SchedulerMode, viewer: f32) -> HardwareSettings {
+        HardwareSettings {
+            scheduler: mode,
+            viewer_share_performance: viewer,
+            viewer_share_predictive: viewer,
+            viewer_share_preprocess: viewer,
+            sched_idle_ms: 200,
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn background_makes_room_for_the_viewer_only_while_it_is_busy() {
-        configure(&HardwareSettings { viewer_share_predictive: 0.8, sched_idle_ms: 200, ..Default::default() });
+        use vp_core::settings::SchedulerMode::*;
+        let s = Sched::new();
+        s.configure(&settings(Predictive, 0.8));
         // Nobody else busy: no waiting.
-        assert_eq!(share(Class::Background), None);
-        run(Class::Background, || std::thread::sleep(Duration::from_millis(5)));
-        assert!(NEXT_FREE[2].lock().unwrap().is_none());
+        assert_eq!(s.share(Class::Background), None);
+        s.run(Class::Background, || std::thread::sleep(Duration::from_millis(5)));
+        assert!(s.next_free[2].lock().unwrap().is_none());
 
         // The viewer reads: background gets a fifth and owes 4× its time.
-        run(Class::Viewer, || {});
-        let s = share(Class::Background).unwrap();
-        assert!((s - 0.2).abs() < 1e-3);
-        assert_eq!(share(Class::Viewer), None, "the larger share never waits");
+        s.run(Class::Viewer, || {});
+        let share = s.share(Class::Background).unwrap();
+        assert!((share - 0.2).abs() < 1e-3);
+        assert_eq!(s.share(Class::Viewer), None, "the larger share never waits");
         let t = Instant::now();
-        run(Class::Background, || std::thread::sleep(Duration::from_millis(20)));
-        run(Class::Background, || {});
+        s.run(Class::Background, || std::thread::sleep(Duration::from_millis(20)));
+        s.run(Class::Background, || {});
         assert!(t.elapsed() >= Duration::from_millis(90), "{:?}", t.elapsed());
 
         // Nested work counts once, as the outer class.
-        run(Class::Viewer, || run(Class::Background, || assert_eq!(CURRENT.with(|c| c.get()), Some(Class::Viewer))));
+        s.run(Class::Viewer, || s.run(Class::Background, || assert_eq!(CURRENT.with(|c| c.get()), Some(Class::Viewer))));
 
         // Once the viewer is idle, background runs freely again.
         std::thread::sleep(Duration::from_millis(250));
-        assert_eq!(share(Class::Background), None);
+        assert_eq!(s.share(Class::Background), None);
         let t = Instant::now();
-        run(Class::Background, || {});
+        s.run(Class::Background, || {});
         assert!(t.elapsed() < Duration::from_millis(50));
+    }
+
+    #[test]
+    fn ties_go_to_the_class_that_comes_first_and_modes_set_the_shares() {
+        use vp_core::settings::SchedulerMode::*;
+        let s = Sched::new();
+        // An even split: the thumbnailer makes room for the viewer, not the other way.
+        s.configure(&settings(Predictive, 0.5));
+        s.run(Class::Viewer, || {});
+        s.run(Class::Thumb, || {});
+        assert_eq!(s.share(Class::Thumb), Some(0.5));
+        assert_eq!(s.share(Class::Viewer), None);
+
+        // Preprocessing first: the viewer is the one that makes room.
+        let s = Sched::new();
+        s.configure(&settings(Preprocess, 0.3));
+        s.run(Class::Viewer, || {});
+        s.run(Class::Background, || {});
+        assert!((s.share(Class::Viewer).unwrap() - 0.3).abs() < 1e-3);
+        assert_eq!(s.share(Class::Background), None);
+
+        // Performance: background gets 30% against the viewer.
+        let s = Sched::new();
+        s.configure(&settings(Performance, 0.7));
+        s.run(Class::Viewer, || {});
+        assert!((s.share(Class::Background).unwrap() - 0.3).abs() < 1e-3);
     }
 }

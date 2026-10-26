@@ -599,6 +599,8 @@ pub fn prefetch_plan(app: AppHandle, state: State<'_, AppState>, ids: Vec<i64>, 
                 if used.load(Ordering::Relaxed) >= budget {
                     return;
                 }
+                // A picture the viewer waits for comes first.
+                crate::sched::wait_urgent(std::time::Duration::from_secs(5));
                 let Some(id) = queue.lock().unwrap().pop_front() else { return };
                 let held = crate::sched::run(crate::sched::Class::Viewer, || crate::media::warm(&ws, &drivers, id, screen)).unwrap_or(0);
                 // Whole chunks: that is what the item takes from the cache.

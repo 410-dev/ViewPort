@@ -243,6 +243,25 @@
    * is made again for copies of the new screen size. */
   let screenRev = $state(0);
   let resizeTimer: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * Logs a picture the viewer waited for too long (`log.slow_view_ms`): how long until
+   * its bytes arrived, and until it was decoded. The backend logs where its part went.
+   */
+  function noteSlow(target: number, img: HTMLImageElement) {
+    const limit = prefs.app?.log.slow_view_ms ?? 400;
+    if (limit <= 0) return;
+    const since = shownAt;
+    const arrived = performance.now() - since;
+    img
+      .decode()
+      .catch(() => {})
+      .finally(() => {
+        const total = performance.now() - since;
+        if (total < limit) return;
+        const detail = `bytes ${Math.round(arrived)}ms, decoded ${Math.round(total - arrived)}ms later, ${img.naturalWidth}x${img.naturalHeight}, ${img.src.includes("fit=") ? "display copy" : "original"}`;
+        api.logSlowView(target, Math.round(total), detail).catch(() => {});
+      });
+  }
   function onResize() {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => screenRev++, 300);
@@ -922,8 +941,9 @@
               style:transform={s.pos === 0 ? zoom.transform : null}
               onload={(e) => {
                 if (b.kind !== "image") return;
-                loaded.add(s.id);
                 const img = e.currentTarget as HTMLImageElement;
+                if (s.id === id && !loaded.has(s.id)) noteSlow(s.id, img);
+                loaded.add(s.id);
                 const size = { w: img.naturalWidth, h: img.naturalHeight };
                 naturals.set(s.id, size);
                 if (s.id === id) zoom.natural = size;
