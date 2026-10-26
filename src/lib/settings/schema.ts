@@ -339,6 +339,7 @@ export const SECTIONS: Section[] = [
           { kind: "number", ...app({ path: "viewer.max_zoom", label: "set.maxZoom" }), min: 1.5, max: 32, step: 0.5, unit: "×" },
           { kind: "number", ...app({ path: "viewer.double_click_zoom", label: "set.doubleClickZoom" }), min: 1.25, max: 16, step: 0.25, unit: "×" },
           { kind: "toggle", ...app({ path: "viewer.wheel_zoom", label: "set.wheelZoom" }) },
+          { kind: "toggle", ...app({ path: "viewer.show_nav_buttons", label: "set.showNavButtons", help: "set.showNavButtons.help" }) },
           { kind: "toggle", ...app({ path: "viewer.tap_to_advance", label: "set.tapAdvance", help: "set.tapAdvance.help" }) },
           { kind: "toggle", ...app({ path: "viewer.swipe_favorite", label: "set.swipeFavorite", help: "set.swipeFavorite.help" }) },
           { kind: "toggle", ...app({ path: "viewer.pull_close", label: "set.pullClose", help: "set.pullClose.help" }) },
@@ -353,6 +354,8 @@ export const SECTIONS: Section[] = [
           { kind: "toggle", ...app({ path: "viewer.fit_screen", label: "set.fitScreen", help: "set.fitScreen.help" }) },
           { kind: "number", ...app({ path: "viewer.display_quality", label: "set.displayQuality" }), min: 1, max: 100, step: 1 },
           { kind: "list", ...app({ path: "viewer.convert_image_extensions", label: "set.convertImageExt", help: "set.convertImageExt.help" }) },
+          { kind: "number", ...app({ path: "viewer.load_retries", label: "set.loadRetries", help: "set.loadRetries.help" }), min: 0, max: 10, step: 1 },
+          { kind: "number", ...app({ path: "viewer.load_retry_ms", label: "set.loadRetryMs" }), min: 100, max: 10000, step: 100, unit: "ms" },
         ],
       },
       {

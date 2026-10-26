@@ -658,6 +658,8 @@ pub struct ViewerSettings {
     pub double_click_zoom: f32,
     /// The mouse wheel zooms images at the cursor.
     pub wheel_zoom: bool,
+    /// The previous/next arrow buttons at the sides of the viewer.
+    pub show_nav_buttons: bool,
     /// Touch screens: tapping the image goes to the next item.
     pub tap_to_advance: bool,
     /// Touch screens: swiping an item up marks it as a favorite, down unmarks it.
@@ -699,6 +701,11 @@ pub struct ViewerSettings {
     /// Image formats the WebView cannot show (HEIF/HEIC): they are always shown as a JPEG
     /// copy, decoded by libheif (when installed), the OS (Android) or FFmpeg.
     pub convert_image_extensions: Vec<String>,
+    /// A picture or video that fails to load is requested again this many times before the
+    /// viewer gives up on it (a request can fail while the app is in the background).
+    pub load_retries: u32,
+    /// Wait before each of those retries.
+    pub load_retry_ms: u32,
 }
 
 impl Default for ViewerSettings {
@@ -709,6 +716,7 @@ impl Default for ViewerSettings {
             max_zoom: 8.0,
             double_click_zoom: 2.5,
             wheel_zoom: true,
+            show_nav_buttons: true,
             tap_to_advance: true,
             swipe_favorite: true,
             pull_close: true,
@@ -724,6 +732,8 @@ impl Default for ViewerSettings {
             fit_screen: true,
             fit_screen_step_px: 512,
             convert_image_extensions: ["heic", "heif", "hif"].map(String::from).to_vec(),
+            load_retries: 3,
+            load_retry_ms: 700,
         }
     }
 }

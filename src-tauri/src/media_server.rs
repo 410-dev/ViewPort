@@ -33,12 +33,32 @@ pub fn start<R: Runtime>(app: &AppHandle<R>) -> std::io::Result<String> {
     let base = format!("http://127.0.0.1:{}/{token}", listener.local_addr()?.port());
     let app = app.clone();
     let prefix = format!("/{token}/");
+    let addr = listener.local_addr()?;
     std::thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            let (app, prefix) = (app.clone(), prefix.clone());
-            std::thread::spawn(move || {
-                let _ = serve_connection(stream, &prefix, |id, range, fit| crate::media::answer(&app, id, range, fit));
-            });
+        let mut listener = listener;
+        let mut failing = false;
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    failing = false;
+                    let (app, prefix) = (app.clone(), prefix.clone());
+                    std::thread::spawn(move || {
+                        let _ = serve_connection(stream, &prefix, |id, range, fit| crate::media::answer(&app, id, range, fit));
+                    });
+                }
+                Err(e) => {
+                    // The socket can go bad while the app is in the background: listen again
+                    // on the same port (the WebView keeps using the same base URL).
+                    if !failing {
+                        crate::applog::warn("media-server", format!("accept failed: {e}"));
+                    }
+                    failing = true;
+                    std::thread::sleep(Duration::from_millis(200));
+                    if let Ok(fresh) = TcpListener::bind(addr) {
+                        listener = fresh;
+                    }
+                }
+            }
         }
     });
     Ok(BASE.get_or_init(|| base).clone())

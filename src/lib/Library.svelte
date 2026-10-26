@@ -1307,7 +1307,9 @@
     }}
     onchanged={() => {
       broadcast("media");
-      runSearch(false);
+      // The listing is hidden behind the viewer: search again when it closes, not while
+      // the viewer is reading (a search can hold the database for seconds).
+      refreshAfterViewer = true;
     }}
   />
 {/if}

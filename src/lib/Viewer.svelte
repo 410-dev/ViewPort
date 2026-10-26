@@ -2,7 +2,7 @@
   import { dismiss } from "./ui/dismiss";
   import { fade, pop, slide } from "./ui/motion";
   import { getCurrentWindow } from "@tauri-apps/api/window";
-  import { onDestroy, onMount } from "svelte";
+  import { onDestroy, onMount, untrack } from "svelte";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import {
     api,
@@ -150,7 +150,61 @@
     if (mode === "always" && !b.has_variant && !converting[b.id] && hasFfmpeg) convert(b.id);
   });
 
-  const src = (id: number) => (srcVersion[id] ? `${mediaUrl(id)}?v=${srcVersion[id]}` : mediaUrl(id));
+  const src = (id: number) => again(`m:${id}`, srcVersion[id] ? `${mediaUrl(id)}?v=${srcVersion[id]}` : mediaUrl(id));
+
+  // ---- failed loads. A request can fail while the app is in the background (Android
+  // pauses the WebView), which left a broken picture on return: retry a few times
+  // (`viewer.load_retries`), and once more when the app is shown again. Keys are
+  // `m:<id>` for the picture or video, `t:<id>` for its thumbnail.
+  /** Times each element was requested again: part of its URL, so a change reloads it. */
+  const attempts = new SvelteMap<string, number>();
+  /** Retries spent since the last success, return to the app or visit. */
+  const tries = new Map<string, number>();
+  /** Elements whose last load failed. */
+  const failed = new Set<string>();
+  const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  function again(key: string, url: string) {
+    const n = attempts.get(key);
+    return n ? `${url}${url.includes("?") ? "&" : "?"}r=${n}` : url;
+  }
+  function reload(key: string) {
+    attempts.set(key, (attempts.get(key) ?? 0) + 1);
+  }
+  /** Element `key` failed; true when the viewer gives up on it. */
+  function loadFailed(key: string): boolean {
+    failed.add(key);
+    // In the background every request may fail: try again when the app is back.
+    if (document.hidden || retryTimers.has(key)) return false;
+    const v = prefs.app?.viewer;
+    const n = tries.get(key) ?? 0;
+    if (n >= (v?.load_retries ?? 3)) return true;
+    tries.set(key, n + 1);
+    retryTimers.set(
+      key,
+      setTimeout(() => {
+        retryTimers.delete(key);
+        reload(key);
+      }, v?.load_retry_ms ?? 700),
+    );
+    return false;
+  }
+  function loadDone(key: string) {
+    failed.delete(key);
+    tries.delete(key);
+  }
+  /** Gives element `key` a fresh set of retries, starting now, if it had failed. */
+  function retryFailed(key: string) {
+    if (!failed.has(key)) return;
+    clearTimeout(retryTimers.get(key));
+    retryTimers.delete(key);
+    tries.delete(key);
+    reload(key);
+  }
+  function onVisibility() {
+    if (document.hidden) return;
+    for (const key of [...failed]) retryFailed(key);
+    if (id !== undefined && failed.has(`m:${id}`)) error = false;
+  }
 
 
   // A slow read of the current file shows its progress in the HUD.
@@ -228,8 +282,8 @@
   const MAX_COPY_PX = 16383;
   const imageSrc = (b: MediaBrief) => {
     const tier = tiers.get(b.id);
-    if (tier === undefined) return displayUrl(b, defaultTier(b));
-    return tier === 0 ? mediaUrl(b.id) : mediaUrl(b.id, tier);
+    const url = tier === undefined ? displayUrl(b, defaultTier(b)) : tier === 0 ? mediaUrl(b.id) : mediaUrl(b.id, tier);
+    return again(`m:${b.id}`, url);
   };
   // A file that will not load may be gone: check, so searches stop listing it.
   $effect(() => {
@@ -268,11 +322,24 @@
     resizeTimer = setTimeout(() => screenRev++, 300);
   }
 
+  // Runs when the current item, the list or the screen size changes. What it reads besides
+  // (the briefs it fills in, `brief` it sets) must not run it again: each lookup would
+  // start another, and every new `brief` restarted the video's loop segment.
   $effect(() => {
     const current = id;
     screenRev;
+    ids;
+    index;
+    settings.cache;
     if (current === undefined) return;
+    untrack(() => visit(current));
+  });
+
+  /** Shows item `current`: its brief, look-ahead and preloads. */
+  function visit(current: number) {
     error = false;
+    retryFailed(`m:${current}`);
+    retryFailed(`t:${current}`);
     if (lastId !== undefined && lastId !== current) {
       api.recordView(lastId, Math.round(performance.now() - shownAt)).catch(() => {});
     }
@@ -340,7 +407,7 @@
       forward: Math.min(1 - minSide, Math.max(minSide, (1 + toward) / 2)),
     });
     api.prefetchPlan(plan, { width: innerWidth * devicePixelRatio, height: innerHeight * devicePixelRatio }).catch(() => {});
-  });
+  }
 
   // ---- video
   // Master audio: one volume and mute for every window and pane.
@@ -390,24 +457,38 @@
   let segLabel = $state("");
   let segError = $state("");
 
+  /** The current video's id. Its brief is replaced often (lookups, probing, conversion);
+   * the segments are loaded, and the autoplay one started, once per video. */
+  const videoId = $derived(brief?.kind === "video" ? brief.id : null);
   $effect(() => {
-    const b = brief;
+    const vid = videoId;
     segments = [];
     activeSeg = null;
     markA = markB = null;
-    if (!b || b.kind !== "video") return;
-    api.loopSegments(b.id).then((list) => {
-      if (brief?.id !== b.id) return;
+    if (vid === null) return;
+    api.loopSegments(vid).then((list) => {
+      if (videoId !== vid) return;
       segments = list;
       activeSeg = list.find((x) => x.autoplay) ?? null;
-      if (activeSeg && video) video.currentTime = activeSeg.start_ms / 1000;
+      if (activeSeg && video && video.readyState > 0) seekToSegment(activeSeg);
     });
   });
+
+  /** A segment the video can play: starts before its end (one saved on another copy of the
+   * file may not). Others are ignored, or the video would seek forever. */
+  function usable(seg: LoopSegment) {
+    if (!video || !isFinite(video.duration)) return true;
+    return seg.start_ms / 1000 < video.duration - 0.05 && seg.end_ms > seg.start_ms;
+  }
+
+  function seekToSegment(seg: LoopSegment) {
+    if (video && usable(seg)) video.currentTime = seg.start_ms / 1000;
+  }
 
   function playSegment(seg: LoopSegment | null) {
     activeSeg = seg;
     if (seg && video) {
-      video.currentTime = seg.start_ms / 1000;
+      seekToSegment(seg);
       video.play();
     }
   }
@@ -488,15 +569,16 @@
 
   function onLoaded() {
     if (!video) return;
-    if (activeSeg) video.currentTime = activeSeg.start_ms / 1000;
+    if (activeSeg) seekToSegment(activeSeg);
     else if (slideshow && ss.video_mode === "clip") video.currentTime = clipStart();
   }
 
   function onTime() {
     if (!video) return;
     const t = video.currentTime;
-    if (activeSeg) {
-      if (t >= activeSeg.end_ms / 1000 || t < activeSeg.start_ms / 1000 - 0.25) {
+    if (activeSeg && usable(activeSeg)) {
+      // Not while a seek is under way: the position it reports may still be the old one.
+      if (!video.seeking && (t >= activeSeg.end_ms / 1000 || t < activeSeg.start_ms / 1000 - 0.25)) {
         video.currentTime = activeSeg.start_ms / 1000;
         plays++;
       }
@@ -880,12 +962,15 @@
 
   onMount(() => {
     window.addEventListener("keydown", onKey);
+    document.addEventListener("visibilitychange", onVisibility);
     poke();
   });
   onDestroy(() => {
     clearTimeout(ssTimer);
     unlistenConvert.then((f) => f());
     window.removeEventListener("keydown", onKey);
+    document.removeEventListener("visibilitychange", onVisibility);
+    for (const timer of retryTimers.values()) clearTimeout(timer);
     clearTimeout(hudTimer);
     clearTimeout(tapTimer);
     clearTimeout(slideTimer);
@@ -943,7 +1028,10 @@
               onpause={() => (paused = true)}
               oncanplay={(e) => (paused = e.currentTarget.paused)}
               ontimeupdate={onTime}
-              onerror={() => (error = true)}
+              onloadeddata={() => loadDone(`m:${s.id}`)}
+              onerror={() => {
+                if (loadFailed(`m:${s.id}`) && s.id === id) error = true;
+              }}
             ></video>
           {:else if b?.kind === "nonmedia"}
             <div class="nomedia"><Icon name="file" size={48} stroke={1.2} /><span>{b.name}</span><small>{t("panel.noPreview")}</small></div>
@@ -952,15 +1040,24 @@
                  slides in, so tiles not yet drawn show it instead of black. (At rest it is
                  gone, so transparent pictures show as they are.) -->
             {#if b.kind === "image" && (!loaded.has(s.id) || s.pos !== 0 || sliding || rested !== s.id)}
-              <img class="ph" src={thumbUrl(s.id)} alt="" draggable="false" style:transform={s.pos === 0 ? zoom.transform : null} />
+              <img
+                class="ph"
+                src={again(`t:${s.id}`, thumbUrl(s.id))}
+                alt=""
+                draggable="false"
+                style:transform={s.pos === 0 ? zoom.transform : null}
+                onload={() => loadDone(`t:${s.id}`)}
+                onerror={() => loadFailed(`t:${s.id}`)}
+              />
             {/if}
             <!-- Neighbouring videos show their thumbnail until they become current. -->
             <img
-              src={b.kind === "video" ? thumbUrl(s.id) : imageSrc(b)}
+              src={b.kind === "video" ? again(`t:${s.id}`, thumbUrl(s.id)) : imageSrc(b)}
               alt={b.name}
               draggable="false"
               style:transform={s.pos === 0 ? zoom.transform : null}
               onload={(e) => {
+                loadDone(`${b.kind === "video" ? "t" : "m"}:${s.id}`);
                 if (b.kind !== "image") return;
                 const img = e.currentTarget as HTMLImageElement;
                 if (s.id === id && !loaded.has(s.id)) noteSlow(s.id, img);
@@ -969,7 +1066,10 @@
                 naturals.set(s.id, size);
                 if (s.id === id) zoom.natural = size;
               }}
-              onerror={() => s.id === id && (error = true)}
+              onerror={() => {
+                if (b.kind === "video") loadFailed(`t:${s.id}`);
+                else if (loadFailed(`m:${s.id}`) && s.id === id) error = true;
+              }}
             />
           {/if}
         </div>
@@ -1124,8 +1224,10 @@
       <button class="hb" onclick={() => toggleFullscreen()} title={t("viewer.fullscreen")}><Icon name="maximize" size={15} /></button>
     </span>
   </div>
-  <button class="nav prev" class:visible={showHud} onclick={() => go(-1)} aria-label={t("viewer.prev")}><Icon name="chevronLeft" size={26} /></button>
-  <button class="nav next" class:visible={showHud} onclick={() => go(1)} aria-label={t("viewer.next")}><Icon name="chevronRight" size={26} /></button>
+  {#if prefs.app?.viewer.show_nav_buttons ?? true}
+    <button class="nav prev" class:visible={showHud} onclick={() => go(-1)} aria-label={t("viewer.prev")}><Icon name="chevronLeft" size={26} /></button>
+    <button class="nav next" class:visible={showHud} onclick={() => go(1)} aria-label={t("viewer.next")}><Icon name="chevronRight" size={26} /></button>
+  {/if}
 </div>
 
 <style>

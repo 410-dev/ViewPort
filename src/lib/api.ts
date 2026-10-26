@@ -352,6 +352,7 @@ export interface AppSettings {
     max_zoom: number;
     double_click_zoom: number;
     wheel_zoom: boolean;
+    show_nav_buttons: boolean;
     tap_to_advance: boolean;
     swipe_favorite: boolean;
     brief_window: number;
@@ -367,6 +368,8 @@ export interface AppSettings {
     fit_screen: boolean;
     fit_screen_step_px: number;
     convert_image_extensions: string[];
+    load_retries: number;
+    load_retry_ms: number;
   };
   ml: {
     runtime_path: string;
