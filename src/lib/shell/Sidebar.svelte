@@ -77,6 +77,21 @@
   } = $props();
 
   let addMenu = $state(false);
+  /** Touch screens: the row whose actions are open (`s<id>` source, `q<id>` saved query). */
+  let rowMenu = $state<string | null>(null);
+  let rowMenuBtn: HTMLElement | null = null;
+  function toggleRowMenu(e: MouseEvent, key: string) {
+    rowMenuBtn = e.currentTarget as HTMLElement;
+    rowMenu = rowMenu === key ? null : key;
+  }
+  /** Runs a row action from the open menu. */
+  const pick = (f: () => void) => () => {
+    rowMenu = null;
+    f();
+  };
+  $effect(() => {
+    if (rowMenu) return onBack(() => (rowMenu = null));
+  });
   $effect(() => {
     if (addMenu) return onBack(() => (addMenu = false));
   });
@@ -176,7 +191,30 @@
             <button class="icon-btn sm" title={t("common.edit")} onclick={() => onedit(s)}><Icon name="pencil" size={13} /></button>
             <button class="icon-btn sm" title={t("common.remove")} onclick={() => onremove(s)}><Icon name="trash" size={13} /></button>
           </span>
+          <!-- Touch screens: the actions behind one button, so the name stays readable and
+               remove is not a slip away from edit. -->
+          <button
+            class="icon-btn sm more"
+            class:open={rowMenu === `s${s.id}`}
+            aria-label={t("side.actions")}
+            aria-expanded={rowMenu === `s${s.id}`}
+            onclick={(e) => toggleRowMenu(e, `s${s.id}`)}><Icon name="dots" size={16} /></button
+          >
         </div>
+        {#if rowMenu === `s${s.id}`}
+          <div class="menu" transition:pop={{ y: -4 }} use:dismiss={{ onclose: () => (rowMenu = null), keep: () => [rowMenuBtn] }}>
+            <button class="item" onclick={pick(() => onrescan(s))}><Icon name="refresh" size={15} /><span class="label">{t("side.rescan")}</span></button>
+            {#if oncopy}
+              <button class="item" onclick={pick(() => oncopy(s))}><Icon name="copy" size={15} /><span class="label">{t("side.copySource")}</span></button>
+            {/if}
+            {#if onmirror}
+              <button class="item" onclick={pick(() => onmirror(s))}><Icon name="loop" size={15} /><span class="label">{t("side.mirror")}</span></button>
+            {/if}
+            <button class="item" onclick={pick(() => onedit(s))}><Icon name="pencil" size={15} /><span class="label">{t("common.edit")}</span></button>
+            <div class="sep"></div>
+            <button class="item danger" onclick={pick(() => onremove(s))}><Icon name="trash" size={15} /><span class="label">{t("common.remove")}</span></button>
+          </div>
+        {/if}
       {:else}
         <p class="empty">{t("side.noSources")}</p>
       {/each}
@@ -198,7 +236,21 @@
             <button class="icon-btn sm" title={t("common.edit")} onclick={() => oneditsaved(q)}><Icon name="pencil" size={13} /></button>
             <button class="icon-btn sm" title={t("common.remove")} onclick={() => ondeletesaved(q)}><Icon name="trash" size={13} /></button>
           </span>
+          <button
+            class="icon-btn sm more"
+            class:open={rowMenu === `q${q.id}`}
+            aria-label={t("side.actions")}
+            aria-expanded={rowMenu === `q${q.id}`}
+            onclick={(e) => toggleRowMenu(e, `q${q.id}`)}><Icon name="dots" size={16} /></button
+          >
         </div>
+        {#if rowMenu === `q${q.id}`}
+          <div class="menu" transition:pop={{ y: -4 }} use:dismiss={{ onclose: () => (rowMenu = null), keep: () => [rowMenuBtn] }}>
+            <button class="item" onclick={pick(() => oneditsaved(q))}><Icon name="pencil" size={15} /><span class="label">{t("common.edit")}</span></button>
+            <div class="sep"></div>
+            <button class="item danger" onclick={pick(() => ondeletesaved(q))}><Icon name="trash" size={15} /><span class="label">{t("common.remove")}</span></button>
+          </div>
+        {/if}
       {:else}
         {#if !cansavecurrent}<p class="empty">{t("side.noSaved")}</p>{/if}
       {/each}
@@ -369,11 +421,28 @@
       height: 42px;
     }
   }
+  .more {
+    display: none;
+    flex-shrink: 0;
+  }
+  .more.open {
+    background: var(--hover);
+  }
+  .menu .sep {
+    height: 1px;
+    margin: 3px 8px;
+    background: var(--border);
+  }
+  .item.danger,
+  .item.danger :global(svg) {
+    color: var(--danger);
+  }
   @media (hover: none) {
     .actions {
-      opacity: 1 !important;
-      pointer-events: auto !important;
-      background: linear-gradient(to right, transparent, var(--surface) 12px);
+      display: none;
+    }
+    .more {
+      display: inline-flex;
     }
   }
   .empty {

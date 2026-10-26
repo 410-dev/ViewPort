@@ -35,6 +35,7 @@ const ko = {
   "side.addFolder": "폴더 추가",
   "side.addNetwork": "네트워크 소스",
   "side.noSources": "소스가 없습니다",
+  "side.actions": "작업",
   "side.rescan": "다시 스캔",
   "side.removeConfirm": "'{name}' 소스를 제거할까요? 태그와 통계도 함께 삭제됩니다.",
   "side.saved": "저장된 검색",
@@ -88,6 +89,7 @@ const ko = {
   "lib.items": "{n}개 항목",
   "lib.empty": "폴더를 추가하면 미디어가 여기에 표시됩니다",
   "lib.emptyFolder": "이 폴더에 표시할 항목이 없습니다",
+  "lib.loading": "불러오는 중…",
   "lib.noResults": "검색 결과가 없습니다",
 
   "panel.mode.preview": "미리보기",

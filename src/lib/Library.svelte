@@ -80,6 +80,8 @@
 
   let settings = $state<Settings | null>(null);
   let sources = $state<SourceRow[]>([]);
+  /** The source list has been read once (until then "no sources" would be a guess). */
+  let sourcesLoaded = $state(false);
   // svelte-ignore state_referenced_locally
   let selected = $state<number | null>(initial?.sourceId ?? null);
   // svelte-ignore state_referenced_locally
@@ -143,7 +145,11 @@
 
   // ---- data
   async function refreshSources() {
-    sources = await api.listSources();
+    try {
+      sources = await api.listSources();
+    } finally {
+      sourcesLoaded = true;
+    }
     refreshShards();
     refreshOffline();
   }
@@ -219,11 +225,16 @@
   });
 
   let searchSeq = 0;
+  /** A search is running whose results will replace the listing. */
+  let searching = $state(false);
+  /** A search has finished at least once: before that an empty listing means "not yet". */
+  let searched = $state(false);
   /** Selected and scrolled to once a search lists it (`revealInLibrary`). */
   let revealAfterSearch: number | null = null;
   async function runSearch(reset: boolean) {
     const seq = ++searchSeq;
     const key = `${selected}|${folder}|${ui().recursive}|${effectiveQuery}`;
+    searching = true;
     try {
       const r = await api.search(effectiveQuery, selected, selected === null ? null : folder, ui().recursive);
       if (seq !== searchSeq) return;
@@ -244,6 +255,11 @@
       }
     } catch (e) {
       if (seq === searchSeq) queryError = asCmdError(e).message;
+    } finally {
+      if (seq === searchSeq) {
+        searching = false;
+        searched = true;
+      }
     }
   }
 
@@ -980,14 +996,18 @@
         <div class="qerror"><Icon name="alert" size={13} /><span>{queryError}</span></div>
       {/if}
       <div class="view">
-        {#if sources.length === 0}
+        {#if !sourcesLoaded}
+          <div class="empty"><span class="spinner"></span><p>{t("lib.loading")}</p></div>
+        {:else if sources.length === 0}
           <div class="empty">
             <Icon name="folderPlus" size={36} stroke={1.2} />
             <p>{t("lib.empty")}</p>
             <button class="btn primary" onclick={addFolder}><Icon name="plus" size={14} />{t("side.addFolder")}</button>
           </div>
         {:else if settings}
-          {#if ids.length === 0 && folders.length === 0 && view.key !== "tree"}
+          {#if ids.length === 0 && folders.length === 0 && view.key !== "tree" && (searching || !searched)}
+            <div class="empty"><span class="spinner"></span><p>{t("lib.loading")}</p></div>
+          {:else if ids.length === 0 && folders.length === 0 && view.key !== "tree"}
             <div class="empty"><Icon name="search" size={30} stroke={1.3} /><p>{t("lib.noResults")}</p></div>
           {:else}
             {#key decoderEpoch}

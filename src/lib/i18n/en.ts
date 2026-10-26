@@ -37,6 +37,7 @@ const en: Record<Key, string> = {
   "side.addFolder": "Add folder",
   "side.addNetwork": "Network source",
   "side.noSources": "No sources",
+  "side.actions": "Actions",
   "side.rescan": "Rescan",
   "side.removeConfirm": "Remove source '{name}'? Its tags and statistics are deleted too.",
   "side.saved": "Saved searches",
@@ -90,6 +91,7 @@ const en: Record<Key, string> = {
   "lib.items": "{n} items",
   "lib.empty": "Add a folder to see your media here",
   "lib.emptyFolder": "Nothing to show in this folder",
+  "lib.loading": "Loading…",
   "lib.noResults": "No results",
 
   "panel.mode.preview": "Preview",
