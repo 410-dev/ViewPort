@@ -23,7 +23,7 @@ export type Field =
   | (Base & { kind: "list"; placeholder?: string })
   | (Base & { kind: "color" })
   | (Base & { kind: "columns" })
-  | { kind: "custom"; id: "cache" | "ffmpeg" | "heif" | "log" | "lock" | "analysis_sources"; label?: Key };
+  | { kind: "custom"; id: "cache" | "ffmpeg" | "heif" | "log" | "lock" | "analysis_sources" | "scheduler"; label?: Key };
 
 export interface Group {
   title?: Key;
@@ -584,6 +584,7 @@ export const SECTIONS: Section[] = [
           { kind: "number", ...bundle({ path: "cache.prefetch_ahead", label: "set.prefetchAhead" }), min: 0, max: 20, step: 1 },
           { kind: "number", ...bundle({ path: "cache.prefetch_behind", label: "set.prefetchBehind" }), min: 0, max: 20, step: 1 },
           { kind: "number", ...bundle({ path: "cache.prefetch_workers", label: "set.prefetchWorkers" }), min: 1, max: 16, step: 1 },
+          { kind: "number", ...bundle({ path: "cache.prefetch_ratio", label: "set.prefetchRatio", help: "set.prefetchRatio.help" }), min: 0, max: 100, step: 5, scale: 0.01, unit: "%" },
         ],
       },
     ],
@@ -593,6 +594,27 @@ export const SECTIONS: Section[] = [
     icon: "cpu",
     title: "set.hardware",
     groups: [
+      {
+        title: "set.scheduler",
+        note: "set.scheduler.note",
+        fields: [
+          {
+            kind: "select",
+            ...app({ path: "hardware.scheduler", label: "set.schedulerMode" }),
+            options: [
+              { value: "performance", label: "set.scheduler.performance" },
+              { value: "predictive", label: "set.scheduler.predictive" },
+              { value: "preprocess", label: "set.scheduler.preprocess" },
+            ],
+          },
+          { kind: "custom", id: "scheduler" },
+          { kind: "number", ...app({ path: "hardware.thumb_share", label: "set.thumbShare", help: "set.thumbShare.help" }), min: 5, max: 95, step: 5, scale: 0.01, unit: "%" },
+          { kind: "number", ...app({ path: "hardware.sched_idle_ms", label: "set.schedIdle", help: "set.schedIdle.help" }), min: 50, max: 5000, step: 50, unit: "ms" },
+          { kind: "number", ...app({ path: "hardware.predict_decay", label: "set.predictDecay", help: "set.predictDecay.help" }), min: 0, max: 95, step: 5, scale: 0.01, unit: "%" },
+          { kind: "number", ...app({ path: "hardware.predict_min_side", label: "set.predictMinSide", help: "set.predictMinSide.help" }), min: 0, max: 50, step: 5, scale: 0.01, unit: "%" },
+          { kind: "number", ...app({ path: "hardware.prefetch_max_items", label: "set.prefetchMax", help: "set.prefetchMax.help" }), min: 1, max: 5000, step: 10 },
+        ],
+      },
       {
         title: "set.hwRender",
         note: "set.restartNote",

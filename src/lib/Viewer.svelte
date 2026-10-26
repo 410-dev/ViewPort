@@ -33,6 +33,7 @@
   import { onBack } from "./back.svelte";
   import { isMobile } from "./platform";
   import { reportBroken } from "./views/briefs.svelte";
+  import { heading, lookahead } from "./lookahead";
 
   /**
    * One viewer pane. `ViewerShell` lays out up to `windows.max_viewer_panes` of them;
@@ -235,9 +236,21 @@
   });
   let shownAt = performance.now();
   let lastId: number | undefined;
+  /** Where the viewer has been heading (-1..1), for the predictive look-ahead. */
+  let toward = 0;
+  let lastIndex = -1;
+  /** Bumped when the window settles at a new size (a foldable opening): the look-ahead
+   * is made again for copies of the new screen size. */
+  let screenRev = $state(0);
+  let resizeTimer: ReturnType<typeof setTimeout> | undefined;
+  function onResize() {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => screenRev++, 300);
+  }
 
   $effect(() => {
     const current = id;
+    screenRev;
     if (current === undefined) return;
     error = false;
     if (lastId !== undefined && lastId !== current) {
@@ -271,7 +284,22 @@
       }
       for (const k of preloaded.keys()) if (!keep.has(k)) preloaded.delete(k);
     });
-    api.prefetch(around).catch(() => {});
+    // The backend's look-ahead, shaped by the scheduler (`lookahead.ts`).
+    const hw = prefs.app?.hardware;
+    if (lastIndex >= 0 && lastIndex !== index) {
+      let move = index - lastIndex;
+      if (Math.abs(move) > n / 2) move -= Math.sign(move) * n;
+      toward = heading(toward, move, hw?.predict_decay ?? 0.6);
+    }
+    lastIndex = index;
+    const minSide = Math.min(0.5, Math.max(0, hw?.predict_min_side ?? 0.15));
+    const plan = lookahead(ids, index, hw?.scheduler ?? "predictive", {
+      ahead: c.prefetch_ahead,
+      behind: c.prefetch_behind,
+      max: hw?.prefetch_max_items ?? 400,
+      forward: Math.min(1 - minSide, Math.max(minSide, (1 + toward) / 2)),
+    });
+    api.prefetchPlan(plan, { width: innerWidth * devicePixelRatio, height: innerHeight * devicePixelRatio }).catch(() => {});
   });
 
   // ---- video
@@ -821,8 +849,13 @@
     clearTimeout(hudTimer);
     clearTimeout(tapTimer);
     clearTimeout(slideTimer);
+    clearTimeout(resizeTimer);
+    // Stop reading ahead for a viewer that is gone.
+    api.prefetchPlan([], { width: 0, height: 0 }).catch(() => {});
   });
 </script>
+
+<svelte:window onresize={onResize} />
 
 <div
   class="viewer"

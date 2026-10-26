@@ -158,6 +158,8 @@ npm run tauri android build -- --apk --target aarch64          # 릴리즈. 디�
 - **잠긴 번들**: DB·설정·썸네일은 암호화, 평문 DB가 디스크에 남으면 안 된다. 미디어 원본·`converted/`는 암호화하지 않는다.
   `info.json`은 항상 평문(공개 가능한 정보만, `bundle_version` 필수).
 - **비밀번호·자격 증명**은 번들 평문 설정에 저장하지 않는다(`ConfigKind::Secret` → OS 키체인 또는 암호화된 번들).
+- **I/O 스케줄링**: 새 읽기 경로는 `ws.driver()`를 거쳐 `sched::Paced`의 적용을 받게 하고, 뷰어·썸네일 경로는 `sched::run(Class::…)`으로
+  감싼다(그 밖은 백그라운드로 취급되어 뷰어가 바쁠 때 양보한다).
 - **지연 최소화**: 파일은 수 KB~수 GB. UI 스레드·커맨드에서 큰 파일을 통째로 읽지 말고 `read_at` 기반 스트리밍, 백그라운드 작업,
   세마포어(`thumb_permits`, `prefetch_permits`)를 사용한다. 화면에 보이는 것이 먼저 처리돼야 한다.
 - 백그라운드 작업은 `Workspace.closed` 플래그를 확인해 번들이 닫히면 멈춰야 한다.

@@ -562,9 +562,86 @@ pub fn spawn_prefetch<R: tauri::Runtime>(app: &AppHandle<R>, ws: &Arc<Workspace>
             if ws.closed.load(Ordering::Relaxed) || ws.cache.contains(id) {
                 return;
             }
-            let _ = tauri::async_runtime::spawn_blocking(move || ws.load_into_cache(&drivers, id)).await;
+            let _ = tauri::async_runtime::spawn_blocking(move || {
+                crate::sched::run(crate::sched::Class::Viewer, || ws.load_into_cache(&drivers, id))
+            })
+            .await;
         });
     }
+}
+
+/// The viewer's look-ahead now running; a newer one stops it.
+static LOOKAHEAD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Loads the viewer's look-ahead: `ids` in the order they are wanted (the current item
+/// first), each as the viewer will ask for it in a window of `screen` device pixels,
+/// until the scheduler's share of the cache (`HardwareSettings::prefetch_ratio`) is
+/// taken. Items already cached count against it and are marked recently used, so what
+/// is evicted for the rest is what lies outside the look-ahead. Replaces the previous one.
+#[tauri::command]
+pub fn prefetch_plan(app: AppHandle, state: State<'_, AppState>, ids: Vec<i64>, screen: Option<crate::media::Screen>) -> CmdResult<()> {
+    let ws = workspace(&state)?;
+    let generation = LOOKAHEAD.fetch_add(1, Ordering::Relaxed) + 1;
+    let c = ws.settings.read().unwrap().cache.clone();
+    let ratio = recent::cached_app_settings().hardware.prefetch_ratio(c.prefetch_ratio);
+    let budget = (ws.cache.capacity_bytes() as f64 * ratio as f64) as u64;
+    let chunk = c.chunk_bytes.max(4096);
+    let queue = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from(ids)));
+    let used = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let drivers = app.state::<AppState>().drivers.clone();
+    for _ in 0..c.prefetch_workers.max(1) {
+        let (ws, drivers, queue, used) = (ws.clone(), drivers.clone(), queue.clone(), used.clone());
+        tauri::async_runtime::spawn_blocking(move || {
+            loop {
+                if LOOKAHEAD.load(Ordering::Relaxed) != generation || ws.closed.load(Ordering::Relaxed) {
+                    return;
+                }
+                if used.load(Ordering::Relaxed) >= budget {
+                    return;
+                }
+                let Some(id) = queue.lock().unwrap().pop_front() else { return };
+                let held = crate::sched::run(crate::sched::Class::Viewer, || crate::media::warm(&ws, &drivers, id, screen)).unwrap_or(0);
+                // Whole chunks: that is what the item takes from the cache.
+                used.fetch_add(held.div_ceil(chunk) * chunk, Ordering::Relaxed);
+            }
+        });
+    }
+    Ok(())
+}
+
+/// Applies the cache size settings now: grows or shrinks the memory cache in place
+/// (reserving the memory again when `cache.preallocate` is on).
+#[tauri::command]
+pub fn cache_resize(state: State<'_, AppState>) -> CmdResult<vp_cache::CacheStats> {
+    let ws = workspace(&state)?;
+    let c = ws.settings.read().unwrap().cache.clone();
+    let capacity = recent::cached_app_settings().hardware.cache_bytes(c.memory_bytes);
+    ws.cache.resize(capacity, c.max_item_bytes);
+    if c.preallocate {
+        let ws = ws.clone();
+        std::thread::spawn(move || {
+            let total_bytes = ws.cache.capacity_bytes();
+            let task = crate::tasks::begin("reserve", "", crate::tasks::Unit::Bytes, Some(total_bytes));
+            ws.cache.preallocate_with(&ws.closed, &mut |done, total| {
+                if let Some(per_chunk) = total_bytes.checked_div(total) {
+                    task.set(per_chunk * done, None);
+                }
+            });
+        });
+    }
+    Ok(ws.cache.stats())
+}
+
+/// Empties the memory cache (items being read go when their readers finish) and,
+/// unless the memory is meant to stay reserved (`cache.preallocate`), returns it.
+#[tauri::command]
+pub fn cache_clear(state: State<'_, AppState>) -> CmdResult<vp_cache::CacheStats> {
+    let ws = workspace(&state)?;
+    ws.cache.clear();
+    if !ws.settings.read().unwrap().cache.preallocate {
+        ws.cache.trim();
+    }
+    Ok(ws.cache.stats())
 }
 
 #[tauri::command]

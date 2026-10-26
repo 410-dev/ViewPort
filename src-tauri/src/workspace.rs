@@ -470,6 +470,8 @@ impl Workspace {
             let config = crate::secrets::reveal(&source.driver, &source.config, &factory.config_schema());
             factory.connect(&source.root, &config)?
         };
+        // Reads take turns with the viewer (`sched`).
+        let driver: Arc<dyn MediaDriver> = Arc::new(crate::sched::Paced(driver));
         self.drivers.lock().unwrap().insert(source.id, driver.clone());
         Ok(driver)
     }

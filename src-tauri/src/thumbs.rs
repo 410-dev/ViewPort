@@ -54,7 +54,8 @@ pub fn handle<R: Runtime>(ctx: UriSchemeContext<'_, R>, request: tauri::http::Re
         let Ok(_permit) = ws.thumb_permits.clone().acquire_owned().await else {
             return responder.respond(status(StatusCode::SERVICE_UNAVAILABLE));
         };
-        let result = tauri::async_runtime::spawn_blocking(move || ws.thumbnail(&drivers, id)).await;
+        let result =
+            tauri::async_runtime::spawn_blocking(move || crate::sched::run(crate::sched::Class::Thumb, || ws.thumbnail(&drivers, id))).await;
         let response = match result {
             Ok(Ok(Some((data, mime)))) => Response::builder()
                 .header(header::CONTENT_TYPE, mime)
@@ -111,7 +112,7 @@ pub fn spawn_backfill(app: AppHandle, ws: Arc<Workspace>) {
                     let _permit = permit;
                     // A read error (e.g. a disconnected share) is recorded as a failed
                     // thumbnail, so the loop always makes progress.
-                    if let Err(e) = ws.thumbnail(&drivers, id) {
+                    if let Err(e) = crate::sched::run(crate::sched::Class::Thumb, || ws.thumbnail(&drivers, id)) {
                         crate::applog::warn("thumbs", format!("item {id}: {} (recorded as failed)", e.message));
                         let row = vp_db::ThumbRow::without_data(vp_db::ThumbStatus::Failed);
                         let _ = ws.write_db.lock().unwrap().set_thumbnail(id, &row);

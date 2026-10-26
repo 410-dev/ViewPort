@@ -184,6 +184,63 @@ fn larger_than(
     Ok(size.is_none_or(|(w, h)| w.max(h) > edge))
 }
 
+/// The window the viewer draws in (device pixels), for the size of display copies.
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+pub struct Screen {
+    pub width: f64,
+    pub height: f64,
+}
+
+/// Edge of the display copy the viewer asks for first (its `defaultTier`): the size the
+/// image is drawn at when fitted to `screen`, rounded up to `fit_screen_step_px`, at most
+/// `display_max_px` (0: originals).
+fn display_edge(v: &vp_core::settings::ViewerSettings, screen: Screen, size: Option<(u32, u32)>) -> u32 {
+    let max = v.display_max_px;
+    if max == 0 || !v.fit_screen {
+        return max;
+    }
+    let step = v.fit_screen_step_px.max(64) as f64;
+    let (sw, sh) = (screen.width.max(1.0), screen.height.max(1.0));
+    let need = match size {
+        Some((w, h)) if w > 0 && h > 0 => {
+            let (w, h) = (w as f64, h as f64);
+            let fit = (sw / w).min(sh / h).max((sh / w).min(sw / h));
+            w.max(h) * fit.min(1.0)
+        }
+        _ => sw.max(sh),
+    };
+    max.min(((need / step).ceil() * step) as u32)
+}
+
+/// Loads what the viewer will ask for item `id` into the memory cache (the original, or
+/// the display copy `screen` calls for), or marks it recently used if it is there.
+/// Returns the bytes it holds in the cache (0 if it could not be cached).
+pub fn warm(ws: &Workspace, drivers: &vp_driver::DriverRegistry, id: i64, screen: Option<Screen>) -> CmdResult<u64> {
+    let Some(loc) = ws.read_db.lock().unwrap().media_location(id)? else { return Ok(0) };
+    if loc.kind == vp_core::MediaKind::Image {
+        let convert = needs_conversion(&loc.rel_path);
+        let v = crate::recent::cached_app_settings().viewer;
+        let edge = match screen {
+            Some(s) => {
+                let size = ws.read_db.lock().unwrap().media_brief(&[id])?.pop().and_then(|b| b.width.zip(b.height));
+                display_edge(&v, s, size)
+            }
+            None => v.display_max_px,
+        };
+        // As `serve` decides it for `displayUrl(brief, edge)`.
+        let copy = match edge {
+            0 if convert => Some(MAX_DISPLAY_EDGE),
+            0 => None,
+            e if convert || larger_than(ws, drivers, id, &loc, e)? => Some(e),
+            _ => None,
+        };
+        if let Some(edge) = copy {
+            return Ok(display_copy(ws, drivers, id, &loc, edge)?.map_or(0, |d| d.len() as u64));
+        }
+    }
+    Ok(ws.load_into_cache(drivers, id)?.map_or(0, |c| c.len()))
+}
+
 fn serve(
     ws: &Workspace,
     drivers: &vp_driver::DriverRegistry,
@@ -264,7 +321,9 @@ pub fn answer<R: Runtime>(app: &AppHandle<R>, id: Option<i64>, range: Option<Str
         return status(StatusCode::SERVICE_UNAVAILABLE);
     };
     // A panic must still answer: a dropped responder leaves the WebView request hanging.
-    let served = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| serve(&ws, &state.drivers, id, range, fit)))
+    let served = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::sched::run(crate::sched::Class::Viewer, || serve(&ws, &state.drivers, id, range, fit))
+    }))
         .unwrap_or_else(|_| Err(CmdError::new("panic", "media handler panicked")));
     let response = match served {
         Ok(Some(b)) => {

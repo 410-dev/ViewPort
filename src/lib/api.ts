@@ -234,6 +234,7 @@ export interface CacheSettings {
   prefetch_ahead: number;
   prefetch_behind: number;
   prefetch_workers: number;
+  prefetch_ratio: number;
   max_item_bytes: number;
   stream_chunk_bytes: number;
 }
@@ -321,6 +322,15 @@ export interface AppSettings {
     encoders: string[];
     /** Upper bound for any bundle's memory cache on this device (0 = no limit). */
     cache_limit_bytes: number;
+    scheduler: SchedulerMode;
+    viewer_share_performance: number;
+    viewer_share_predictive: number;
+    viewer_share_preprocess: number;
+    thumb_share: number;
+    sched_idle_ms: number;
+    predict_decay: number;
+    predict_min_side: number;
+    prefetch_max_items: number;
   };
   reopen_last_bundle: boolean;
   hide_missing_recent: boolean;
@@ -594,6 +604,10 @@ export const api = {
   prefetch: (ids: number[]) => invoke<void>("prefetch", { ids }),
   recordView: (id: number, viewMs: number) => invoke<void>("record_view", { id, viewMs }),
   cacheStats: () => invoke<CacheStats>("cache_stats"),
+  /** The viewer's look-ahead, most wanted first; replaces the previous one. */
+  prefetchPlan: (ids: number[], screen: { width: number; height: number }) => invoke<void>("prefetch_plan", { ids, screen }),
+  cacheResize: () => invoke<CacheStats>("cache_resize"),
+  cacheClear: () => invoke<CacheStats>("cache_clear"),
   listFields: () => invoke<FieldInfo[]>("list_fields"),
   createField: (names: [string, string][], aliases: string[], ty: FieldType) =>
     invoke<string>("create_field", { names, aliases, ty }),
@@ -891,6 +905,9 @@ export const mediaUrl = (id: number, fit?: number) => {
  * What to show for an item: huge images (longer edge over `maxPx`, or size unknown) as a
  * display copy, since decoding a 200-megapixel original stalls the WebView; else the original.
  */
+/** How the disk is shared and how far the viewer reads ahead (`HardwareSettings::scheduler`). */
+export type SchedulerMode = "performance" | "predictive" | "preprocess";
+
 export function displayUrl(b: MediaBrief, maxPx: number): string {
   if (b.kind !== "image" || maxPx <= 0) return mediaUrl(b.id);
   const edge = Math.max(b.width ?? 0, b.height ?? 0);

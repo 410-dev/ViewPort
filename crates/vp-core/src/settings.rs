@@ -206,6 +206,9 @@ pub struct CacheSettings {
     pub prefetch_behind: u32,
     /// Concurrent prefetch / preload reads.
     pub prefetch_workers: u32,
+    /// Fraction of the cache the viewer's look-ahead may fill (the scheduler raises it:
+    /// `HardwareSettings::scheduler`).
+    pub prefetch_ratio: f32,
     /// Files larger than this are streamed instead of cached whole.
     pub max_item_bytes: u64,
     /// Largest response served for one video range request (cached or streamed).
@@ -223,6 +226,7 @@ impl Default for CacheSettings {
             prefetch_ahead: 4,
             prefetch_behind: 4,
             prefetch_workers: 2,
+            prefetch_ratio: 0.5,
             max_item_bytes: GIB,
             stream_chunk_bytes: 4 * MIB,
         }
@@ -911,6 +915,62 @@ pub struct HardwareSettings {
     /// Upper bound for any bundle's memory cache on this device (0 = no limit). Bundle
     /// settings travel between devices; a phone should not take a desktop-sized cache.
     pub cache_limit_bytes: u64,
+    /// How disk reads and decoding are shared between the viewer, the thumbnailer and
+    /// background work (scans, hashing, copies), and how far the viewer reads ahead.
+    pub scheduler: SchedulerMode,
+    /// The viewer's share of the disk (0..=1) in each scheduler mode, while other work
+    /// competes; the rest goes to the thumbnailer and background work.
+    pub viewer_share_performance: f32,
+    pub viewer_share_predictive: f32,
+    pub viewer_share_preprocess: f32,
+    /// The thumbnailer's part of the non-viewer share while background work competes.
+    pub thumb_share: f32,
+    /// Work counts as competing until this long after its last read.
+    pub sched_idle_ms: u32,
+    /// Predictive mode: weight of the earlier moves in the direction estimate (0..1;
+    /// higher follows a change of direction more slowly).
+    pub predict_decay: f32,
+    /// Predictive mode: the side the viewer is not heading to still gets this part of
+    /// the look-ahead.
+    pub predict_min_side: f32,
+    /// Most items the viewer's look-ahead considers on each side (the cache budget
+    /// usually stops it earlier).
+    pub prefetch_max_items: u32,
+}
+
+/// See [`HardwareSettings::scheduler`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SchedulerMode {
+    /// The look-ahead may fill the whole cache, evenly on both sides of the current item.
+    Performance,
+    /// The look-ahead fills up to 90% of the cache (or `prefetch_ratio`, if larger), more
+    /// on the side the viewer has been moving to.
+    Predictive,
+    /// Background work gets most of the disk; the look-ahead is `prefetch_ahead`/`_behind`.
+    Preprocess,
+}
+
+impl HardwareSettings {
+    /// The viewer's share of the disk in the current mode.
+    pub fn viewer_share(&self) -> f32 {
+        let s = match self.scheduler {
+            SchedulerMode::Performance => self.viewer_share_performance,
+            SchedulerMode::Predictive => self.viewer_share_predictive,
+            SchedulerMode::Preprocess => self.viewer_share_preprocess,
+        };
+        s.clamp(0.05, 0.95)
+    }
+
+    /// The fraction of the cache the look-ahead may fill, given the bundle's own setting.
+    pub fn prefetch_ratio(&self, bundle_ratio: f32) -> f32 {
+        let r = match self.scheduler {
+            SchedulerMode::Performance => 1.0,
+            SchedulerMode::Predictive => bundle_ratio.max(0.9),
+            SchedulerMode::Preprocess => bundle_ratio,
+        };
+        r.clamp(0.0, 1.0)
+    }
 }
 
 impl Default for HardwareSettings {
@@ -933,6 +993,15 @@ impl Default for HardwareSettings {
             video_encode: true,
             encoders: encoders.iter().map(|e| e.to_string()).collect(),
             cache_limit_bytes: if MOBILE { 512 * MIB } else { 0 },
+            scheduler: SchedulerMode::Predictive,
+            viewer_share_performance: 0.7,
+            viewer_share_predictive: 0.5,
+            viewer_share_preprocess: 0.3,
+            thumb_share: 0.7,
+            sched_idle_ms: 500,
+            predict_decay: 0.6,
+            predict_min_side: 0.15,
+            prefetch_max_items: 400,
         }
     }
 }

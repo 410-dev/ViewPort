@@ -11,6 +11,7 @@ mod ml;
 mod ml_store;
 mod platform;
 mod recent;
+mod sched;
 mod mirror;
 mod secrets;
 mod shard_props;
@@ -89,6 +90,9 @@ pub fn run() {
             commands::check_query,
             commands::save_bundle,
             commands::prefetch,
+            commands::prefetch_plan,
+            commands::cache_resize,
+            commands::cache_clear,
             commands::record_view,
             commands::cache_stats,
             commands::get_app_settings,

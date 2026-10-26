@@ -30,6 +30,7 @@ pub fn app_settings<R: Runtime>(app: &AppHandle<R>) -> AppSettings {
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default();
+    crate::sched::configure(&s.hardware);
     *APP_SETTINGS_CACHE.write().unwrap() = Some(s.clone());
     s
 }
@@ -45,6 +46,7 @@ pub fn save_app_settings(app: &AppHandle, s: &AppSettings) -> std::io::Result<()
         std::fs::create_dir_all(dir)?;
     }
     std::fs::write(p, serde_json::to_vec_pretty(s).map_err(std::io::Error::other)?)?;
+    crate::sched::configure(&s.hardware);
     *APP_SETTINGS_CACHE.write().unwrap() = Some(s.clone());
     Ok(())
 }

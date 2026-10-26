@@ -202,6 +202,45 @@
     }
   }
 
+  // ---- cache memory: applied in place, no restart
+  let cacheBusy = $state(false);
+  let cacheNote = $state("");
+  /** Saves the settings as edited so far, then resizes the cache to them. */
+  async function resizeCache() {
+    cacheBusy = true;
+    cacheNote = "";
+    try {
+      await api.saveSettings($state.snapshot(draft) as Settings);
+      Object.assign(settings, $state.snapshot(draft));
+      await api.saveAppSettings($state.snapshot(appDraft) as AppSettings);
+      prefs.app = structuredClone($state.snapshot(appDraft)) as AppSettings;
+      broadcast("settings");
+      stats = await api.cacheResize();
+      cacheNote = t("cache.resized", { size: fmtBytes(stats.capacity_bytes) });
+    } catch (e) {
+      cacheNote = asCmdError(e).message;
+    } finally {
+      cacheBusy = false;
+    }
+  }
+  async function clearCache() {
+    cacheBusy = true;
+    cacheNote = "";
+    try {
+      stats = await api.cacheClear();
+      cacheNote = t("cache.cleared");
+    } catch (e) {
+      cacheNote = asCmdError(e).message;
+    } finally {
+      cacheBusy = false;
+    }
+  }
+  const SHARE_HELP = {
+    performance: "set.scheduler.performance.help",
+    predictive: "set.scheduler.predictive.help",
+    preprocess: "set.scheduler.preprocess.help",
+  } as const;
+
   // ---- save / cancel
   let saving = $state(false);
   let error = $state("");
@@ -287,6 +326,47 @@
                               </div>
                             </div>
                           {/if}
+                          <div class="status">
+                            <span class="grow">{cacheNote || t("cache.applyNote")}</span>
+                            <button class="btn sm" disabled={cacheBusy} onclick={clearCache}>{t("cache.clear")}</button>
+                            <button class="btn sm primary" disabled={cacheBusy} onclick={resizeCache}>{t("cache.resize")}</button>
+                          </div>
+                        {:else if f.id === "scheduler"}
+                          {@const mode = appDraft.hardware.scheduler}
+                          {@const path = `hardware.viewer_share_${mode}`}
+                          {@const pct = Math.round((get(appDraft, path) ?? 0.5) * 100)}
+                          <div class="share">
+                            <p class="share-help">{t(SHARE_HELP[mode])}</p>
+                            <div class="share-row">
+                              <span class="share-lbl">{t("set.viewerShare")}</span>
+                              <input
+                                class="share-range"
+                                type="range"
+                                min="5"
+                                max="95"
+                                step="5"
+                                value={pct}
+                                aria-label={t("set.viewerShare")}
+                                oninput={(e) => set(appDraft, path, +e.currentTarget.value / 100)}
+                              />
+                              <span class="num">
+                                <input
+                                  class="input"
+                                  type="number"
+                                  min="5"
+                                  max="95"
+                                  step="1"
+                                  value={pct}
+                                  onchange={(e) => set(appDraft, path, Math.min(95, Math.max(5, Math.round(+e.currentTarget.value))) / 100)}
+                                />
+                                <span class="unit">%</span>
+                              </span>
+                            </div>
+                            <div class="share-bar">
+                              <i style:width="{pct}%"><span>{t("set.share.viewer")} {pct}</span></i>
+                              <b><span>{t("set.share.rest")} {100 - pct}</span></b>
+                            </div>
+                          </div>
                         {:else if f.id === "ffmpeg"}
                           {#if ffmpeg?.available}
                             <div class="status ok"><Icon name="check" size={14} /><span>FFmpeg · {ffmpeg.version ?? ffmpeg.path}</span></div>
@@ -760,6 +840,57 @@
   .meter {
     display: grid;
     gap: 12px;
+  }
+  .share {
+    display: grid;
+    gap: 10px;
+  }
+  .share-help {
+    margin: 0;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .share-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .share-lbl {
+    flex: none;
+  }
+  .share-range {
+    flex: 1;
+    min-width: 0;
+    accent-color: var(--accent);
+  }
+  .share-bar {
+    display: flex;
+    height: 20px;
+    border-radius: var(--radius-pill);
+    overflow: hidden;
+    font-size: 11px;
+    font-style: normal;
+    font-weight: 500;
+  }
+  .share-bar i,
+  .share-bar b {
+    display: flex;
+    align-items: center;
+    padding: 0 8px;
+    overflow: hidden;
+    white-space: nowrap;
+    font-style: normal;
+    font-weight: 500;
+  }
+  .share-bar i {
+    background: var(--accent);
+    color: var(--accent-fg);
+  }
+  .share-bar b {
+    flex: 1;
+    justify-content: flex-end;
+    background: var(--surface-3);
+    color: var(--muted);
   }
   .mbar {
     position: relative;
