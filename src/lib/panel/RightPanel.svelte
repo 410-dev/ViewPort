@@ -45,10 +45,12 @@
     const up = () => {
       el.removeEventListener("pointermove", move);
       el.removeEventListener("pointerup", up);
+      el.removeEventListener("pointercancel", up);
       savePrefs();
     };
     el.addEventListener("pointermove", move);
     el.addEventListener("pointerup", up);
+    el.addEventListener("pointercancel", up);
   }
 </script>
 
@@ -135,6 +137,16 @@
     z-index: 1;
     cursor: row-resize;
     flex-shrink: 0;
+  }
+  @media (hover: none) {
+    .split {
+      height: 25px;
+      margin: -12px 0;
+      touch-action: none;
+    }
+    .panel .split::after {
+      top: 12px;
+    }
   }
   .split::after {
     content: "";

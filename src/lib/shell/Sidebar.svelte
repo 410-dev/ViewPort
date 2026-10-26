@@ -1,6 +1,7 @@
 <script lang="ts">
   import { dismiss } from "../ui/dismiss";
   import { pop } from "../ui/motion";
+  import { onBack } from "../back.svelte";
   import type { BundleSummary, SavedQuery, ScanEvent, ShardStatus, SourceRow } from "../api";
   import { t } from "../i18n.svelte";
   import Icon from "../ui/Icon.svelte";
@@ -76,6 +77,9 @@
   } = $props();
 
   let addMenu = $state(false);
+  $effect(() => {
+    if (addMenu) return onBack(() => (addMenu = false));
+  });
   let addBtn = $state<HTMLButtonElement | null>(null);
 </script>
 

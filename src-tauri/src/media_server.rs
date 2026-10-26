@@ -20,6 +20,9 @@ use tauri::{AppHandle, Runtime};
 
 static BASE: OnceLock<String> = OnceLock::new();
 
+/// Failed accepts in a row after which the server listens again.
+const REBIND_AFTER: u32 = 5;
+
 /// Largest request head accepted.
 const MAX_HEAD: usize = 16 * 1024;
 
@@ -35,27 +38,44 @@ pub fn start<R: Runtime>(app: &AppHandle<R>) -> std::io::Result<String> {
     let prefix = format!("/{token}/");
     let addr = listener.local_addr()?;
     std::thread::spawn(move || {
-        let mut listener = listener;
-        let mut failing = false;
+        let mut listener = Some(listener);
+        let mut failures = 0u32;
         loop {
-            match listener.accept() {
+            let Some(l) = &listener else {
+                // Listen again on the same port: the WebView keeps using the same base URL.
+                std::thread::sleep(Duration::from_millis(200));
+                match TcpListener::bind(addr) {
+                    Ok(fresh) => {
+                        crate::applog::info("media-server", "listening again");
+                        listener = Some(fresh);
+                        failures = 0;
+                    }
+                    Err(e) if failures == REBIND_AFTER => {
+                        crate::applog::warn("media-server", format!("cannot listen again: {e}"));
+                        failures += 1;
+                    }
+                    Err(_) => {}
+                }
+                continue;
+            };
+            match l.accept() {
                 Ok((stream, _)) => {
-                    failing = false;
+                    failures = 0;
                     let (app, prefix) = (app.clone(), prefix.clone());
                     std::thread::spawn(move || {
                         let _ = serve_connection(stream, &prefix, |id, range, fit| crate::media::answer(&app, id, range, fit));
                     });
                 }
                 Err(e) => {
-                    // The socket can go bad while the app is in the background: listen again
-                    // on the same port (the WebView keeps using the same base URL).
-                    if !failing {
+                    // One failed accept is usually a client that gave up; a run of them means
+                    // the socket went bad (it can while the app is in the background).
+                    failures += 1;
+                    if failures == 1 {
                         crate::applog::warn("media-server", format!("accept failed: {e}"));
                     }
-                    failing = true;
-                    std::thread::sleep(Duration::from_millis(200));
-                    if let Ok(fresh) = TcpListener::bind(addr) {
-                        listener = fresh;
+                    std::thread::sleep(Duration::from_millis(50));
+                    if failures >= REBIND_AFTER {
+                        listener = None; // closed before binding the port again
                     }
                 }
             }

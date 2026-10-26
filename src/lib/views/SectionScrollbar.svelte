@@ -63,7 +63,9 @@
     e.stopPropagation();
     const y = e.clientY - trackEl.getBoundingClientRect().top;
     // On the thumb: keep where it was grabbed. On the track: centre the thumb there.
-    grab = y >= thumbY && y <= thumbY + thumbH ? y - thumbY : thumbH / 2;
+    // Touch takes the thumb only, with some room around it (the CSS hit area).
+    const slack = e.pointerType === "touch" ? 12 : 0;
+    grab = y >= thumbY - slack && y <= thumbY + thumbH + slack ? Math.min(thumbH, Math.max(0, y - thumbY)) : thumbH / 2;
     scrollToThumb(y - grab);
     dragging = true;
     trackEl.setPointerCapture(e.pointerId);
@@ -167,12 +169,21 @@
   }
   /* Touch: a wider grip, always at full strength. */
   @media (hover: none) {
+    /* Only the thumb takes touches: the track lies over the last column of tiles, and a
+       swipe or tap starting there jumped the list instead of scrolling or opening. */
     .track {
       width: 24px;
+      pointer-events: none;
     }
     .thumb {
       width: 8px;
       opacity: 1;
+      pointer-events: auto;
+    }
+    .thumb::before {
+      content: "";
+      position: absolute;
+      inset: -12px -8px -12px -14px;
     }
     .track.dragging .thumb {
       width: 12px;

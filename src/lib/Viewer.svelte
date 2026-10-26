@@ -77,6 +77,10 @@
 
   const id = $derived(ids[index]);
   let brief = $state<MediaBrief | null>(null);
+  /** `brief` once it is the current item's: until its details arrive, the previous one's
+   * must not drive the controls (a video's dock over a picture, saving a loop to it). */
+  const cur = $derived(brief?.id === id ? brief : null);
+  const curKind = $derived(cur?.kind);
   let video = $state<HTMLVideoElement | null>(null);
   /** The current video is paused (the dock's play/pause button). */
   let paused = $state(false);
@@ -139,13 +143,19 @@
   }
 
   // Probe unprobed videos on open; in "always" mode convert anything without a copy.
+  const probing = new Set<number>();
   $effect(() => {
     const b = brief;
     if (!b || b.kind !== "video") return;
-    if (b.compatible === null && canProbe) {
-      api.probeMedia(b.id).then((nb) => {
-        if (nb && brief?.id === nb.id) brief = nb;
-      });
+    if (b.compatible === null && canProbe && !probing.has(b.id)) {
+      probing.add(b.id);
+      api
+        .probeMedia(b.id)
+        .then((nb) => {
+          if (nb && brief?.id === nb.id) brief = nb;
+        })
+        .catch(() => {})
+        .finally(() => probing.delete(b.id));
     }
     if (mode === "always" && !b.has_variant && !converting[b.id] && hasFfmpeg) convert(b.id);
   });
@@ -276,6 +286,8 @@
   /** Edge in px of the copy shown per id (absent: `displayMax`; 0: the original). */
   const tiers = new SvelteMap<number, number>();
   const upgrading = new Set<number>();
+  /** Items whose larger copy failed to load (out of memory, usually): not tried again. */
+  const upgradeFailed = new Set<number>();
   /** Items whose picture has loaded; until then the thumbnail stands in. */
   const loaded = new SvelteSet<number>();
   /** Largest copy the backend makes (`media::display_key`); beyond it, the original. */
@@ -495,7 +507,7 @@
 
   async function saveSegment(seg?: LoopSegment) {
     segError = "";
-    if (!brief) return;
+    if (!brief || videoId !== id) return;
     const toSave =
       seg ??
       ({
@@ -557,8 +569,9 @@
     clearTimeout(ssTimer);
     plays = 0;
     lastTime = 0;
-    if (!slideshow || ssPaused || !brief || brief.id !== id) return;
-    if (brief.kind === "image" || error) ssTimer = setTimeout(advance, ss.image_interval_secs * 1000);
+    const kind = curKind;
+    if (!slideshow || ssPaused || !kind) return;
+    if (kind === "image" || error) ssTimer = setTimeout(advance, ss.image_interval_secs * 1000);
   });
 
   function clipStart() {
@@ -680,7 +693,7 @@
     const current = id;
     const n = zoom.natural;
     const scale = zoom.scale;
-    if (!zoomable || !n.w || upgrading.has(current)) return;
+    if (!zoomable || !n.w || upgrading.has(current) || upgradeFailed.has(current)) return;
     const tier = tiers.get(current) ?? defaultTier(known.get(current) ?? (brief?.id === current ? brief : undefined));
     // Copies come out within a few percent of their size; a smaller picture is the whole image.
     if (tier <= 0 || Math.max(n.w, n.h) < tier * 0.9) return;
@@ -693,7 +706,7 @@
     img
       .decode()
       .then(() => tiers.set(current, next))
-      .catch(() => {})
+      .catch(() => upgradeFailed.add(current))
       .finally(() => upgrading.delete(current));
   });
 
@@ -732,6 +745,8 @@
       return onBack(() => {
         if (immersive.on) immersive.on = false;
         else if (showInfo) showInfo = false;
+        else if (showLoops) showLoops = false;
+        else if (slideshow) slideshow = false;
         else close();
       });
   });
@@ -806,6 +821,11 @@
   let tapTimer: ReturnType<typeof setTimeout> | undefined;
   let lastPointerType = "mouse";
 
+  function cancelTap() {
+    clearTimeout(tapTimer);
+    tapTimer = undefined;
+  }
+
   function onTap(e: PointerEvent) {
     if (tapTimer !== undefined) {
       clearTimeout(tapTimer);
@@ -837,7 +857,7 @@
       lock = null;
       // A drag starting on a video's control bar belongs to the controls, not to swiping.
       const bottom = stageEl!.getBoundingClientRect().bottom;
-      const onControls = brief?.kind === "video" && showHud && e.clientY > bottom - 80;
+      const onControls = cur?.kind === "video" && showHud && e.clientY > bottom - 80;
       gesture = {
         x: e.clientX,
         y: e.clientY,
@@ -850,7 +870,12 @@
     } else if (pointers.size === 2 && zoomable) {
       pinch = { dist: distance(), scale: zoom.scale };
       if (gesture) gesture.pinched = true;
+      cancelTap();
+      // A drag that became a pinch is not a swipe, favorite or pull any more.
       swipe = 0;
+      pull = 0;
+      shrink = 1;
+      lock = null;
     }
   }
 
@@ -859,7 +884,10 @@
     const prev = pointers.get(e.pointerId);
     if (!prev) return;
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (gesture && Math.hypot(e.clientX - gesture.x, e.clientY - gesture.y) > 8) gesture.moved = true;
+    if (gesture && !gesture.moved && Math.hypot(e.clientX - gesture.x, e.clientY - gesture.y) > 8) {
+      gesture.moved = true;
+      cancelTap();
+    }
     if (pinch && pointers.size === 2) {
       const [a, b] = [...pointers.values()];
       const mid = local((a.x + b.x) / 2, (a.y + b.y) / 2);
@@ -898,6 +926,13 @@
     if (pointers.size > 0 || !gesture) return;
     const g = gesture;
     gesture = null;
+    if (g.pinched) {
+      pull = 0;
+      shrink = 1;
+      lock = null;
+      if (swipe !== 0) settle(0);
+      return;
+    }
     const dx = e.clientX - g.x;
     const dt = Math.max(1, performance.now() - g.t);
     if (pull !== 0 || (lock === "v" && (favSwipe(g) || pullClose(g)))) {
@@ -922,7 +957,6 @@
       return settle(far || flick ? (dx < 0 ? 1 : -1) : 0);
     }
     if (swipe !== 0) return settle(0);
-    if (g.pinched) return;
     // Taps: touch only (a mouse double click comes as `dblclick`). Zoomed, a single tap
     // does nothing and a double tap zooms back out.
     if (g.type === "touch" && zoomable && !g.moved && dt < 600) onTap(e);
@@ -957,8 +991,15 @@
   function poke() {
     hud = true;
     clearTimeout(hudTimer);
-    hudTimer = setTimeout(() => (hud = false), 2000);
+    // Not while the loop panel is open: hiding the controls there made a press on the seek
+    // bar count as a press outside the panel, which closed it.
+    hudTimer = setTimeout(() => (hud = showLoops), 2000);
   }
+
+  // The loop panel kept the controls up; once it closes they hide again as usual.
+  $effect(() => {
+    if (!showLoops) untrack(poke);
+  });
 
   onMount(() => {
     window.addEventListener("keydown", onKey);
@@ -1029,8 +1070,11 @@
               oncanplay={(e) => (paused = e.currentTarget.paused)}
               ontimeupdate={onTime}
               onloadeddata={() => loadDone(`m:${s.id}`)}
-              onerror={() => {
-                if (loadFailed(`m:${s.id}`) && s.id === id) error = true;
+              onerror={(e) => {
+                // A format the WebView cannot decode will not decode on a retry either.
+                const undecodable =
+                  (e.currentTarget as HTMLVideoElement).error?.code === MediaError.MEDIA_ERR_DECODE || (b.compatible === false && !b.has_variant);
+                if ((undecodable || loadFailed(`m:${s.id}`)) && s.id === id) error = true;
               }}
             ></video>
           {:else if b?.kind === "nonmedia"}
@@ -1077,8 +1121,8 @@
     </div>
   </div>
 
-  {#if error && !(brief?.kind === "video")}
-    <div class="error">{brief?.name}: {t("viewer.cannotDisplay")}</div>
+  {#if error && !(cur?.kind === "video")}
+    <div class="error">{cur?.name ?? known.get(id)?.name ?? ""}: {t("viewer.cannotDisplay")}</div>
   {/if}
 
   {#if immersive.on}
@@ -1117,7 +1161,7 @@
     </div>
   {/if}
 
-  {#if showLoops && brief?.kind === "video" && !immersive.on}
+  {#if showLoops && cur?.kind === "video" && !immersive.on}
     <div
       class="loops"
       role="presentation"
@@ -1191,7 +1235,7 @@
     class="dock"
     bind:this={dockEl}
     class:visible={showHud}
-    class:above-controls={brief?.kind === "video"}
+    class:above-controls={cur?.kind === "video"}
     role="presentation"
     onpointerdown={(e) => e.stopPropagation()}
     onpointerup={(e) => e.stopPropagation()}
@@ -1201,7 +1245,7 @@
     </span>
     <span class="tools">
       <button class="hb" class:on={slideshow} onclick={toggleSlideshow} title={t("viewer.slideshow")}><Icon name={slideshow ? "stop" : "film"} size={15} /></button>
-      {#if brief?.kind === "video"}
+      {#if cur?.kind === "video"}
         <button class="hb" onclick={togglePlay} title={paused ? t("viewer.play") : t("viewer.pause")} aria-label={paused ? t("viewer.play") : t("viewer.pause")}
           ><Icon name={paused ? "play" : "pause"} size={15} /></button
         >
@@ -1393,6 +1437,9 @@
     backdrop-filter: blur(10px);
     border: 1px solid var(--border);
     font-size: 13px;
+    /* A landscape phone has less room than the list's own height. */
+    max-height: calc(100% - var(--above-dock) - 16px);
+    overflow-y: auto;
   }
   .loops-head {
     display: flex;

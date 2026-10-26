@@ -12,6 +12,7 @@ use tauri::{AppHandle, Manager, Runtime, UriSchemeContext, UriSchemeResponder};
 use crate::AppState;
 use crate::error::{CmdError, CmdResult};
 use crate::workspace::Workspace;
+use vp_cache::CachedMedia;
 
 pub const SCHEME: &str = "vpmedia";
 
@@ -66,32 +67,40 @@ struct Body {
     mime: &'static str,
 }
 
-/// Serves a converted copy (from the bundle or a shard), cached under the negated media id.
-fn serve_variant(ws: &Workspace, id: i64, reader: Box<dyn vp_driver::MediaReader>, range: Option<&str>) -> CmdResult<Body> {
-    let key = -id;
-    let cached = match ws.cache.get(key) {
-        Some(c) => Some(c),
-        None => ws.cache.insert_with(key, reader.len(), |off, buf| {
-            let n = reader.read_full_at(off, buf)?;
-            if n < buf.len() { Err(std::io::ErrorKind::UnexpectedEof.into()) } else { Ok(()) }
-        })?,
-    };
-    let total = match &cached {
-        Some(c) => c.len(),
-        None => reader.len(),
+/// A `Range` the file cannot satisfy: answered with 416, never with other bytes (the
+/// WebView checks the first byte it gets against the one it asked for).
+fn unsatisfiable() -> CmdError {
+    CmdError::new("range", "range not satisfiable")
+}
+
+/// Serves a converted copy (from the bundle or a shard), cached under the negated media id
+/// when a look-ahead put it there. It streams like an original: reading the whole copy
+/// before the first byte made the first frame and every seek wait on slow storage.
+fn serve_variant(ws: &Workspace, cached: Option<CachedMedia>, reader: Option<Box<dyn vp_driver::MediaReader>>, range: Option<&str>) -> CmdResult<Body> {
+    let total = match (&cached, &reader) {
+        (Some(c), _) => c.len(),
+        (None, Some(r)) => r.len(),
+        (None, None) => return Err(CmdError::new("not_found", "converted copy is gone")),
     };
     let stream_max = ws.settings.read().unwrap().cache.stream_chunk_bytes.max(64 * 1024);
-    let (start, end) = range.and_then(|r| parse_range(r, total)).unwrap_or((0, total.saturating_sub(1)));
+    let (start, end) = match range {
+        Some(r) => parse_range(r, total).ok_or_else(unsatisfiable)?,
+        None => (0, total.saturating_sub(1)),
+    };
     let want = (end - start + 1).min(stream_max);
-    let data = match &cached {
-        Some(c) => c.to_vec(start, want),
-        None => {
+    let data = match (&cached, reader) {
+        (Some(c), _) => c.to_vec(start, want),
+        (None, Some(reader)) => {
             let mut buf = vec![0u8; want as usize];
             let n = reader.read_full_at(start, &mut buf)?;
             buf.truncate(n);
             buf
         }
+        (None, None) => unreachable!(),
     };
+    if data.is_empty() && total > 0 {
+        return Err(unsatisfiable());
+    }
     let partial = range.is_some() || (data.len() as u64) < total;
     Ok(Body { data, start, total, partial, mime: "video/mp4" })
 }
@@ -416,10 +425,15 @@ fn serve(
         return Ok(Some(Body { data, start: 0, total, partial: false, mime }));
     }
     let mode = ws.settings.read().unwrap().playback.fallback_mode;
-    if loc.kind == vp_core::MediaKind::Video && mode != vp_core::settings::VideoFallbackMode::Never
-        && let Some(reader) = ws.variant_reader(id)? {
-            return serve_variant(ws, id, reader, range.as_deref()).map(Some);
+    if loc.kind == vp_core::MediaKind::Video && mode != vp_core::settings::VideoFallbackMode::Never {
+        // A cached copy answers without asking the database where the copy is.
+        if let Some(c) = ws.cache.get(-id) {
+            return serve_variant(ws, Some(c), None, range.as_deref()).map(Some);
         }
+        if let Some(reader) = stage("variant", || ws.variant_reader(id))? {
+            return serve_variant(ws, None, Some(reader), range.as_deref()).map(Some);
+        }
+    }
     let mime = mime_for(&loc.rel_path);
     let stream_max = ws.settings.read().unwrap().cache.stream_chunk_bytes.max(64 * 1024);
 
@@ -429,9 +443,23 @@ fn serve(
         vp_core::MediaKind::Image => stage("load", || ws.load_into_cache_at(drivers, id, &loc))?,
         vp_core::MediaKind::Video | vp_core::MediaKind::NonMedia => ws.cache.get(id),
     };
-    let total = cached.as_ref().map(|c| c.len()).unwrap_or(loc.size);
-    let (start, end, partial) = match range.as_deref().and_then(|r| parse_range(r, total)) {
-        Some((s, e)) => (s, e, true),
+    // Not cached: open the file first, so the size answered is the file's own and not the
+    // one recorded at the last scan (a file still being written changes size, and a
+    // size that differs between responses makes the WebView give up).
+    let reader = match &cached {
+        Some(_) => None,
+        None => Some(stage("open", || ws.open_media(drivers, &loc))?),
+    };
+    let total = match (&cached, &reader) {
+        (Some(c), _) => c.len(),
+        (None, Some(r)) => r.len(),
+        (None, None) => loc.size,
+    };
+    let (start, end, partial) = match range.as_deref() {
+        Some(r) => {
+            let (s, e) = parse_range(r, total).ok_or_else(unsatisfiable)?;
+            (s, e, true)
+        }
         // No range: whole file if cached, otherwise the first bounded piece.
         None if cached.is_some() => (0, total.saturating_sub(1), false),
         None => (0, total.saturating_sub(1).min(stream_max - 1), true),
@@ -440,16 +468,19 @@ fn serve(
         vp_core::MediaKind::Video | vp_core::MediaKind::NonMedia => (end - start + 1).min(stream_max),
         _ => end - start + 1,
     };
-    let data = match &cached {
-        Some(c) => c.to_vec(start, want),
-        None => stage("read", || -> CmdResult<Vec<u8>> {
-            let reader = ws.open_media(drivers, &loc)?;
+    let data = match (&cached, reader) {
+        (Some(c), _) => c.to_vec(start, want),
+        (None, Some(reader)) => stage("read", || -> CmdResult<Vec<u8>> {
             let mut buf = vec![0u8; want.min(stream_max) as usize];
             let n = reader.read_full_at(start, &mut buf)?;
             buf.truncate(n);
             Ok(buf)
         })?,
+        (None, None) => Vec::new(),
     };
+    if data.is_empty() && total > 0 {
+        return Err(unsatisfiable());
+    }
     let partial = partial || (data.len() as u64) < total;
     Ok(Some(Body { data, start, total, partial, mime }))
 }
@@ -517,6 +548,7 @@ pub fn answer<R: Runtime>(app: &AppHandle<R>, id: Option<i64>, range: Option<Str
         }
         Ok(None) => status(StatusCode::NOT_FOUND),
         Err(CmdError { code: "driver", .. }) => status(StatusCode::BAD_GATEWAY),
+        Err(CmdError { code: "range", .. }) => status(StatusCode::RANGE_NOT_SATISFIABLE),
         Err(_) => status(StatusCode::INTERNAL_SERVER_ERROR),
     };
     // A display copy stands in for the original, which need not be cached for it.

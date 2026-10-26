@@ -283,9 +283,12 @@ impl Workspace {
 
     /// The converted copy of `id`: a file in the bundle, or kept by the item's shard.
     pub fn variant_reader(&self, id: i64) -> CmdResult<Option<Box<dyn vp_driver::MediaReader>>> {
-        let Some(rel) = self.read_db.lock().unwrap().variant(id)? else { return Ok(None) };
+        // The viewer's own connection when there is one: the shared one can be held by a
+        // scan or search for seconds, and every video request comes here.
+        let db = self.view_db.as_ref().unwrap_or(&*self.read_db);
+        let Some(rel) = db.lock().unwrap_or_else(|e| e.into_inner()).variant(id)? else { return Ok(None) };
         if rel == crate::shards::VARIANT_IN_SHARD {
-            let Some(loc) = self.read_db.lock().unwrap().media_location(id)? else { return Ok(None) };
+            let Some(loc) = db.lock().unwrap_or_else(|e| e.into_inner()).media_location(id)? else { return Ok(None) };
             let Some(shard) = self.shard_for(loc.source_id)? else { return Ok(None) };
             return Ok(shard.blob(vp_shard::Stream::Converted, &loc.rel_path)?.map(vp_driver::shard::media_reader));
         }

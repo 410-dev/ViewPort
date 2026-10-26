@@ -562,8 +562,15 @@ pub fn spawn_prefetch<R: tauri::Runtime>(app: &AppHandle<R>, ws: &Arc<Workspace>
         if ws.cache.contains(id) {
             continue;
         }
+        // Every range request of a streamed video asks for it: load it once, not once per
+        // worker (two whole reads of one video could evict everything else).
+        let key = (Arc::as_ptr(ws) as usize, id);
+        if !PREFETCHING.lock().unwrap().insert(key) {
+            continue;
+        }
         let (ws, drivers) = (ws.clone(), drivers.clone());
         tauri::async_runtime::spawn(async move {
+            let _done = PrefetchDone(key);
             let Ok(_permit) = ws.prefetch_permits.clone().acquire_owned().await else { return };
             if ws.closed.load(Ordering::Relaxed) || ws.cache.contains(id) {
                 return;
@@ -573,6 +580,18 @@ pub fn spawn_prefetch<R: tauri::Runtime>(app: &AppHandle<R>, ws: &Arc<Workspace>
             })
             .await;
         });
+    }
+}
+
+/// Items `spawn_prefetch` is loading, by workspace and id.
+static PREFETCHING: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<(usize, i64)>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Takes an item off `PREFETCHING` when its load ends, however it ends.
+struct PrefetchDone((usize, i64));
+impl Drop for PrefetchDone {
+    fn drop(&mut self) {
+        PREFETCHING.lock().unwrap().remove(&self.0);
     }
 }
 

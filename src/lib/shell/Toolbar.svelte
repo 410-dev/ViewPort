@@ -25,6 +25,8 @@
     onadvanced,
     onnewwindow,
     onmenu,
+    panelVisible,
+    onpanel,
   }: {
     query: string;
     scope: SourceRow | null;
@@ -43,6 +45,9 @@
     onnewwindow?: () => void;
     /** Narrow screens: opens the sidebar drawer; the breadcrumbs move to a second row. */
     onmenu?: () => void;
+    panelVisible: boolean;
+    /** Shows or hides the side panel of this explorer. */
+    onpanel: () => void;
   } = $props();
 
   let search: HTMLInputElement;
@@ -174,12 +179,9 @@
     {/if}
     <button
       class="icon-btn"
-      class:on={ui().panel_visible}
+      class:on={panelVisible}
       title={t("tb.panel")}
-      onclick={() => {
-        ui().panel_visible = !ui().panel_visible;
-        savePrefs();
-      }}><Icon name="panel" size={16} /></button
+      onclick={onpanel}><Icon name="panel" size={16} /></button
     >
   </div>
 </div>

@@ -876,8 +876,11 @@
   $effect(() => {
     if (compact && panelVisible) return onBack(() => setPanel(false));
   });
+  // Only when selection mode starts or ends: registering again on every toggle would put
+  // it above the info sheet opened meanwhile, and Back would clear instead of closing that.
+  const selecting = $derived(compact && (selection.set.size > 0 || selection.folders.length > 0));
   $effect(() => {
-    if (compact && (selection.set.size > 0 || selection.folders.length > 0)) return onBack(() => selection.clear());
+    if (selecting) return onBack(() => selection.clear());
   });
 </script>
 
@@ -954,6 +957,8 @@
         onadvanced={() => (modal = { editing: null })}
         onnewwindow={isMobile ? undefined : openExplorerWindow}
         onmenu={compact ? () => (drawer = true) : undefined}
+        {panelVisible}
+        onpanel={() => setPanel(!panelVisible)}
       />
       {#if compact && selection.set.size > 0}
         <div class="selbar" transition:slide={{ y: -8 }}>
@@ -1292,9 +1297,12 @@
     browseFrom={browseState()}
     onclose={(id) => {
       viewing = null;
+      let refreshed: Promise<void> = Promise.resolve();
       if (refreshAfterViewer) {
         refreshAfterViewer = false;
-        scanRefresh();
+        // The viewer's info panel may have edited any item it showed.
+        invalidate();
+        refreshed = scanRefresh().catch(() => {});
       }
       if (id !== undefined) {
         selection.set.clear();
@@ -1302,7 +1310,11 @@
         if (!selection.touch) selection.set.add(id);
         selection.focus = id;
         // Back to where the last viewed item is in the listing, not where the viewer opened.
-        selection.revealing = id;
+        // Only once the listing is current, and only if it lists the item: otherwise the
+        // request would stay pending and jump the listing much later.
+        refreshed.then(() => {
+          if (ids.includes(id)) selection.revealing = id;
+        });
       }
     }}
     onchanged={() => {
