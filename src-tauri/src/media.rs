@@ -157,6 +157,21 @@ fn locate(ws: &Workspace, id: i64) -> CmdResult<Option<ViewLoc>> {
     Ok(found)
 }
 
+/// Looks up many items at once for the viewer (its look-ahead), so its requests find them
+/// even while the database is busy.
+pub fn remember_locations(ws: &Workspace, ids: &[i64]) {
+    let Ok(found) = ws.view_db.as_ref().unwrap_or(&*ws.read_db).lock().unwrap_or_else(|e| e.into_inner()).media_view_locations(ids) else {
+        return;
+    };
+    let mut cache = ws.view_locations.lock().unwrap();
+    if cache.len() + found.len() > MAX_VIEW_LOCATIONS {
+        cache.clear();
+    }
+    for (id, loc, size) in found {
+        cache.insert(id, ViewLoc { loc, size });
+    }
+}
+
 /// The driver of a source, without the database when it is already connected.
 fn source_driver(
     ws: &Workspace,

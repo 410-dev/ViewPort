@@ -179,11 +179,23 @@ pub struct GeneralSettings {
     pub autosave_debounce_ms: u64,
     /// How often a locked bundle's in-memory database is re-encrypted to disk when changed.
     pub encrypted_save_secs: u64,
+    /// A save holds the database while it copies it; the next one waits at least this
+    /// many times as long as the last took, so large libraries are not copied constantly.
+    pub encrypted_save_cost_factor: u32,
+    /// While the viewer is in use (viewer-first scheduler modes), saving waits for it to
+    /// go idle, at most this long.
+    pub encrypted_save_max_defer_secs: u64,
 }
 
 impl Default for GeneralSettings {
     fn default() -> Self {
-        Self { locale: "ko".into(), autosave_debounce_ms: 500, encrypted_save_secs: 3 }
+        Self {
+            locale: "ko".into(),
+            autosave_debounce_ms: 500,
+            encrypted_save_secs: 3,
+            encrypted_save_cost_factor: 20,
+            encrypted_save_max_defer_secs: 30,
+        }
     }
 }
 

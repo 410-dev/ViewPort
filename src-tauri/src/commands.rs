@@ -272,8 +272,9 @@ pub fn save_app_settings(app: AppHandle, mut settings: vp_core::settings::AppSet
 // ---------------------------------------------------------------- sources
 
 #[tauri::command]
-pub fn list_sources(state: State<'_, AppState>) -> CmdResult<Vec<SourceRow>> {
-    Ok(workspace(&state)?.read_db.lock().unwrap().sources()?)
+pub async fn list_sources(app: AppHandle) -> CmdResult<Vec<SourceRow>> {
+    let ws = workspace(&app.state::<AppState>())?;
+    blocking(move || Ok(ws.read_db.lock().unwrap().sources()?)).await
 }
 
 #[tauri::command]
@@ -316,9 +317,10 @@ pub async fn remove_source(app: AppHandle, id: i64, delete_data: Option<bool>) -
 }
 
 #[tauri::command]
-pub fn scan_source(app: AppHandle, state: State<'_, AppState>, id: i64) -> CmdResult<()> {
-    let ws = workspace(&state)?;
-    let source = ws.read_db.lock().unwrap().source(id)?.ok_or_else(|| CmdError::new("not_found", "source"))?;
+pub async fn scan_source(app: AppHandle, id: i64) -> CmdResult<()> {
+    let ws = workspace(&app.state::<AppState>())?;
+    let ws2 = ws.clone();
+    let source = blocking(move || ws2.read_db.lock().unwrap().source(id)?.ok_or_else(|| CmdError::new("not_found", "source"))).await?;
     start_scan(&app, ws, source);
     Ok(())
 }
@@ -532,18 +534,22 @@ pub enum QueryCheck {
 }
 
 #[tauri::command]
-pub fn check_query(state: State<'_, AppState>, src: &str, locale: &str) -> CmdResult<QueryCheck> {
-    let reg = match workspace(&state) {
-        Ok(ws) => ws.read_db.lock().unwrap().field_registry()?,
-        Err(_) => FieldRegistry::with_base_fields(),
-    };
-    Ok(match vp_query::parse_query(src, &reg) {
-        Ok(q) => QueryCheck::Ok { normalized: vp_query::render(&q, &reg, locale) },
-        Err(e) => {
-            let span = e.span.to_utf16(src);
-            QueryCheck::Error { error: e, span }
-        }
+pub async fn check_query(app: AppHandle, src: String, locale: String) -> CmdResult<QueryCheck> {
+    let ws = workspace(&app.state::<AppState>()).ok();
+    blocking(move || {
+        let reg = match ws {
+            Some(ws) => ws.read_db.lock().unwrap().field_registry()?,
+            None => FieldRegistry::with_base_fields(),
+        };
+        Ok(match vp_query::parse_query(&src, &reg) {
+            Ok(q) => QueryCheck::Ok { normalized: vp_query::render(&q, &reg, &locale) },
+            Err(e) => {
+                let span = e.span.to_utf16(&src);
+                QueryCheck::Error { error: e, span }
+            }
+        })
     })
+    .await
 }
 
 // ---------------------------------------------------------------- cache and stats
@@ -586,29 +592,48 @@ pub fn prefetch_plan(app: AppHandle, state: State<'_, AppState>, ids: Vec<i64>, 
     let ratio = recent::cached_app_settings().hardware.prefetch_ratio(c.prefetch_ratio);
     let budget = (ws.cache.capacity_bytes() as f64 * ratio as f64) as u64;
     let chunk = c.chunk_bytes.max(4096);
-    let queue = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from(ids)));
     let used = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let drivers = app.state::<AppState>().drivers.clone();
-    for _ in 0..c.prefetch_workers.max(1) {
-        let (ws, drivers, queue, used) = (ws.clone(), drivers.clone(), queue.clone(), used.clone());
-        tauri::async_runtime::spawn_blocking(move || {
-            loop {
-                if LOOKAHEAD.load(Ordering::Relaxed) != generation || ws.closed.load(Ordering::Relaxed) {
-                    return;
-                }
-                if used.load(Ordering::Relaxed) >= budget {
-                    return;
-                }
-                // A picture the viewer waits for comes first.
-                crate::sched::wait_urgent(std::time::Duration::from_secs(5));
-                let Some(id) = queue.lock().unwrap().pop_front() else { return };
-                let held = crate::sched::run(crate::sched::Class::Viewer, || crate::media::warm(&ws, &drivers, id, screen)).unwrap_or(0);
-                // Whole chunks: that is what the item takes from the cache.
-                used.fetch_add(held.div_ceil(chunk) * chunk, Ordering::Relaxed);
-            }
-        });
-    }
+    let workers = c.prefetch_workers.max(1);
+    tauri::async_runtime::spawn_blocking(move || {
+        // One lookup for all of them: the viewer's requests then need no database.
+        crate::media::remember_locations(&ws, &ids);
+        let queue = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from(ids)));
+        for _ in 0..workers {
+            look_ahead(ws.clone(), drivers.clone(), queue.clone(), used.clone(), generation, budget, chunk, screen);
+        }
+    });
     Ok(())
+}
+
+/// One worker of [`prefetch_plan`].
+#[allow(clippy::too_many_arguments)]
+fn look_ahead(
+    ws: Arc<Workspace>,
+    drivers: Arc<vp_driver::DriverRegistry>,
+    queue: Arc<std::sync::Mutex<std::collections::VecDeque<i64>>>,
+    used: Arc<std::sync::atomic::AtomicU64>,
+    generation: u64,
+    budget: u64,
+    chunk: u64,
+    screen: Option<crate::media::Screen>,
+) {
+    tauri::async_runtime::spawn_blocking(move || {
+        loop {
+            if LOOKAHEAD.load(Ordering::Relaxed) != generation || ws.closed.load(Ordering::Relaxed) {
+                return;
+            }
+            if used.load(Ordering::Relaxed) >= budget {
+                return;
+            }
+            // A picture the viewer waits for comes first.
+            crate::sched::wait_urgent(std::time::Duration::from_secs(5));
+            let Some(id) = queue.lock().unwrap().pop_front() else { return };
+            let held = crate::sched::run(crate::sched::Class::Viewer, || crate::media::warm(&ws, &drivers, id, screen)).unwrap_or(0);
+            // Whole chunks: that is what the item takes from the cache.
+            used.fetch_add(held.div_ceil(chunk) * chunk, Ordering::Relaxed);
+        }
+    });
 }
 
 /// Applies the cache size settings now: grows or shrinks the memory cache in place
@@ -676,35 +701,37 @@ pub fn cache_stats(state: State<'_, AppState>) -> CmdResult<vp_cache::CacheStats
 // ---------------------------------------------------------------- fields and values
 
 #[tauri::command]
-pub fn list_fields(state: State<'_, AppState>) -> CmdResult<Vec<vp_db::FieldInfo>> {
-    Ok(workspace(&state)?.read_db.lock().unwrap().ext_fields()?)
+pub async fn list_fields(app: AppHandle) -> CmdResult<Vec<vp_db::FieldInfo>> {
+    let ws = workspace(&app.state::<AppState>())?;
+    blocking(move || Ok(ws.read_db.lock().unwrap().ext_fields()?)).await
 }
 
 #[tauri::command]
-pub fn create_field(
-    state: State<'_, AppState>,
+pub async fn create_field(
+    app: AppHandle,
     names: Vec<(String, String)>,
     aliases: Vec<String>,
     ty: vp_query::FieldType,
 ) -> CmdResult<String> {
-    let ws = workspace(&state)?;
-    let key = ws.write_db.lock().unwrap().create_ext_field(&names, &aliases, ty)?;
-    Ok(key)
+    let ws = workspace(&app.state::<AppState>())?;
+    blocking(move || Ok(ws.write_db.lock().unwrap().create_ext_field(&names, &aliases, ty)?)).await
 }
 
 #[tauri::command]
-pub fn rename_field(
-    state: State<'_, AppState>,
+pub async fn rename_field(
+    app: AppHandle,
     key: String,
     names: Vec<(String, String)>,
     aliases: Vec<String>,
 ) -> CmdResult<()> {
-    Ok(workspace(&state)?.write_db.lock().unwrap().rename_ext_field(&key, &names, &aliases)?)
+    let ws = workspace(&app.state::<AppState>())?;
+    blocking(move || Ok(ws.write_db.lock().unwrap().rename_ext_field(&key, &names, &aliases)?)).await
 }
 
 #[tauri::command]
-pub fn delete_field(state: State<'_, AppState>, key: String) -> CmdResult<()> {
-    Ok(workspace(&state)?.write_db.lock().unwrap().delete_ext_field(&key)?)
+pub async fn delete_field(app: AppHandle, key: String) -> CmdResult<()> {
+    let ws = workspace(&app.state::<AppState>())?;
+    blocking(move || Ok(ws.write_db.lock().unwrap().delete_ext_field(&key)?)).await
 }
 
 #[tauri::command]
@@ -758,17 +785,21 @@ pub async fn edit_folder_values(
 }
 
 #[tauri::command]
-pub fn suggest_values(state: State<'_, AppState>, key: String, prefix: String, limit: Option<u32>) -> CmdResult<Vec<String>> {
+pub async fn suggest_values(app: AppHandle, key: String, prefix: String, limit: Option<u32>) -> CmdResult<Vec<String>> {
     let limit = limit.unwrap_or(crate::recent::cached_app_settings().ui.suggest_limit).max(1) as usize;
-    let ws = workspace(&state)?;
-    let db = ws.read_db.lock().unwrap();
-    // The `source` condition takes the names of the sources in use.
-    if key == "source" {
-        let prefix = prefix.to_lowercase();
-        let names = db.sources()?.into_iter().filter(|s| s.enabled).map(|s| s.name).filter(|n| n.to_lowercase().starts_with(&prefix));
-        return Ok(names.take(limit).collect());
-    }
-    Ok(db.suggest_values(&key, &prefix, limit)?)
+    let ws = workspace(&app.state::<AppState>())?;
+    blocking(move || {
+        let db = ws.read_db.lock().unwrap();
+        // The `source` condition takes the names of the sources in use.
+        if key == "source" {
+            let prefix = prefix.to_lowercase();
+            let names =
+                db.sources()?.into_iter().filter(|s| s.enabled).map(|s| s.name).filter(|n| n.to_lowercase().starts_with(&prefix));
+            return Ok(names.take(limit).collect());
+        }
+        Ok(db.suggest_values(&key, &prefix, limit)?)
+    })
+    .await
 }
 
 /// Words the query editor offers as completions, in the given locale.
@@ -803,10 +834,10 @@ pub struct VocabOp {
 }
 
 #[tauri::command]
-pub fn query_vocabulary(state: State<'_, AppState>, locale: String) -> CmdResult<Vocabulary> {
+pub async fn query_vocabulary(app: AppHandle, locale: String) -> CmdResult<Vocabulary> {
     use vp_query::lang;
-    let reg = match workspace(&state) {
-        Ok(ws) => ws.read_db.lock().unwrap().field_registry()?,
+    let reg = match workspace(&app.state::<AppState>()) {
+        Ok(ws) => blocking(move || Ok(ws.read_db.lock().unwrap().field_registry()?)).await?,
         Err(_) => FieldRegistry::with_base_fields(),
     };
     let fields = reg
@@ -848,39 +879,46 @@ pub struct SavedQuery {
 }
 
 #[tauri::command]
-pub fn list_saved_queries(state: State<'_, AppState>, locale: String) -> CmdResult<Vec<SavedQuery>> {
-    let ws = workspace(&state)?;
-    let db = ws.read_db.lock().unwrap();
-    let reg = db.field_registry()?;
-    Ok(db
-        .saved_queries()?
-        .into_iter()
-        .map(|(id, label, q)| SavedQuery { id, label, text: vp_query::render(&q, &reg, &locale) })
-        .collect())
+pub async fn list_saved_queries(app: AppHandle, locale: String) -> CmdResult<Vec<SavedQuery>> {
+    let ws = workspace(&app.state::<AppState>())?;
+    blocking(move || {
+        let db = ws.read_db.lock().unwrap();
+        let reg = db.field_registry()?;
+        Ok(db
+            .saved_queries()?
+            .into_iter()
+            .map(|(id, label, q)| SavedQuery { id, label, text: vp_query::render(&q, &reg, &locale) })
+            .collect())
+    })
+    .await
 }
 
 /// Saves query text under a label. The text is stored in locale-neutral form, so it
 /// shows up in whatever language the UI uses later.
 #[tauri::command]
-pub fn save_query(state: State<'_, AppState>, id: Option<i64>, label: String, text: String) -> CmdResult<i64> {
-    let ws = workspace(&state)?;
-    let db = ws.write_db.lock().unwrap();
-    let reg = db.field_registry()?;
-    let q = if text.trim().is_empty() {
-        vp_query::Query::default()
-    } else {
-        vp_query::parse_query(&text, &reg).map_err(|e| utf16_error(e, &text))?
-    };
-    let label = label.trim();
-    if label.is_empty() {
-        return Err(CmdError::new("invalid", "label is empty"));
-    }
-    Ok(db.save_query(id, label, &q, now_ms())?)
+pub async fn save_query(app: AppHandle, id: Option<i64>, label: String, text: String) -> CmdResult<i64> {
+    let ws = workspace(&app.state::<AppState>())?;
+    blocking(move || {
+        let db = ws.write_db.lock().unwrap();
+        let reg = db.field_registry()?;
+        let q = if text.trim().is_empty() {
+            vp_query::Query::default()
+        } else {
+            vp_query::parse_query(&text, &reg).map_err(|e| utf16_error(e, &text))?
+        };
+        let label = label.trim();
+        if label.is_empty() {
+            return Err(CmdError::new("invalid", "label is empty"));
+        }
+        Ok(db.save_query(id, label, &q, now_ms())?)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn delete_saved_query(state: State<'_, AppState>, id: i64) -> CmdResult<()> {
-    Ok(workspace(&state)?.write_db.lock().unwrap().delete_saved_query(id)?)
+pub async fn delete_saved_query(app: AppHandle, id: i64) -> CmdResult<()> {
+    let ws = workspace(&app.state::<AppState>())?;
+    blocking(move || Ok(ws.write_db.lock().unwrap().delete_saved_query(id)?)).await
 }
 
 // ---------------------------------------------------------------- video pipeline
@@ -926,16 +964,16 @@ pub fn cancel_convert(state: State<'_, AppState>, id: i64) -> CmdResult<()> {
 
 /// Probed videos that need conversion to play, for the settings notice.
 #[tauri::command]
-pub fn incompatible_videos(state: State<'_, AppState>) -> CmdResult<Vec<i64>> {
-    Ok(workspace(&state)?.read_db.lock().unwrap().incompatible_videos()?)
+pub async fn incompatible_videos(app: AppHandle) -> CmdResult<Vec<i64>> {
+    let ws = workspace(&app.state::<AppState>())?;
+    blocking(move || Ok(ws.read_db.lock().unwrap().incompatible_videos()?)).await
 }
 
 /// "Add this file to the ignore list": stop suggesting conversion for it.
 #[tauri::command]
-pub fn set_ignore_warning(state: State<'_, AppState>, id: i64, ignore: bool) -> CmdResult<()> {
-    let ws = workspace(&state)?;
-    ws.write_db.lock().unwrap().set_flag(id, vp_db::FLAG_IGNORE_PLAYBACK_WARNING, ignore)?;
-    Ok(())
+pub async fn set_ignore_warning(app: AppHandle, id: i64, ignore: bool) -> CmdResult<()> {
+    let ws = workspace(&app.state::<AppState>())?;
+    blocking(move || Ok(ws.write_db.lock().unwrap().set_flag(id, vp_db::FLAG_IGNORE_PLAYBACK_WARNING, ignore)?)).await
 }
 
 /// Probes one video now (the viewer calls this when it opens an unprobed video).
@@ -953,18 +991,21 @@ pub async fn probe_media(app: AppHandle, id: i64) -> CmdResult<Option<vp_db::Med
 // ---------------------------------------------------------------- loop segments
 
 #[tauri::command]
-pub fn loop_segments(state: State<'_, AppState>, id: i64) -> CmdResult<Vec<vp_db::LoopSegment>> {
-    Ok(workspace(&state)?.read_db.lock().unwrap().loop_segments(id)?)
+pub async fn loop_segments(app: AppHandle, id: i64) -> CmdResult<Vec<vp_db::LoopSegment>> {
+    let ws = workspace(&app.state::<AppState>())?;
+    blocking(move || Ok(ws.read_db.lock().unwrap().loop_segments(id)?)).await
 }
 
 #[tauri::command]
-pub fn save_loop_segment(state: State<'_, AppState>, segment: vp_db::LoopSegment) -> CmdResult<i64> {
-    Ok(workspace(&state)?.write_db.lock().unwrap().save_loop_segment(&segment)?)
+pub async fn save_loop_segment(app: AppHandle, segment: vp_db::LoopSegment) -> CmdResult<i64> {
+    let ws = workspace(&app.state::<AppState>())?;
+    blocking(move || Ok(ws.write_db.lock().unwrap().save_loop_segment(&segment)?)).await
 }
 
 #[tauri::command]
-pub fn delete_loop_segment(state: State<'_, AppState>, id: i64) -> CmdResult<()> {
-    Ok(workspace(&state)?.write_db.lock().unwrap().delete_loop_segment(id)?)
+pub async fn delete_loop_segment(app: AppHandle, id: i64) -> CmdResult<()> {
+    let ws = workspace(&app.state::<AppState>())?;
+    blocking(move || Ok(ws.write_db.lock().unwrap().delete_loop_segment(id)?)).await
 }
 
 // ---------------------------------------------------------------- generic sources (drivers)
@@ -1027,10 +1068,10 @@ pub async fn add_source(
 
 /// The stored settings of a source with secrets redacted.
 #[tauri::command]
-pub fn source_config(state: State<'_, AppState>, id: i64) -> CmdResult<serde_json::Value> {
-    let ws = workspace(&state)?;
-    let source = ws.read_db.lock().unwrap().source(id)?.ok_or_else(|| CmdError::new("not_found", "source"))?;
-    let schema = state.drivers.get(&source.driver).map(|f| f.config_schema()).unwrap_or_default();
+pub async fn source_config(app: AppHandle, id: i64) -> CmdResult<serde_json::Value> {
+    let ws = workspace(&app.state::<AppState>())?;
+    let source = blocking(move || ws.read_db.lock().unwrap().source(id)?.ok_or_else(|| CmdError::new("not_found", "source"))).await?;
+    let schema = app.state::<AppState>().drivers.get(&source.driver).map(|f| f.config_schema()).unwrap_or_default();
     Ok(crate::secrets::redact(&source.config, &schema))
 }
 

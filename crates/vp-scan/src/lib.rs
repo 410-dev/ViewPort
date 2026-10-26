@@ -108,6 +108,15 @@ pub fn jpeg_size(len: u64, read: &mut dyn FnMut(u64, &mut [u8]) -> bool) -> Opti
     None
 }
 
+/// Called before each batch of rows is written (the app holds writes back while its
+/// viewer needs the database, `set_write_gate`).
+static WRITE_GATE: std::sync::OnceLock<fn()> = std::sync::OnceLock::new();
+
+/// Sets the function every scan calls before taking the database for a batch.
+pub fn set_write_gate(gate: fn()) {
+    let _ = WRITE_GATE.set(gate);
+}
+
 pub struct Scanner<'a> {
     pub db: &'a Mutex<Db>,
     pub driver: &'a dyn MediaDriver,
@@ -231,6 +240,9 @@ impl Scanner<'_> {
     fn flush(&self, batch: &mut Vec<Action>) -> Result<(), ScanError> {
         if batch.is_empty() {
             return Ok(());
+        }
+        if let Some(gate) = WRITE_GATE.get() {
+            gate();
         }
         let db = self.db.lock().unwrap();
         db.batch(|db| {

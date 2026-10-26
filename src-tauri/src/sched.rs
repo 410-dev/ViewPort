@@ -252,6 +252,30 @@ pub fn wait_urgent(max: Duration) {
     }
 }
 
+/// Whether the viewer is busy and the mode puts it first (its share is at least half).
+pub fn viewer_first_busy() -> bool {
+    let cfg = GLOBAL.config();
+    cfg.viewer >= 0.5 && GLOBAL.busy(Class::Viewer, &cfg)
+}
+
+/// Longest a write waits for the viewer in [`write_gate`] while paused.
+const MAX_PAUSE: Duration = Duration::from_secs(60);
+
+/// Called by background work before it takes the database to write (scans): lets a
+/// viewer request that is waiting go first, and while paused (`pause_background`) waits
+/// for the viewer to go idle. Holds no lock itself.
+pub fn write_gate() {
+    wait_urgent(Duration::from_secs(2));
+    let start = Instant::now();
+    loop {
+        let cfg = GLOBAL.config();
+        if !(cfg.pause && GLOBAL.busy(Class::Viewer, &cfg)) || start.elapsed() > MAX_PAUSE {
+            return;
+        }
+        std::thread::sleep(POLL);
+    }
+}
+
 /// Which classes are busy now, for diagnostics (`v`, `t`, `b`).
 pub fn busy_now() -> String {
     let cfg = GLOBAL.config();

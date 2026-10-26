@@ -56,6 +56,8 @@ pub fn run() {
                 secrets::init(dir);
             }
             tasks::init(app.handle());
+            // Scans let a waiting viewer have the database first.
+            vp_scan::set_write_gate(sched::write_gate);
             applog::init(app.handle());
             heif::init(app.handle());
             // Android plays media over loopback HTTP (see media_server.rs).

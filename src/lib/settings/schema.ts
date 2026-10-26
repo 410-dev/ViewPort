@@ -95,6 +95,8 @@ export const SECTIONS: Section[] = [
           { kind: "toggle", ...app({ path: "reopen_last_bundle", label: "set.reopen", help: "set.reopen.help" }) },
           { kind: "toggle", ...app({ path: "hide_missing_recent", label: "start.hideMissing" }) },
           { kind: "number", ...bundle({ path: "general.autosave_debounce_ms", label: "set.autosaveDelay" }), min: 0, step: 100, unit: "ms" },
+          { kind: "number", ...bundle({ path: "general.encrypted_save_cost_factor", label: "set.encSaveFactor", help: "set.encSaveFactor.help" }), min: 1, max: 200, step: 1, unit: "×" },
+          { kind: "number", ...bundle({ path: "general.encrypted_save_max_defer_secs", label: "set.encSaveDefer", help: "set.encSaveDefer.help" }), min: 0, max: 600, step: 5, unit: "s" },
         ],
       },
       {

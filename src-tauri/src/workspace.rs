@@ -224,15 +224,23 @@ impl Workspace {
         if self.key.is_some() && self.autosave() {
             let ws = self.clone();
             let _ = std::thread::Builder::new().name("encrypted-save".into()).spawn(move || {
-                while !ws.closed.load(Ordering::Relaxed) {
-                    let secs = ws.settings.read().unwrap().general.encrypted_save_secs.max(1);
-                    for _ in 0..secs * 4 {
-                        if ws.closed.load(Ordering::Relaxed) {
-                            break;
-                        }
+                // How long the last save held the database.
+                let mut cost = std::time::Duration::ZERO;
+                let pause = |d: std::time::Duration, until: &dyn Fn() -> bool| {
+                    let start = std::time::Instant::now();
+                    while start.elapsed() < d && !ws.closed.load(Ordering::Relaxed) && !until() {
                         std::thread::sleep(std::time::Duration::from_millis(250));
                     }
-                    let _ = ws.persist_locked(false);
+                };
+                while !ws.closed.load(Ordering::Relaxed) {
+                    let g = ws.settings.read().unwrap().general.clone();
+                    let every = std::time::Duration::from_secs(g.encrypted_save_secs.max(1));
+                    pause(every.max(cost * g.encrypted_save_cost_factor.max(1)), &|| false);
+                    // Copying the database holds it: not while the viewer needs it.
+                    pause(std::time::Duration::from_secs(g.encrypted_save_max_defer_secs), &|| !crate::sched::viewer_first_busy());
+                    if let Ok(Some(held)) = ws.persist_locked_timed(false) {
+                        cost = held;
+                    }
                 }
             });
         }
@@ -351,22 +359,35 @@ impl Workspace {
 
     /// Re-encrypts the in-memory database to the bundle if it changed (or always with `force`).
     pub fn persist_locked(&self, force: bool) -> CmdResult<()> {
-        let Some(key) = &self.key else { return Ok(()) };
+        self.persist_locked_timed(force).map(|_| ())
+    }
+
+    /// [`Workspace::persist_locked`], returning how long it held the database when it saved.
+    pub fn persist_locked_timed(&self, force: bool) -> CmdResult<Option<std::time::Duration>> {
+        let Some(key) = &self.key else { return Ok(None) };
         if !self.autosave() && !force {
-            return Ok(());
+            return Ok(None);
         }
+        let started = std::time::Instant::now();
         let (bytes, changes) = {
             let db = self.write_db.lock().unwrap();
             let changes = db.total_changes();
             if !force && changes == self.saved_changes.load(Ordering::Relaxed) {
-                return Ok(());
+                return Ok(None);
             }
             (db.serialize()?, changes)
         };
+        let held = started.elapsed();
+        if held.as_millis() >= 300 {
+            crate::applog::info(
+                "save",
+                format!("encrypted save held the database {}ms ({} MB)", held.as_millis(), bytes.len() / (1024 * 1024)),
+            );
+        }
         let sealed = vp_crypto::seal(key, &bytes, b"db")?;
         vp_driver::local::write_atomic(&self.bundle.path(vp_bundle::DB_ENC_FILE), &sealed)?;
         self.saved_changes.store(changes, Ordering::Relaxed);
-        Ok(())
+        Ok(Some(held))
     }
 
     /// Writes everything that is buffered. Call before closing the bundle.

@@ -385,6 +385,10 @@ UI에 전달되며 작업별로 `progress.emit_interval_ms` 간격으로 제한�
   뷰어 요청이 처리되는 동안(`sched::urgent`) 미리 읽기는 다음 항목을 시작하지 않는다.
 - 뷰어 요청이 처리되는 동안에는 누구도 쉬게 하지 않는다(쉬는 스레드가 뷰어가 기다리는 DB 잠금 등을 쥐고 있을 수 있음).
   고성능 방식의 `pause_background`는 뷰어가 바쁜 동안 썸네일·백그라운드를 아예 멈춘다.
+- 잠긴 번들은 연결이 하나라 모두 같은 잠금을 쓴다. 그래서 미리 읽기 계획은 항목 위치를 한 번에 조회해 두고
+  (`media::remember_locations`), 암호화 저장은 지난번 걸린 시간의 `encrypted_save_cost_factor`배 간격을 두며 뷰어 우선 방식에서
+  뷰어가 바쁘면 최대 `encrypted_save_max_defer_secs`만큼 미룬다. 스캔은 배치를 쓰기 전에 `sched::write_gate`(기다리는 뷰어 요청
+  먼저, 멈춤 설정이면 뷰어가 쉴 때까지)를 거친다. DB를 쓰는 명령은 모두 `async`라 메인 스레드가 잠금을 기다리지 않는다.
 - 뷰어는 DB 연결을 따로 쓴다(`Workspace::view_db`, 잠긴 번들은 연결이 하나라 없음). 그마저 바쁘면 전에 찾은 위치
   (`view_locations`)를 쓰고, 연결된 소스의 드라이버는 DB 없이 꺼낸다(`connected_driver`).
 - 진단: 뷰어 요청이 `log.slow_view_ms`보다 오래 걸리면 단계별 시간(db_lock, db_query, size, copy_wait, copy_make, load, read)과 그때 바빴던 등급을

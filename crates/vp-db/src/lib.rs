@@ -819,6 +819,26 @@ impl Db {
             .optional()?)
     }
 
+    /// Where items are and their pixel size (when the scan read it), for the viewer.
+    pub fn media_view_locations(&self, ids: &[i64]) -> Result<Vec<(i64, MediaLocation, Option<(u32, u32)>)>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, source_id, rel_path, kind, size, width, height FROM media
+             WHERE id IN (SELECT value FROM json_each(?1))",
+        )?;
+        let ids = serde_json::to_string(ids).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        let rows = stmt.query_map([ids], |r| {
+            let kind: String = r.get(3)?;
+            let loc = MediaLocation {
+                source_id: r.get(1)?,
+                rel_path: r.get(2)?,
+                kind: MediaKind::parse(&kind).unwrap_or(MediaKind::NonMedia),
+                size: r.get::<_, i64>(4)? as u64,
+            };
+            Ok((r.get(0)?, loc, r.get::<_, Option<u32>>(5)?.zip(r.get::<_, Option<u32>>(6)?)))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// Pixel size of an item, when the scan read it.
     pub fn media_dimensions(&self, id: i64) -> Result<Option<(u32, u32)>> {
         Ok(self
