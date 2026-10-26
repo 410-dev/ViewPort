@@ -854,6 +854,11 @@ pub struct UiSettings {
     /// List only images and videos; other files stay in the library but are hidden.
     pub media_only: bool,
     /// Pause after typing before the search runs.
+    /// While a scan runs, the listing refreshes at most this often so new files show up,
+    pub scan_refresh_ms: u32,
+    /// and never sooner than this many times as long as the last search took (a search of
+    /// a large library holds the database for seconds). Not at all while the viewer is open.
+    pub scan_refresh_cost_factor: u32,
     pub search_debounce_ms: u32,
     /// Suggestions shown while typing a list (enum) value.
     pub suggest_limit: u32,
@@ -891,6 +896,8 @@ impl Default for UiSettings {
             reduce_motion: false,
             media_only: false,
             search_debounce_ms: 200,
+            scan_refresh_ms: 1500,
+            scan_refresh_cost_factor: 4,
             suggest_limit: 20,
             value_list_limit: 500,
             source_check_secs: 5,

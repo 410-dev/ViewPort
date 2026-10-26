@@ -173,6 +173,8 @@ export const SECTIONS: Section[] = [
           { kind: "toggle", ...app({ path: "ui.recursive", label: "set.recursive", help: "set.recursive.help" }) },
           { kind: "toggle", ...app({ path: "ui.media_only", label: "set.mediaOnly", help: "set.mediaOnly.help" }) },
           { kind: "number", ...app({ path: "ui.search_debounce_ms", label: "set.searchDelay" }), min: 0, max: 2000, step: 50, unit: "ms" },
+          { kind: "number", ...app({ path: "ui.scan_refresh_ms", label: "set.scanRefresh", help: "set.scanRefresh.help" }), min: 250, max: 60000, step: 250, unit: "ms" },
+          { kind: "number", ...app({ path: "ui.scan_refresh_cost_factor", label: "set.scanRefreshFactor", help: "set.scanRefreshFactor.help" }), min: 1, max: 50, step: 1, unit: "×" },
           { kind: "number", ...app({ path: "ui.suggest_limit", label: "set.suggestLimit" }), min: 1, max: 200, step: 1 },
           { kind: "number", ...app({ path: "ui.value_list_limit", label: "set.valueListLimit", help: "set.valueListLimit.help" }), min: 10, max: 5000, step: 10 },
           {

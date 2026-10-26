@@ -303,19 +303,39 @@
       : [],
   );
 
-  // While scanning, refresh at most every 1.5 s so new files show up.
+  // While scanning, refresh now and then so new files show up: at most every
+  // `ui.scan_refresh_ms`, never while the last one runs or sooner than `scan_refresh_cost_factor`
+  // times its duration (a large library's search holds the database for seconds), and not
+  // while the viewer is open (once when it closes).
   let lastRefresh = 0;
+  let scanSearching = false;
+  let refreshAfterViewer = false;
+  async function scanRefresh() {
+    scanSearching = true;
+    const started = performance.now();
+    try {
+      await runSearch(false);
+    } finally {
+      scanSearching = false;
+      lastRefresh = performance.now();
+      lastSearchMs = lastRefresh - started;
+    }
+  }
+  let lastSearchMs = 0;
   const unlisten = [
     onScan((e) => {
       scans[e.source_id] = e;
-      const now = performance.now();
-      if (e.done || now - lastRefresh > 1500) {
-        lastRefresh = now;
-        if (e.done) invalidate();
-        runSearch(false);
-        if (e.done && selected === e.source_id) api.childFolders(e.source_id, folder).then((l) => (subfolders = l)).catch(() => {});
-        if (e.done && shards[e.source_id]) refreshShards();
+      if (e.done) {
+        invalidate();
+        if (selected === e.source_id) api.childFolders(e.source_id, folder).then((l) => (subfolders = l)).catch(() => {});
+        if (shards[e.source_id]) refreshShards();
       }
+      if (viewing) {
+        refreshAfterViewer = true;
+        return;
+      }
+      const gap = Math.max(ui().scan_refresh_ms ?? 1500, lastSearchMs * (ui().scan_refresh_cost_factor ?? 4));
+      if (e.done || (!scanSearching && performance.now() - lastRefresh > gap)) scanRefresh();
     }),
   ];
   // Other windows on the same workspace changed something.
@@ -1272,6 +1292,10 @@
     browseFrom={browseState()}
     onclose={(id) => {
       viewing = null;
+      if (refreshAfterViewer) {
+        refreshAfterViewer = false;
+        scanRefresh();
+      }
       if (id !== undefined) {
         selection.set.clear();
         // On touch a selection means selection mode; just remember where the viewer was.

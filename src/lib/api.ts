@@ -306,6 +306,8 @@ export interface UiSettings {
   reduce_motion: boolean;
   media_only: boolean;
   search_debounce_ms: number;
+  scan_refresh_ms: number;
+  scan_refresh_cost_factor: number;
   suggest_limit: number;
   value_list_limit: number;
   source_check_secs: number;
