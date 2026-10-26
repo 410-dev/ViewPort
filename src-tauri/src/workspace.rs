@@ -15,6 +15,7 @@ use vp_db::{Db, DbOptions, MediaLocation, SourceRow, ThumbRow, ThumbStatus};
 use vp_driver::{DriverRegistry, MediaDriver, MediaReader};
 use vp_thumb::PackStore;
 
+use crate::dblock::DbLock;
 use crate::error::{CmdError, CmdResult};
 
 pub const BUNDLE_DRIVER: &str = "bundle";
@@ -37,14 +38,14 @@ pub struct Workspace {
     pub settings: RwLock<Settings>,
     /// A read connection of the viewer's own (not for encrypted bundles, which have one
     /// in-memory connection): background work holding `read_db` never makes it wait.
-    pub view_db: Option<Mutex<Db>>,
+    pub view_db: Option<DbLock>,
     /// Where items the viewer asked for are (`media::locate`), for when the database is busy.
     pub view_locations: Mutex<HashMap<i64, crate::media::ViewLoc>>,
     /// Writer connection (scans, edits). Reads use `read_db` so they are not blocked by
     /// long write batches; SQLite WAL lets both run at once. In a locked bundle the
     /// database lives in memory and both are the same connection.
-    pub write_db: Arc<Mutex<Db>>,
-    pub read_db: Arc<Mutex<Db>>,
+    pub write_db: Arc<DbLock>,
+    pub read_db: Arc<DbLock>,
     /// Key of a locked bundle.
     pub key: Option<vp_crypto::BundleKey>,
     /// `total_changes` of the in-memory database when it was last written to disk.
@@ -144,12 +145,12 @@ impl Workspace {
         let (write_db, read_db) = match &key {
             Some(k) => {
                 let bytes = Self::read_sealed(&bundle, vp_bundle::DB_ENC_FILE, k, b"db")?;
-                let db = Arc::new(Mutex::new(Db::open_memory_from(bytes.as_deref(), &opts)?));
+                let db = Arc::new(DbLock::new(Db::open_memory_from(bytes.as_deref(), &opts)?));
                 (db.clone(), db)
             }
-            None => (Arc::new(Mutex::new(Db::open_with(&db_path, &opts)?)), Arc::new(Mutex::new(Db::open_with(&db_path, &opts)?))),
+            None => (Arc::new(DbLock::new(Db::open_with(&db_path, &opts)?)), Arc::new(DbLock::new(Db::open_with(&db_path, &opts)?))),
         };
-        let view_db = if key.is_none() { Some(Mutex::new(Db::open_with(&db_path, &opts)?)) } else { None };
+        let view_db = if key.is_none() { Some(DbLock::new(Db::open_with(&db_path, &opts)?)) } else { None };
         let thumbs = PackStore::open(&bundle.path(vp_bundle::THUMBS_DIR), settings.thumbnails.pack_bytes)?;
         let workers = match settings.thumbnails.workers {
             0 => std::thread::available_parallelism().map(|n| (n.get() / 2).max(1)).unwrap_or(2),
@@ -368,20 +369,26 @@ impl Workspace {
         if !self.autosave() && !force {
             return Ok(None);
         }
-        let started = std::time::Instant::now();
-        let (bytes, changes) = {
+        let asked = std::time::Instant::now();
+        let (bytes, changes, waited, held) = {
             let db = self.write_db.lock().unwrap();
+            let waited = asked.elapsed();
+            let started = std::time::Instant::now();
             let changes = db.total_changes();
             if !force && changes == self.saved_changes.load(Ordering::Relaxed) {
                 return Ok(None);
             }
-            (db.serialize()?, changes)
+            (db.serialize()?, changes, waited, started.elapsed())
         };
-        let held = started.elapsed();
-        if held.as_millis() >= 300 {
+        if held.as_millis() >= 300 || waited.as_millis() >= 1000 {
             crate::applog::info(
                 "save",
-                format!("encrypted save held the database {}ms ({} MB)", held.as_millis(), bytes.len() / (1024 * 1024)),
+                format!(
+                    "encrypted save held the database {}ms after waiting {}ms for it ({} MB)",
+                    held.as_millis(),
+                    waited.as_millis(),
+                    bytes.len() / (1024 * 1024)
+                ),
             );
         }
         let sealed = vp_crypto::seal(key, &bytes, b"db")?;

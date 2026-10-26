@@ -186,11 +186,44 @@ fn source_driver(
     ws.driver(drivers, &source)
 }
 
-/// Display copies are made one at a time for the viewer and one for its look-ahead
-/// (decoding a huge image takes a lot of memory), so a picture the viewer waits for never
-/// queues behind one it may want later.
-static DISPLAY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// Display copies are made `viewer.display_copy_workers` at a time for the viewer (the
+/// shown picture first) and one at a time for its look-ahead (decoding a huge image takes
+/// a lot of memory), so a picture the viewer waits for never queues behind one it may
+/// want later.
+static DISPLAY_SLOTS: Slots = Slots { busy: std::sync::Mutex::new(0), freed: std::sync::Condvar::new() };
 static LOOKAHEAD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+struct Slots {
+    busy: std::sync::Mutex<usize>,
+    freed: std::sync::Condvar,
+}
+
+struct Slot(&'static Slots);
+
+impl Slots {
+    fn take(&'static self, max: usize) -> Slot {
+        let mut busy = self.busy.lock().unwrap_or_else(|e| e.into_inner());
+        while *busy >= max.max(1) {
+            busy = self.freed.wait(busy).unwrap_or_else(|e| e.into_inner());
+        }
+        *busy += 1;
+        Slot(self)
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        *self.0.busy.lock().unwrap_or_else(|e| e.into_inner()) -= 1;
+        self.0.freed.notify_one();
+    }
+}
+
+/// Holds a display-copy slot of either queue.
+#[allow(dead_code)]
+enum Turn {
+    Viewer(Slot),
+    LookAhead(std::sync::MutexGuard<'static, ()>),
+}
 /// Display copies being made now (cache keys).
 static MAKING: std::sync::Mutex<Vec<i64>> = std::sync::Mutex::new(Vec::new());
 
@@ -229,16 +262,20 @@ fn display_copy(
     if let Some(c) = ws.cache.get(key) {
         return Ok(Some(c.to_vec(0, c.len())));
     }
-    let _one = stage("copy_wait", || {
-        // The other queue is making this very copy: wait for it rather than decode twice.
+    let _turn = stage("copy_wait", || {
+        // Another request is making this very copy: wait for it rather than decode twice.
         while MAKING.lock().unwrap_or_else(|e| e.into_inner()).contains(&key) {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         if urgent {
-            DISPLAY_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+            // Neighbours wait while the shown picture is being made.
+            if !crate::sched::is_shown(id) {
+                crate::sched::wait_shown(std::time::Duration::from_secs(3));
+            }
+            Turn::Viewer(DISPLAY_SLOTS.take(crate::recent::cached_app_settings().viewer.display_copy_workers as usize))
         } else {
-            crate::sched::wait_urgent(std::time::Duration::from_secs(5));
-            LOOKAHEAD_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+            crate::sched::wait_shown(std::time::Duration::from_secs(5));
+            Turn::LookAhead(LOOKAHEAD_LOCK.lock().unwrap_or_else(|e| e.into_inner()))
         }
     });
     if let Some(c) = ws.cache.get(key) {
@@ -440,7 +477,9 @@ pub fn answer<R: Runtime>(app: &AppHandle<R>, id: Option<i64>, range: Option<Str
     let was_cached = ws.cache.contains(id);
     STAGES.with(|s| s.borrow_mut().clear());
     let served = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        crate::sched::urgent(|| crate::sched::run(crate::sched::Class::Viewer, || serve(&ws, &state.drivers, id, range.clone(), fit)))
+        crate::sched::urgent(|| {
+            crate::sched::request(id, || crate::sched::run(crate::sched::Class::Viewer, || serve(&ws, &state.drivers, id, range.clone(), fit)))
+        })
     }))
     .unwrap_or_else(|_| Err(CmdError::new("panic", "media handler panicked")));
     let slow_ms = crate::recent::cached_app_settings().log.slow_view_ms as u128;

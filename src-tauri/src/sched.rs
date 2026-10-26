@@ -252,6 +252,45 @@ pub fn wait_urgent(max: Duration) {
     }
 }
 
+/// The item the viewer shows now (the first of its look-ahead).
+static SHOWN: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(i64::MIN);
+/// Requests for the shown item being answered.
+static SHOWN_WAITING: AtomicUsize = AtomicUsize::new(0);
+
+/// Notes which item the viewer shows now.
+pub fn set_shown(id: i64) {
+    SHOWN.store(id, Ordering::Relaxed);
+}
+
+pub fn is_shown(id: i64) -> bool {
+    SHOWN.load(Ordering::Relaxed) == id
+}
+
+/// Runs `f`, a request for item `id`; if the viewer shows it, everything else that makes
+/// pictures (neighbour preloads, the look-ahead) lets it go first meanwhile.
+pub fn request<T>(id: i64, f: impl FnOnce() -> T) -> T {
+    if !is_shown(id) {
+        return f();
+    }
+    struct Done;
+    impl Drop for Done {
+        fn drop(&mut self) {
+            SHOWN_WAITING.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+    SHOWN_WAITING.fetch_add(1, Ordering::Relaxed);
+    let _done = Done;
+    f()
+}
+
+/// Waits (up to `max`) while a request for the shown item is being answered.
+pub fn wait_shown(max: Duration) {
+    let start = Instant::now();
+    while SHOWN_WAITING.load(Ordering::Relaxed) > 0 && start.elapsed() < max {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 /// Whether the viewer is busy and the mode puts it first (its share is at least half).
 pub fn viewer_first_busy() -> bool {
     let cfg = GLOBAL.config();

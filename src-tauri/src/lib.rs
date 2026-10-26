@@ -2,6 +2,7 @@ mod applog;
 mod archive;
 mod audio;
 mod commands;
+mod dblock;
 mod dedup;
 mod error;
 mod heif;

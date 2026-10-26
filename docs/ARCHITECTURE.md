@@ -391,6 +391,10 @@ UI에 전달되며 작업별로 `progress.emit_interval_ms` 간격으로 제한�
   먼저, 멈춤 설정이면 뷰어가 쉴 때까지)를 거친다. DB를 쓰는 명령은 모두 `async`라 메인 스레드가 잠금을 기다리지 않는다.
 - 뷰어는 DB 연결을 따로 쓴다(`Workspace::view_db`, 잠긴 번들은 연결이 하나라 없음). 그마저 바쁘면 전에 찾은 위치
   (`view_locations`)를 쓰고, 연결된 소스의 드라이버는 DB 없이 꺼낸다(`connected_driver`).
+- 뷰어는 양쪽 `viewer.brief_window`개 항목의 정보를 미리 조회해 두고(라이브러리의 `briefs` 캐시도 씀), 넘길 때마다 바로
+  옆 `prefetch_ahead/behind`개를 WebView에서 미리 디코딩한다(롤링 창). 지금 보는 항목(`sched::set_shown`, 미리 읽기 계획의 첫
+  항목)의 요청이 처리되는 동안 이웃 미리 읽기와 백엔드 미리 읽기는 기다리고, 표시 사본은 `viewer.display_copy_workers`개까지 동시에 만든다.
+- DB 잠금은 `dblock::DbLock`(잠금 위치 기록)으로 감싸 `log.slow_db_ms`보다 오래 붙잡으면 코드 위치를 로그에 남긴다.
 - 진단: 뷰어 요청이 `log.slow_view_ms`보다 오래 걸리면 단계별 시간(db_lock, db_query, size, copy_wait, copy_make, load, read)과 그때 바빴던 등급을
   앱 로그에 남기고, 뷰어는 바이트 도착·디코딩 시간을 따로 남긴다(`log_slow_view`).
 - `vpmedia://`는 HTTP Range를 지원한다. 이미지는 통째로 캐시, 영상은 바로 스트리밍하면서 백그라운드로 캐시한다.

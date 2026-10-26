@@ -34,6 +34,7 @@
   import { isMobile } from "./platform";
   import { reportBroken } from "./views/briefs.svelte";
   import { heading, lookahead } from "./lookahead";
+  import { briefs as libraryBriefs } from "./views/briefs.svelte";
 
   /**
    * One viewer pane. `ViewerShell` lays out up to `windows.max_viewer_panes` of them;
@@ -285,23 +286,43 @@
     const n = ids.length;
     const around = [...new Set([ids[(index + 1) % n], ids[(index - 1 + n) % n], ...ahead, ...behind])].filter((x) => x !== current);
 
-    api.mediaBrief([current, ...around]).then((bs) => {
-      for (const b of bs) known.set(b.id, b);
+    // Metadata a window wider than the preloads ahead of time (`viewer.brief_window`), so
+    // each move preloads its new neighbour at once — a rolling window — instead of waiting
+    // for a lookup (which on a busy database can take seconds).
+    const wide = Math.max(prefs.app?.viewer.brief_window ?? 24, c.prefetch_ahead, c.prefetch_behind);
+    const span = [current, ...around];
+    for (let k = 1; k <= wide && k < n; k++) span.push(ids[(index + k) % n], ids[(((index - k) % n) + n) % n]);
+    if (known.size > 20 * wide + 1000) known.clear();
+    for (const x of span) {
+      const cached = libraryBriefs.get(x);
+      if (!known.has(x) && cached) known.set(x, cached);
+    }
+    const preload = () => {
       if (ids[index] !== current) return;
-      brief = bs.find((b) => b.id === current) ?? null;
+      const b = known.get(current);
+      if (b) brief = b;
       // Decode neighbouring images in the webview too, so switching is instant.
       const keep = new Set<number>();
-      for (const b of bs) {
-        if (b.id === current || b.kind !== "image") continue;
-        keep.add(b.id);
-        if (!preloaded.has(b.id)) {
+      for (const x of around) {
+        const nb = known.get(x);
+        if (!nb || nb.kind !== "image") continue;
+        keep.add(x);
+        if (!preloaded.has(x)) {
           const img = new Image();
-          img.src = imageSrc(b);
+          img.src = imageSrc(nb);
           img.decode().catch(() => {});
-          preloaded.set(b.id, img);
+          preloaded.set(x, img);
         }
       }
       for (const k of preloaded.keys()) if (!keep.has(k)) preloaded.delete(k);
+    };
+    preload();
+    // The current item is always looked up again (its state may have changed); the rest
+    // only when not known yet.
+    const missing = [...new Set(span)].filter((x) => x === current || !known.has(x));
+    api.mediaBrief(missing).then((bs) => {
+      for (const b of bs) known.set(b.id, b);
+      preload();
     });
     // The backend's look-ahead, shaped by the scheduler (`lookahead.ts`).
     const hw = prefs.app?.hardware;

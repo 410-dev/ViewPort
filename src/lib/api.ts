@@ -352,6 +352,8 @@ export interface AppSettings {
     wheel_zoom: boolean;
     tap_to_advance: boolean;
     swipe_favorite: boolean;
+    brief_window: number;
+    display_copy_workers: number;
     pull_close: boolean;
     pull_close_threshold: number;
     pull_close_min_scale: number;
@@ -386,6 +388,7 @@ export interface AppSettings {
   log: {
     max_bytes: number;
     slow_view_ms: number;
+    slow_db_ms: number;
   };
 }
 

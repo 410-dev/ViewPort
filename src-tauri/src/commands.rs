@@ -588,6 +588,9 @@ static LOOKAHEAD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::n
 pub fn prefetch_plan(app: AppHandle, state: State<'_, AppState>, ids: Vec<i64>, screen: Option<crate::media::Screen>) -> CmdResult<()> {
     let ws = workspace(&state)?;
     let generation = LOOKAHEAD.fetch_add(1, Ordering::Relaxed) + 1;
+    if let Some(&shown) = ids.first() {
+        crate::sched::set_shown(shown);
+    }
     let c = ws.settings.read().unwrap().cache.clone();
     let ratio = recent::cached_app_settings().hardware.prefetch_ratio(c.prefetch_ratio);
     let budget = (ws.cache.capacity_bytes() as f64 * ratio as f64) as u64;
@@ -626,8 +629,8 @@ fn look_ahead(
             if used.load(Ordering::Relaxed) >= budget {
                 return;
             }
-            // A picture the viewer waits for comes first.
-            crate::sched::wait_urgent(std::time::Duration::from_secs(5));
+            // The picture on screen comes first; neighbour preloads and this share the rest.
+            crate::sched::wait_shown(std::time::Duration::from_secs(5));
             let Some(id) = queue.lock().unwrap().pop_front() else { return };
             let held = crate::sched::run(crate::sched::Class::Viewer, || crate::media::warm(&ws, &drivers, id, screen)).unwrap_or(0);
             // Whole chunks: that is what the item takes from the cache.

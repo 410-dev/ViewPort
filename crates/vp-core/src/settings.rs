@@ -517,11 +517,13 @@ pub struct LogSettings {
     /// A picture the viewer waits longer than this for is logged with where the time
     /// went (0: never).
     pub slow_view_ms: u32,
+    /// Holding the bundle database longer than this is logged with where (0: never).
+    pub slow_db_ms: u32,
 }
 
 impl Default for LogSettings {
     fn default() -> Self {
-        Self { max_bytes: 4 * MIB, slow_view_ms: 400 }
+        Self { max_bytes: 4 * MIB, slow_view_ms: 400, slow_db_ms: 500 }
     }
 }
 
@@ -675,6 +677,11 @@ pub struct ViewerSettings {
     pub swipe_threshold: f32,
     /// Duration of the slide to the next item or back after a swipe.
     pub swipe_ms: u32,
+    /// Items on each side whose details the viewer looks up ahead of time, so moving on
+    /// never waits for a lookup before preloading.
+    pub brief_window: u32,
+    /// Display copies made at once for what the viewer shows (the current picture first).
+    pub display_copy_workers: u32,
     /// Images whose longer edge exceeds this are shown as a copy scaled to it: decoding a
     /// 200-megapixel photo takes the WebView seconds and hundreds of MB. The original loads
     /// only when zooming in past the copy's resolution. 0 always shows originals.
@@ -710,6 +717,8 @@ impl Default for ViewerSettings {
             double_tap_ms: 280,
             swipe_threshold: 0.2,
             swipe_ms: 220,
+            brief_window: 24,
+            display_copy_workers: 2,
             display_max_px: if MOBILE { 4096 } else { 8192 },
             display_quality: 90,
             fit_screen: true,

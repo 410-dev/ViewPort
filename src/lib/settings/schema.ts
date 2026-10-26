@@ -106,6 +106,7 @@ export const SECTIONS: Section[] = [
           { kind: "custom", id: "log" },
           { kind: "number", ...app({ path: "log.max_bytes", label: "set.logMax" }), min: 1, max: 64, step: 1, scale: MB, unit: "MB" },
           { kind: "number", ...app({ path: "log.slow_view_ms", label: "set.slowView", help: "set.slowView.help" }), min: 0, max: 10000, step: 50, unit: "ms" },
+          { kind: "number", ...app({ path: "log.slow_db_ms", label: "set.slowDb", help: "set.slowDb.help" }), min: 0, max: 60000, step: 100, unit: "ms" },
         ],
       },
       {
@@ -344,6 +345,8 @@ export const SECTIONS: Section[] = [
           { kind: "number", ...app({ path: "viewer.double_tap_ms", label: "set.doubleTap", help: "set.doubleTap.help" }), min: 120, max: 800, step: 20, unit: "ms" },
           { kind: "number", ...app({ path: "viewer.swipe_threshold", label: "set.swipeThreshold", help: "set.swipeThreshold.help" }), min: 5, max: 60, step: 5, scale: 0.01, unit: "%" },
           { kind: "number", ...app({ path: "viewer.swipe_ms", label: "set.swipeMs" }), min: 0, max: 1000, step: 20, unit: "ms" },
+          { kind: "number", ...app({ path: "viewer.brief_window", label: "set.briefWindow", help: "set.briefWindow.help" }), min: 1, max: 500, step: 1 },
+          { kind: "number", ...app({ path: "viewer.display_copy_workers", label: "set.copyWorkers", help: "set.copyWorkers.help" }), min: 1, max: 8, step: 1 },
           { kind: "number", ...app({ path: "viewer.display_max_px", label: "set.displayMax", help: "set.displayMax.help" }), min: 0, max: 16384, step: 256, unit: "px" },
           { kind: "toggle", ...app({ path: "viewer.fit_screen", label: "set.fitScreen", help: "set.fitScreen.help" }) },
           { kind: "number", ...app({ path: "viewer.display_quality", label: "set.displayQuality" }), min: 1, max: 100, step: 1 },
