@@ -930,6 +930,9 @@ pub struct HardwareSettings {
     pub thumb_share: f32,
     /// Work counts as competing until this long after its last read.
     pub sched_idle_ms: u32,
+    /// Performance mode: thumbnails and background work stop while the viewer is busy
+    /// (they go on once it has been idle for `sched_idle_ms`).
+    pub pause_background: bool,
     /// Predictive mode: weight of the earlier moves in the direction estimate (0..1;
     /// higher follows a change of direction more slowly).
     pub predict_decay: f32,
@@ -1002,6 +1005,7 @@ impl Default for HardwareSettings {
             viewer_share_preprocess: 0.3,
             thumb_share: 0.7,
             sched_idle_ms: 500,
+            pause_background: false,
             predict_decay: 0.6,
             predict_min_side: 0.15,
             prefetch_max_items: 400,

@@ -383,7 +383,11 @@ UI에 전달되며 작업별로 `progress.emit_interval_ms` 간격으로 제한�
   양보해야 하는 동안은 그 스레드의 OS 우선순위를 낮춘다(Linux·Android nice, macOS QoS, Windows). 뷰어·썸네일 작업에 들어가면 되돌린다.
 - 표시 사본은 뷰어 요청용과 미리 읽기용 줄이 따로라 보려는 사진이 미리 읽기 뒤에 서지 않고, 같은 사본을 만드는 중이면 기다린다.
   뷰어 요청이 처리되는 동안(`sched::urgent`) 미리 읽기는 다음 항목을 시작하지 않는다.
-- 진단: 뷰어 요청이 `log.slow_view_ms`보다 오래 걸리면 단계별 시간(db, size, copy_wait, copy_make, load, read)과 그때 바빴던 등급을
+- 뷰어 요청이 처리되는 동안에는 누구도 쉬게 하지 않는다(쉬는 스레드가 뷰어가 기다리는 DB 잠금 등을 쥐고 있을 수 있음).
+  고성능 방식의 `pause_background`는 뷰어가 바쁜 동안 썸네일·백그라운드를 아예 멈춘다.
+- 뷰어는 DB 연결을 따로 쓴다(`Workspace::view_db`, 잠긴 번들은 연결이 하나라 없음). 그마저 바쁘면 전에 찾은 위치
+  (`view_locations`)를 쓰고, 연결된 소스의 드라이버는 DB 없이 꺼낸다(`connected_driver`).
+- 진단: 뷰어 요청이 `log.slow_view_ms`보다 오래 걸리면 단계별 시간(db_lock, db_query, size, copy_wait, copy_make, load, read)과 그때 바빴던 등급을
   앱 로그에 남기고, 뷰어는 바이트 도착·디코딩 시간을 따로 남긴다(`log_slow_view`).
 - `vpmedia://`는 HTTP Range를 지원한다. 이미지는 통째로 캐시, 영상은 바로 스트리밍하면서 백그라운드로 캐시한다.
 - **큰 이미지 표시용 사본**: 긴 변이 `viewer.display_max_px`(모바일 4096, PC 8192)를 넘는(또는 크기를 모르는) 이미지는

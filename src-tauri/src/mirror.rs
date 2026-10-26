@@ -399,15 +399,14 @@ fn sync_with(
     // Property changes of items already mirrored.
     let mut pairs = Vec::new();
     let mut revs = Vec::new();
-    {
-        let db = ws.read_db.lock().unwrap();
-        for (rel, item) in db.mirror_items(m.id)? {
-            let Some(f) = present.get(&rel) else { continue };
-            let rev = db.meta_rev(f.id)?;
-            if rev > item.meta_rev {
-                pairs.push((f.id, item.target_path.clone()));
-                revs.push((rel, rev));
-            }
+    // One query at a time: an encrypted bundle has a single connection the viewer needs too.
+    let items = ws.read_db.lock().unwrap().mirror_items(m.id)?;
+    for (rel, item) in items {
+        let Some(f) = present.get(&rel) else { continue };
+        let rev = ws.read_db.lock().unwrap().meta_rev(f.id)?;
+        if rev > item.meta_rev {
+            pairs.push((f.id, item.target_path.clone()));
+            revs.push((rel, rev));
         }
     }
     if !pairs.is_empty() {

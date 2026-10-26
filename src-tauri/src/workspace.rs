@@ -35,6 +35,11 @@ pub struct BundleSummary {
 pub struct Workspace {
     pub bundle: Bundle,
     pub settings: RwLock<Settings>,
+    /// A read connection of the viewer's own (not for encrypted bundles, which have one
+    /// in-memory connection): background work holding `read_db` never makes it wait.
+    pub view_db: Option<Mutex<Db>>,
+    /// Where items the viewer asked for are (`media::locate`), for when the database is busy.
+    pub view_locations: Mutex<HashMap<i64, crate::media::ViewLoc>>,
     /// Writer connection (scans, edits). Reads use `read_db` so they are not blocked by
     /// long write batches; SQLite WAL lets both run at once. In a locked bundle the
     /// database lives in memory and both are the same connection.
@@ -144,6 +149,7 @@ impl Workspace {
             }
             None => (Arc::new(Mutex::new(Db::open_with(&db_path, &opts)?)), Arc::new(Mutex::new(Db::open_with(&db_path, &opts)?))),
         };
+        let view_db = if key.is_none() { Some(Mutex::new(Db::open_with(&db_path, &opts)?)) } else { None };
         let thumbs = PackStore::open(&bundle.path(vp_bundle::THUMBS_DIR), settings.thumbnails.pack_bytes)?;
         let workers = match settings.thumbnails.workers {
             0 => std::thread::available_parallelism().map(|n| (n.get() / 2).max(1)).unwrap_or(2),
@@ -180,6 +186,8 @@ impl Workspace {
             shards: Mutex::default(),
             shard_keys: Mutex::default(),
             settings: RwLock::new(settings),
+            view_db,
+            view_locations: Mutex::default(),
         })
     }
 
@@ -270,10 +278,18 @@ impl Workspace {
             return Ok(Some(m));
         }
         let Some(loc) = self.read_db.lock().unwrap().media_location(id)? else { return Ok(None) };
+        self.load_into_cache_at(drivers, id, &loc)
+    }
+
+    /// [`Workspace::load_into_cache`] for an item already looked up.
+    pub fn load_into_cache_at(&self, drivers: &DriverRegistry, id: i64, loc: &MediaLocation) -> CmdResult<Option<CachedMedia>> {
+        if let Some(m) = self.cache.get(id) {
+            return Ok(Some(m));
+        }
         if !self.cache.fits(loc.size) {
             return Ok(None);
         }
-        let reader = self.open_media(drivers, &loc)?;
+        let reader = self.open_media(drivers, loc)?;
         let len = reader.len();
         let mut tracker = crate::tasks::ReadTracker::new(file_name(&loc.rel_path), len, Some(id));
         let result = self.cache.insert_with(id, len, |offset, buf| {
@@ -291,6 +307,9 @@ impl Workspace {
     }
 
     pub fn open_media(&self, drivers: &DriverRegistry, loc: &MediaLocation) -> CmdResult<Box<dyn MediaReader>> {
+        if let Some(d) = self.connected_driver(loc.source_id) {
+            return Ok(d.open(&loc.rel_path)?);
+        }
         let source =
             self.read_db.lock().unwrap().source(loc.source_id)?.ok_or_else(|| CmdError::new("not_found", "source"))?;
         Ok(self.driver(drivers, &source)?.open(&loc.rel_path)?)
@@ -453,6 +472,11 @@ impl Workspace {
             })
             .map(|s| s.id)
             .collect()
+    }
+
+    /// The driver of a source already connected, if any (no database lookup).
+    pub fn connected_driver(&self, source_id: i64) -> Option<Arc<dyn MediaDriver>> {
+        self.drivers.lock().unwrap().get(&source_id).cloned()
     }
 
     pub fn driver(&self, registry: &DriverRegistry, source: &SourceRow) -> CmdResult<Arc<dyn MediaDriver>> {

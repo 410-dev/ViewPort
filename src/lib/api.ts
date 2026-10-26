@@ -328,6 +328,7 @@ export interface AppSettings {
     viewer_share_preprocess: number;
     thumb_share: number;
     sched_idle_ms: number;
+    pause_background: boolean;
     predict_decay: number;
     predict_min_side: number;
     prefetch_max_items: number;

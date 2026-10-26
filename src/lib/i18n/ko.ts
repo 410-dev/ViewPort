@@ -305,6 +305,8 @@ const ko = {
   "set.scheduler.performance.help": "캐시를 끝까지 써서 현재 항목 앞뒤를 똑같이 최대한 미리 읽고, 캐시에서는 가장 늦게 내립니다.",
   "set.scheduler.predictive.help": "캐시의 90%까지 미리 읽되, 최근에 넘긴 방향 쪽을 더 많이 읽습니다.",
   "set.scheduler.preprocess.help": "백그라운드 작업에 디스크를 더 줍니다. 미리 읽기는 '앞/뒤로 미리 읽기' 개수만큼입니다.",
+  "set.pauseBackground": "뷰어 사용 중 백그라운드 멈춤 (고성능)",
+  "set.pauseBackground.help": "고성능 방식에서 뷰어가 사진을 읽는 동안 썸네일 생성과 백그라운드 작업(스캔·미러·해시 등)을 멈춥니다. 뷰어가 '쉬는 것으로 볼 시간'만큼 쉬면 다시 이어서 합니다.",
   "set.viewerShare": "뷰어 몫",
   "set.share.viewer": "뷰어",
   "set.share.rest": "썸네일·백그라운드",

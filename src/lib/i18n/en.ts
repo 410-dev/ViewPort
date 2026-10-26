@@ -307,6 +307,8 @@ const en: Record<Key, string> = {
   "set.scheduler.performance.help": "Reads ahead as far as the whole cache allows, evenly on both sides, and evicts as late as possible.",
   "set.scheduler.predictive.help": "Reads ahead up to 90% of the cache, more on the side you have been moving to.",
   "set.scheduler.preprocess.help": "Gives background work more of the disk. Reads ahead only the 'prefetch ahead/behind' counts.",
+  "set.pauseBackground": "Pause background while viewing (performance)",
+  "set.pauseBackground.help": "In performance mode, thumbnail generation and background work (scans, mirrors, hashing) stop while the viewer reads pictures, and go on once it has been idle for 'Idle after'.",
   "set.viewerShare": "Viewer share",
   "set.share.viewer": "Viewer",
   "set.share.rest": "Thumbnails · background",

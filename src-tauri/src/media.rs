@@ -116,6 +116,61 @@ fn needs_conversion(rel_path: &str) -> bool {
     crate::recent::cached_app_settings().viewer.convert_image_extensions.iter().any(|e| e.eq_ignore_ascii_case(ext))
 }
 
+/// Where an item is and how large, for the viewer.
+#[derive(Debug, Clone)]
+pub struct ViewLoc {
+    pub loc: vp_db::MediaLocation,
+    pub size: Option<(u32, u32)>,
+}
+
+/// Entries kept in `Workspace::view_locations` before it starts over.
+const MAX_VIEW_LOCATIONS: usize = 20_000;
+
+/// Looks item `id` up for the viewer: on its own connection, and when that is busy, from
+/// what it found before (an item moved meanwhile then fails to load, as it would anyway).
+fn locate(ws: &Workspace, id: i64) -> CmdResult<Option<ViewLoc>> {
+    let db = ws.view_db.as_ref().unwrap_or(&*ws.read_db);
+    let guard = match db.try_lock() {
+        Ok(g) => g,
+        Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => {
+            if let Some(v) = ws.view_locations.lock().unwrap().get(&id).cloned() {
+                STAGES.with(|s| s.borrow_mut().push(("db_busy_cached", std::time::Duration::ZERO)));
+                return Ok(Some(v));
+            }
+            stage("db_lock", || db.lock().unwrap_or_else(|e| e.into_inner()))
+        }
+    };
+    let found = stage("db_query", || -> CmdResult<Option<ViewLoc>> {
+        let Some(loc) = guard.media_location(id)? else { return Ok(None) };
+        let size = if loc.kind == vp_core::MediaKind::Image { guard.media_dimensions(id)? } else { None };
+        Ok(Some(ViewLoc { loc, size }))
+    })?;
+    drop(guard);
+    if let Some(v) = &found {
+        let mut cache = ws.view_locations.lock().unwrap();
+        if cache.len() >= MAX_VIEW_LOCATIONS {
+            cache.clear();
+        }
+        cache.insert(id, v.clone());
+    }
+    Ok(found)
+}
+
+/// The driver of a source, without the database when it is already connected.
+fn source_driver(
+    ws: &Workspace,
+    drivers: &vp_driver::DriverRegistry,
+    source_id: i64,
+) -> CmdResult<std::sync::Arc<dyn vp_driver::MediaDriver>> {
+    if let Some(d) = ws.connected_driver(source_id) {
+        return Ok(d);
+    }
+    // First use of this source since the bundle opened.
+    let source = ws.read_db.lock().unwrap().source(source_id)?.ok_or_else(|| CmdError::new("not_found", "source"))?;
+    ws.driver(drivers, &source)
+}
+
 /// Display copies are made one at a time for the viewer and one for its look-ahead
 /// (decoding a huge image takes a lot of memory), so a picture the viewer waits for never
 /// queues behind one it may want later.
@@ -188,12 +243,10 @@ fn make_display_copy(
     key: i64,
 ) -> CmdResult<Option<Vec<u8>>> {
     let quality = crate::recent::cached_app_settings().viewer.display_quality.clamp(1, 100);
-    let source =
-        ws.read_db.lock().unwrap().source(loc.source_id)?.ok_or_else(|| CmdError::new("not_found", "source"))?;
-    let local = ws.driver(drivers, &source)?.local_path(&loc.rel_path);
+    let local = source_driver(ws, drivers, loc.source_id)?.local_path(&loc.rel_path);
     let mut data = local.and_then(|p| crate::platform::scaled_image(&p, edge, quality)).map(|s| s.data);
     if data.is_none() {
-        let original = match ws.load_into_cache(drivers, id)? {
+        let original = match ws.load_into_cache_at(drivers, id, loc)? {
             Some(c) => c.to_vec(0, c.len()),
             None => crate::workspace::read_tracked(ws.open_media(drivers, loc)?.as_ref(), &loc.rel_path, Some(id))?,
         };
@@ -218,11 +271,10 @@ fn make_display_copy(
 fn larger_than(
     ws: &Workspace,
     drivers: &vp_driver::DriverRegistry,
-    id: i64,
     loc: &vp_db::MediaLocation,
+    known: Option<(u32, u32)>,
     edge: u32,
 ) -> CmdResult<bool> {
-    let known = ws.read_db.lock().unwrap().media_brief(&[id])?.pop().and_then(|b| b.width.zip(b.height));
     let size = match known {
         Some(s) => Some(s),
         None => {
@@ -266,29 +318,26 @@ fn display_edge(v: &vp_core::settings::ViewerSettings, screen: Screen, size: Opt
 /// the display copy `screen` calls for), or marks it recently used if it is there.
 /// Returns the bytes it holds in the cache (0 if it could not be cached).
 pub fn warm(ws: &Workspace, drivers: &vp_driver::DriverRegistry, id: i64, screen: Option<Screen>) -> CmdResult<u64> {
-    let Some(loc) = ws.read_db.lock().unwrap().media_location(id)? else { return Ok(0) };
+    let Some(ViewLoc { loc, size }) = locate(ws, id)? else { return Ok(0) };
     if loc.kind == vp_core::MediaKind::Image {
         let convert = needs_conversion(&loc.rel_path);
         let v = crate::recent::cached_app_settings().viewer;
         let edge = match screen {
-            Some(s) => {
-                let size = ws.read_db.lock().unwrap().media_brief(&[id])?.pop().and_then(|b| b.width.zip(b.height));
-                display_edge(&v, s, size)
-            }
+            Some(s) => display_edge(&v, s, size),
             None => v.display_max_px,
         };
         // As `serve` decides it for `displayUrl(brief, edge)`.
         let copy = match edge {
             0 if convert => Some(MAX_DISPLAY_EDGE),
             0 => None,
-            e if convert || larger_than(ws, drivers, id, &loc, e)? => Some(e),
+            e if convert || larger_than(ws, drivers, &loc, size, e)? => Some(e),
             _ => None,
         };
         if let Some(edge) = copy {
             return Ok(display_copy(ws, drivers, id, &loc, edge, false)?.map_or(0, |d| d.len() as u64));
         }
     }
-    Ok(ws.load_into_cache(drivers, id)?.map_or(0, |c| c.len()))
+    Ok(ws.load_into_cache_at(drivers, id, &loc)?.map_or(0, |c| c.len()))
 }
 
 fn serve(
@@ -298,12 +347,12 @@ fn serve(
     range: Option<String>,
     fit: Option<u32>,
 ) -> CmdResult<Option<Body>> {
-    let Some(loc) = stage("db", || ws.read_db.lock().unwrap().media_location(id))? else { return Ok(None) };
+    let Some(ViewLoc { loc, size: known }) = locate(ws, id)? else { return Ok(None) };
     // Formats the WebView cannot decode are always served as a copy, at full size when
     // no size was asked for.
     let convert = loc.kind == vp_core::MediaKind::Image && needs_conversion(&loc.rel_path);
     let edge = match fit.filter(|_| loc.kind == vp_core::MediaKind::Image) {
-        Some(e) if convert || stage("size", || larger_than(ws, drivers, id, &loc, e))? => Some(e),
+        Some(e) if convert || stage("size", || larger_than(ws, drivers, &loc, known, e))? => Some(e),
         None if convert => Some(MAX_DISPLAY_EDGE),
         _ => None,
     };
@@ -325,7 +374,7 @@ fn serve(
     // Images are needed whole, so cache them right away. Videos start streaming at once
     // and are cached in the background (see `handle`).
     let cached = match loc.kind {
-        vp_core::MediaKind::Image => stage("load", || ws.load_into_cache(drivers, id))?,
+        vp_core::MediaKind::Image => stage("load", || ws.load_into_cache_at(drivers, id, &loc))?,
         vp_core::MediaKind::Video | vp_core::MediaKind::NonMedia => ws.cache.get(id),
     };
     let total = cached.as_ref().map(|c| c.len()).unwrap_or(loc.size);

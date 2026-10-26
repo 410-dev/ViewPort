@@ -819,6 +819,16 @@ impl Db {
             .optional()?)
     }
 
+    /// Pixel size of an item, when the scan read it.
+    pub fn media_dimensions(&self, id: i64) -> Result<Option<(u32, u32)>> {
+        Ok(self
+            .conn
+            .prepare_cached("SELECT width, height FROM media WHERE id = ?1")?
+            .query_row([id], |r| Ok(r.get::<_, Option<u32>>(0)?.zip(r.get::<_, Option<u32>>(1)?)))
+            .optional()?
+            .flatten())
+    }
+
     pub fn thumbnail(&self, media_id: i64) -> Result<Option<ThumbRow>> {
         Ok(self
             .conn

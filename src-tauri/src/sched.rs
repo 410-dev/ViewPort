@@ -16,7 +16,11 @@
 //! run at a lower OS priority ([`lower_priority`]).
 //!
 //! A viewer request being answered ([`urgent`]) also holds back the viewer's own
-//! look-ahead ([`wait_urgent`]).
+//! look-ahead ([`wait_urgent`]). Meanwhile nobody is held back at all: the thread made
+//! to wait may hold the database (or another lock) the request needs.
+//!
+//! Performance mode can pause thumbnails and background work outright while the viewer
+//! is busy (`pause_background`).
 
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -42,6 +46,8 @@ struct Config {
     viewer: f32,
     thumb: f32,
     idle_ms: u64,
+    /// Others stop while the viewer is busy.
+    pause: bool,
 }
 
 /// The books of one scheduler; the app has one ([`GLOBAL`]).
@@ -95,7 +101,7 @@ pub fn run<T>(c: Class, f: impl FnOnce() -> T) -> T {
 impl Sched {
     const fn new() -> Self {
         Self {
-            config: RwLock::new(Config { viewer: 0.5, thumb: 0.7, idle_ms: 500 }),
+            config: RwLock::new(Config { viewer: 0.5, thumb: 0.7, idle_ms: 500, pause: false }),
             inflight: [AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0)],
             last_end: [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)],
             next_free: [Mutex::new(None), Mutex::new(None), Mutex::new(None)],
@@ -103,8 +109,12 @@ impl Sched {
     }
 
     fn configure(&self, h: &HardwareSettings) {
-        *self.config.write().unwrap_or_else(|e| e.into_inner()) =
-            Config { viewer: h.viewer_share(), thumb: h.thumb_share.clamp(0.05, 0.95), idle_ms: h.sched_idle_ms as u64 };
+        *self.config.write().unwrap_or_else(|e| e.into_inner()) = Config {
+            viewer: h.viewer_share(),
+            thumb: h.thumb_share.clamp(0.05, 0.95),
+            idle_ms: h.sched_idle_ms as u64,
+            pause: h.pause_background && h.scheduler == vp_core::settings::SchedulerMode::Performance,
+        };
     }
 
     fn config(&self) -> Config {
@@ -135,9 +145,18 @@ impl Sched {
         (s < 0.5 || (s <= 0.5 && before)).then_some(s.max(0.01))
     }
 
-    /// Waits while `c` owes time to busier classes; returns early once they go idle.
+    /// Waits while `c` owes time to busier classes (or, paused, while the viewer is busy);
+    /// returns early once they go idle, and at once while a viewer request is waiting.
     fn wait(&self, c: Class) {
         loop {
+            if urgent_waiting() {
+                return;
+            }
+            let cfg = self.config();
+            if c != Class::Viewer && cfg.pause && self.busy(Class::Viewer, &cfg) {
+                std::thread::sleep(POLL);
+                continue;
+            }
             let until = *self.next_free[c as usize].lock().unwrap_or_else(|e| e.into_inner());
             let Some(until) = until else { return };
             let now = Instant::now();
@@ -380,6 +399,23 @@ mod tests {
         let t = Instant::now();
         s.run(Class::Background, || {});
         assert!(t.elapsed() < Duration::from_millis(50));
+    }
+
+    #[test]
+    fn pausing_holds_others_until_the_viewer_is_idle() {
+        use vp_core::settings::SchedulerMode::*;
+        let s = Sched::new();
+        s.configure(&HardwareSettings { pause_background: true, ..settings(Performance, 0.7) });
+        s.run(Class::Viewer, || {});
+        let t = Instant::now();
+        s.run(Class::Thumb, || {});
+        assert!(t.elapsed() >= Duration::from_millis(150), "{:?}", t.elapsed());
+        // Only in performance mode.
+        s.configure(&HardwareSettings { pause_background: true, ..settings(Predictive, 0.5) });
+        s.run(Class::Viewer, || {});
+        let t = Instant::now();
+        s.run(Class::Background, || {});
+        assert!(t.elapsed() < Duration::from_millis(100));
     }
 
     #[test]

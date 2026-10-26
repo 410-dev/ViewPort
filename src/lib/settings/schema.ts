@@ -609,6 +609,7 @@ export const SECTIONS: Section[] = [
             ],
           },
           { kind: "custom", id: "scheduler" },
+          { kind: "toggle", ...app({ path: "hardware.pause_background", label: "set.pauseBackground", help: "set.pauseBackground.help" }) },
           { kind: "number", ...app({ path: "hardware.thumb_share", label: "set.thumbShare", help: "set.thumbShare.help" }), min: 5, max: 95, step: 5, scale: 0.01, unit: "%" },
           { kind: "number", ...app({ path: "hardware.sched_idle_ms", label: "set.schedIdle", help: "set.schedIdle.help" }), min: 50, max: 5000, step: 50, unit: "ms" },
           { kind: "number", ...app({ path: "hardware.predict_decay", label: "set.predictDecay", help: "set.predictDecay.help" }), min: 0, max: 95, step: 5, scale: 0.01, unit: "%" },
