@@ -113,7 +113,7 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
   새 오버레이·대화 상자는 열려 있는 동안 `back.svelte.ts`의 `onBack`으로 닫기를 등록한다. 호버로만 보이는 컨트롤은
   `@media (hover: none)`에서 항상 보이게 한다. 저장소 경로를 하드코딩하지 않는다(`/storage/emulated/0`은 보안 폴더·작업 프로필에서 다름 → `storage_roots`). 네이티브 기능은 `platform.rs` ↔ `gen/android/.../ViewPortPlugin.kt`.
   원본 미디어는 앱 자체 루프백 HTTP(`media_server.rs`)로 읽으므로 릴리즈에서도 127.0.0.1 평문 접속을 허용한다
-  (`res/xml/network_security_config.xml`, 디버그는 `src/debug`의 같은 파일이 전부 허용). 애니메이션·미디어 확인은 디버그가 아닌 릴리즈 빌드로 한다.
+  (`res/xml/network_security_config.xml`, 디버그는 `src/debug`의 같은 파일이 전부 허용). 애니메이션·미디어 확인은 디버그가 아닌 릴리즈 빌드로, 에뮬레이터에서 한다(아래 'Android 테스트는 에뮬레이터로').
   APK 빌드는 아래 'APK 빌드 요령'을 따른다.
 
 ### APK 빌드 요령 (Windows)
@@ -211,6 +211,28 @@ npm run tauri android build -- --apk --target aarch64          # 릴리즈. 디�
   `vp-db/src/tests.rs`(실제 SQLite 검색) 양쪽에 케이스를 추가한다.
 - 코드 주석·식별자는 영어, 문서(README, ARCHITECTURE)와 UI 기본 로케일은 한국어.
 
+### Android 테스트는 에뮬레이터로
+
+Android에 영향이 있는 변경(UI·애니메이션·제스처·미디어 로딩·네이티브 기능)은 데스크톱 브라우저 확인으로 끝내지 않고
+**Android 에뮬레이터에 릴리즈 APK를 설치해 확인한다**. 데스크톱 Chromium·디버그 빌드에서는 멀쩡해도 릴리즈 WebView에서만
+깨지는 문제가 있었다(축소된 CSS 시간 값, 평문 HTTP 차단, 터치 탭 중 스타일 재계산).
+
+- AVD: `vptest`(`system-images;android-35;google_apis;arm64-v8a`, pixel_7). 없으면 `sdkmanager`로 이미지를 받고
+  `avdmanager create avd -n vptest -k <이미지> -d pixel_7`. 실행: `emulator -avd vptest -no-snapshot -no-audio -no-boot-anim`
+  (백그라운드, 샌드박스 밖), `adb wait-for-device` 후 `sys.boot_completed`가 1이 될 때까지 기다린다.
+- 설치·데이터: `adb install -r <apk>`, 합성 이미지(위·아래·가운데에 글자를 넣은 그라디언트 JPEG)를 `adb push`로
+  `/sdcard/Pictures/<폴더>`에 넣고 `adb shell appops set com.viewport.app MANAGE_EXTERNAL_STORAGE allow`. 라이브러리·소스는
+  UI로 만들거나 DevTools에서 `__TAURI_INTERNALS__.invoke('create_bundle'|'add_local_source'|'scan_source', …)`로 만든다.
+- 조작: `adb shell input tap/swipe`(실제 터치). 좌표 = CSS px × `devicePixelRatio` + WebView의 `screenY`. 화면은
+  `adb exec-out screencap -p`. 에뮬레이터는 느리므로 탭 사이에 충분히 기다리고, 결과가 이상하면 먼저 탭이 맞았는지 본다.
+- 측정: WebView DevTools는 디버그 빌드, 또는 릴리즈에 `tauri` 크레이트의 `devtools` 기능을 **임시로** 켠 빌드(커밋하지 않음)에서
+  열린다. `adb forward tcp:9333 localabstract:webview_devtools_remote_<pid>` 후 CDP(`/json` → WebSocket `Runtime.evaluate`)로
+  요소의 위치·`getAnimations()`를 프레임마다(`requestAnimationFrame`) 기록한다. 느리게 보려면 `--t-pop`/`--t-med`나
+  `windows.switch_anim_ms`를 늘린다(단, 최종 확인은 기본 속도로).
+- DevTools 없는 최종 릴리즈 APK는 `adb shell screenrecord`로 녹화하고 `ffmpeg -vf fps=60`으로 프레임을 뽑아 중간 프레임이
+  있는지 본다(애니메이션이 한 프레임에 끝나면 동작하지 않는 것).
+- 끝나면 `adb emu kill`로 에뮬레이터를 끈다.
+
 ### 작업 완료 루틴
 
 빌드해도 될 만큼 작업이 끝나면(사용자가 따로 말하지 않아도) 다음을 순서대로 한다.
@@ -222,3 +244,4 @@ npm run tauri android build -- --apk --target aarch64          # 릴리즈. 디�
 4. **APK만** temp.hysong.dev에 올리고 링크를 사용자에게 알린다(MSI는 올리지 않고 `target/release/bundle/msi/` 경로만 알림):
    `python -I scripts/upload-temp.py src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk ViewPort-<버전>.apk 3`
    (마지막 인수는 최대 다운로드 횟수). 업로드는 네트워크가 필요하므로 샌드박스 밖에서 실행한다.
+   Android에 영향이 있는 변경이면 올리기 전에 그 APK를 에뮬레이터에서 확인한다(위 'Android 테스트는 에뮬레이터로').
