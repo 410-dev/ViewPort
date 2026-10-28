@@ -706,6 +706,8 @@ pub struct ViewerSettings {
     pub load_retries: u32,
     /// Wait before each of those retries.
     pub load_retry_ms: u32,
+    /// JPEG quality (0..=100) of a video frame saved as a picture from the viewer.
+    pub frame_quality: u8,
 }
 
 impl Default for ViewerSettings {
@@ -734,6 +736,7 @@ impl Default for ViewerSettings {
             convert_image_extensions: ["heic", "heif", "hif"].map(String::from).to_vec(),
             load_retries: 3,
             load_retry_ms: 700,
+            frame_quality: 95,
         }
     }
 }
@@ -1102,6 +1105,9 @@ pub struct KeyBindings {
     pub zoom_out: Vec<String>,
     pub zoom_reset: Vec<String>,
     pub toggle_immersive: Vec<String>,
+    /// Viewer: save the video frame on screen as a picture, delete the item shown.
+    pub save_frame: Vec<String>,
+    pub delete_item: Vec<String>,
 }
 
 impl Default for KeyBindings {
@@ -1133,6 +1139,8 @@ impl Default for KeyBindings {
             zoom_out: v(&["-"]),
             zoom_reset: v(&["0"]),
             toggle_immersive: v(&["h"]),
+            save_frame: v(&["c"]),
+            delete_item: v(&["Delete"]),
         }
     }
 }

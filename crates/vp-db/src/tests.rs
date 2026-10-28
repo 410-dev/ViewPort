@@ -210,6 +210,18 @@ fn upsert_keeps_id() {
 }
 
 #[test]
+fn still_saved_beside_a_video() {
+    let lib = library();
+    // Item 4 is trip/a1.mp4 in source 1, seen by scan 1.
+    let id = lib.db.add_beside(4, "trip/a1_00-00-12.345.jpg", MediaKind::Image, 1234, Some(1920), Some(1080), OCT18).unwrap();
+    let loc = lib.db.media_location(id).unwrap().unwrap();
+    assert_eq!((loc.source_id, loc.rel_path.as_str()), (1, "trip/a1_00-00-12.345.jpg"));
+    assert_eq!(lib.db.media_brief(&[id]).unwrap()[0].kind, "image");
+    assert_eq!(lib.db.finish_scan(1, 1).unwrap(), 0, "the same scan generation keeps it");
+    assert!(lib.ids("유형(사진)").contains(&id));
+}
+
+#[test]
 fn rescan_marks_missing_and_invalidates_thumbs() {
     let lib = library();
     let ok = ThumbRow { status: ThumbStatus::Ok, pack: 0, offset: 0, len: 10, width: 4, height: 3, mime: "image/jpeg".into() };

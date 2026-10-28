@@ -132,8 +132,8 @@ mod imp {
         Some(out.paths.into_iter().zip(out.times).collect())
     }
 
-    pub fn frame(path: &Path, at_ms: i64, max_edge: u32, quality: u8) -> Option<Vec<u8>> {
-        let args = json!({ "path": path, "atMs": at_ms, "maxEdge": max_edge, "quality": quality });
+    pub fn frame(path: &Path, at_ms: i64, max_edge: u32, quality: u8, exact: bool) -> Option<Vec<u8>> {
+        let args = json!({ "path": path, "atMs": at_ms, "maxEdge": max_edge, "quality": quality, "exact": exact });
         let out: FramePath = HANDLE.get()?.run_mobile_plugin("frame", args).ok()?;
         let data = std::fs::read(&out.path).ok();
         let _ = std::fs::remove_file(&out.path);
@@ -196,7 +196,7 @@ mod imp {
         None
     }
 
-    pub fn frame(_path: &Path, _at_ms: i64, _max_edge: u32, _quality: u8) -> Option<Vec<u8>> {
+    pub fn frame(_path: &Path, _at_ms: i64, _max_edge: u32, _quality: u8, _exact: bool) -> Option<Vec<u8>> {
         None
     }
 

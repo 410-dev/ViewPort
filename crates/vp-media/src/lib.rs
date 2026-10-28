@@ -191,6 +191,18 @@ impl Ffmpeg {
     /// Grabs one frame at `at_secs`, scaled to fit `max_edge`, as JPEG.
     /// `hwaccel` is an FFmpeg `-hwaccel` method ("auto", "d3d11va", ...).
     pub fn frame(&self, input: Input, at_secs: f64, max_edge: u32, hwaccel: Option<&str>) -> Result<Vec<u8>> {
+        self.frame_q(input, at_secs, max_edge, hwaccel, 4)
+    }
+
+    /// The frame at `at_secs` at its own size, as JPEG of `quality` (0..=100): a still
+    /// saved from a video.
+    pub fn still(&self, input: Input, at_secs: f64, quality: u8) -> Result<Vec<u8>> {
+        // FFmpeg's JPEG scale runs from 2 (best) to 31.
+        let q = 2 + (100 - quality.min(100) as u32) * 29 / 100;
+        self.frame_q(input, at_secs, u32::MAX, None, q)
+    }
+
+    fn frame_q(&self, input: Input, at_secs: f64, max_edge: u32, hwaccel: Option<&str>, qscale: u32) -> Result<Vec<u8>> {
         let mut args: Vec<String> = vec!["-v".into(), "error".into()];
         if let Some(m) = hwaccel {
             args.extend(["-hwaccel".into(), m.into()]);
@@ -203,14 +215,14 @@ impl Ffmpeg {
         if !matches!(input, Input::File(_)) {
             args.extend(["-ss".into(), format!("{at_secs:.3}")]);
         }
-        let e = max_edge.max(16);
+        args.extend(["-frames:v".into(), "1".into()]);
+        if max_edge != u32::MAX {
+            let e = max_edge.max(16);
+            args.extend(["-vf".into(), format!("scale='if(gt(iw,ih),min({e},iw),-2)':'if(gt(iw,ih),-2,min({e},ih))'")]);
+        }
         args.extend([
-            "-frames:v".into(),
-            "1".into(),
-            "-vf".into(),
-            format!("scale='if(gt(iw,ih),min({e},iw),-2)':'if(gt(iw,ih),-2,min({e},ih))'"),
             "-q:v".into(),
-            "4".into(),
+            qscale.to_string(),
             "-f".into(),
             "image2pipe".into(),
             "-vcodec".into(),
@@ -600,6 +612,8 @@ mod tests {
         assert_eq!(&jpg[..2], &[0xFF, 0xD8]);
         let piped = ff.frame(Input::Stream(Box::new(std::fs::File::open(&src).unwrap())), 0.5, 100, None).unwrap();
         assert_eq!(&piped[..2], &[0xFF, 0xD8]);
+        let still = ff.still(Input::File(src.clone()), 0.5, 95).unwrap();
+        assert_eq!(&still[..2], &[0xFF, 0xD8]);
         let out = tmp.join("out.mp4");
         let mut last = 0.0;
         ff.convert(&mut || Ok(Input::File(src.clone())), &out, &probe, &[], &mut |p| last = p, &AtomicBool::new(false))

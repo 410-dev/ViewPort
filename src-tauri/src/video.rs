@@ -134,7 +134,7 @@ impl Workspace {
         let at = duration.map(|d| d as f64 / 1000.0 * s.video_frame_position as f64).unwrap_or(0.0);
         let Some(ff) = self.ffmpeg() else {
             let Some(path) = self.os_media_path(drivers, loc)? else { return Ok(None) };
-            return Ok(crate::platform::frame(&path, (at * 1000.0) as i64, s.max_edge_px, s.quality));
+            return Ok(crate::platform::frame(&path, (at * 1000.0) as i64, s.max_edge_px, s.quality, false));
         };
         let hw = crate::recent::cached_app_settings().hardware;
         let hwaccel = hw.hwaccel();
@@ -154,6 +154,16 @@ impl Workspace {
             }
         }
         Ok(None)
+    }
+
+    /// The frame at `at_ms` at the video's own size, as JPEG (a still saved from the viewer).
+    pub fn video_still(&self, drivers: &DriverRegistry, loc: &MediaLocation, at_ms: i64, quality: u8) -> CmdResult<Vec<u8>> {
+        if let Some(ff) = self.ffmpeg() {
+            return ff.still(self.media_input(drivers, loc)?, at_ms as f64 / 1000.0, quality).map_err(|e| CmdError::new("media", e));
+        }
+        let path = self.os_media_path(drivers, loc)?.ok_or_else(|| CmdError::new("unsupported", "no video decoder here"))?;
+        // Max edge 0: the frame as decoded, not scaled.
+        crate::platform::frame(&path, at_ms, 0, quality, true).ok_or_else(|| CmdError::new("media", "no frame produced"))
     }
 
     /// Decodes an image the built-in decoder cannot read (HEIF/HEIC, AVIF, ...) with

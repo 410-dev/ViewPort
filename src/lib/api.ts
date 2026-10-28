@@ -264,6 +264,8 @@ export interface KeyBindings {
   zoom_out: string[];
   zoom_reset: string[];
   toggle_immersive: string[];
+  save_frame: string[];
+  delete_item: string[];
 }
 
 export interface Settings {
@@ -370,6 +372,7 @@ export interface AppSettings {
     convert_image_extensions: string[];
     load_retries: number;
     load_retry_ms: number;
+    frame_quality: number;
   };
   ml: {
     runtime_path: string;
@@ -689,6 +692,8 @@ export const api = {
   /** Moves items into `folder` of their own source (names kept). */
   moveMediaTo: (ids: number[], folder: string) => invoke<{ moved: number; failed: string[] }>("move_media_to", { ids, folder }),
   deleteMedia: (ids: number[]) => invoke<{ deleted: number; failed: string[] }>("delete_media", { ids }),
+  /** Saves the frame of video `id` at `atMs` as a picture beside it; returns the new item's id. */
+  saveVideoFrame: (id: number, atMs: number) => invoke<number>("save_video_frame", { id, atMs }),
 
   // Shard sources (src-tauri/src/shards.rs)
   shardStatus: () => invoke<ShardStatus[]>("shard_status"),

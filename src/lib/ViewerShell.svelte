@@ -195,6 +195,24 @@
     equalSizes();
   }
 
+  /** Item `id` was deleted: every pane drops it and shows the item after it (or the one
+   * before, at the end). A pane left with nothing closes. */
+  function dropItem(id: number) {
+    for (let i = panes.length - 1; i >= 0; i--) {
+      const p = panes[i];
+      const at = p.ids.indexOf(id);
+      if (at < 0) continue;
+      const ids = p.ids.filter((x) => x !== id);
+      if (!ids.length) {
+        if (panes.length === 1) return onclose(undefined);
+        remove(i);
+        continue;
+      }
+      p.ids = ids;
+      if (p.index > at || p.index >= ids.length) p.index = Math.min(Math.max(0, p.index - (p.index > at ? 1 : 0)), ids.length - 1);
+    }
+  }
+
   /** Opened from a pane's explorer: the pane views that list. */
   function openIn(i: number, ids: number[], index: number, state: BrowseState) {
     const p = panes[i];
@@ -310,6 +328,7 @@
             onpop={isMobile ? undefined : () => pop(i)}
             onbrowse={panes.length > 1 ? () => (p.browse = lastBrowse.get(p.key) ?? start()) : undefined}
             onpull={(v) => (pulled = v)}
+            onremoved={dropItem}
           />
         {/if}
       </div>

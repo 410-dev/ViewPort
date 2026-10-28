@@ -356,6 +356,7 @@ export const SECTIONS: Section[] = [
           { kind: "list", ...app({ path: "viewer.convert_image_extensions", label: "set.convertImageExt", help: "set.convertImageExt.help" }) },
           { kind: "number", ...app({ path: "viewer.load_retries", label: "set.loadRetries", help: "set.loadRetries.help" }), min: 0, max: 10, step: 1 },
           { kind: "number", ...app({ path: "viewer.load_retry_ms", label: "set.loadRetryMs" }), min: 100, max: 10000, step: 100, unit: "ms" },
+          { kind: "number", ...app({ path: "viewer.frame_quality", label: "set.frameQuality", help: "set.frameQuality.help" }), min: 1, max: 100, step: 1 },
         ],
       },
       {
@@ -713,6 +714,8 @@ export const SECTIONS: Section[] = [
           key("zoom_out", "key.zoom_out"),
           key("zoom_reset", "key.zoom_reset"),
           key("toggle_immersive", "key.toggle_immersive"),
+          key("save_frame", "key.save_frame"),
+          key("delete_item", "key.delete_item"),
         ],
       },
     ],

@@ -1327,6 +1327,54 @@ pub(crate) fn delete_one(ws: &Workspace, registry: &vp_driver::DriverRegistry, i
     Ok(())
 }
 
+/// Saves the frame of video `id` at `at_ms` as a JPEG picture next to the video (same
+/// folder, name with the time) and adds it to the library. Returns the new item's id.
+#[tauri::command]
+pub async fn save_video_frame(app: AppHandle, state: State<'_, AppState>, id: i64, at_ms: i64) -> CmdResult<i64> {
+    let ws = workspace(&state)?;
+    let registry = app.state::<AppState>().drivers.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let loc = ws.read_db.lock().unwrap().media_location(id)?.ok_or_else(|| CmdError::new("not_found", "item"))?;
+        let source = ws.read_db.lock().unwrap().source(loc.source_id)?.ok_or_else(|| CmdError::new("not_found", "source"))?;
+        let driver = ws.driver(&registry, &source)?;
+        if !driver.capabilities().write {
+            return Err(CmdError::new("read_only", "this source cannot be written to"));
+        }
+        let quality = crate::recent::cached_app_settings().viewer.frame_quality;
+        let jpeg = ws.video_still(&registry, &loc, at_ms.max(0), quality)?;
+        let rel = still_name(&loc.rel_path, at_ms.max(0), |p| driver.stat(p).is_ok());
+        driver.write(&rel, &jpeg).map_err(|e| CmdError::new("driver", format!("{rel}: {e}")))?;
+        let size = image::ImageReader::new(std::io::Cursor::new(&jpeg)).with_guessed_format().ok().and_then(|r| r.into_dimensions().ok());
+        let new_id = ws.write_db.lock().unwrap().add_beside(
+            id,
+            &rel,
+            vp_core::MediaKind::Image,
+            jpeg.len() as u64,
+            size.map(|s| s.0),
+            size.map(|s| s.1),
+            now_ms(),
+        )?;
+        Ok(new_id)
+    })
+    .await
+    .map_err(|e| CmdError::new("io", e))?
+}
+
+/// `folder/clip.mp4` at 83.456 s → `folder/clip_00-01-23.456.jpg`, with ` (2)`, ` (3)`, ...
+/// added while `taken` says the name is in use.
+fn still_name(video: &str, at_ms: i64, taken: impl Fn(&str) -> bool) -> String {
+    let stem = video.rsplit_once('.').map_or(video, |(s, _)| s);
+    let (s, ms) = (at_ms / 1000, at_ms % 1000);
+    let base = format!("{stem}_{:02}-{:02}-{:02}.{ms:03}", s / 3600, s / 60 % 60, s % 60);
+    let mut name = format!("{base}.jpg");
+    let mut n = 2;
+    while taken(&name) {
+        name = format!("{base} ({n}).jpg");
+        n += 1;
+    }
+    name
+}
+
 // ---------------------------------------------------------------- folders
 
 /// Thumbnails standing for each folder of a source (for folder tiles), in `folders` order.
@@ -1871,5 +1919,14 @@ mod folder_tests {
         assert!(ws.read_db.lock().unwrap().folder_values(src, "archive/first").unwrap().is_empty());
         assert!(!media.join("archive/first/deep").exists(), "emptied folders are removed");
         assert!(media.join("archive/first/notes.txt").is_file());
+    }
+}
+
+#[cfg(test)]
+mod still_tests {
+    #[test]
+    fn still_names() {
+        assert_eq!(super::still_name("a/clip.mp4", 83_456, |_| false), "a/clip_00-01-23.456.jpg");
+        assert_eq!(super::still_name("v.mkv", 3_600_000 + 5, |p| p == "v_01-00-00.005.jpg"), "v_01-00-00.005 (2).jpg");
     }
 }

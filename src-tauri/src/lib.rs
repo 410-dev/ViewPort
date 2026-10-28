@@ -144,6 +144,7 @@ pub fn run() {
             commands::export_media,
             commands::export_folder,
             commands::delete_media,
+            commands::save_video_frame,
             commands::rename_media,
             commands::move_media_to,
             commands::folder_samples,

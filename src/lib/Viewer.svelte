@@ -11,6 +11,7 @@
     thumbUrl,
     platformApi,
     onConvert,
+    asCmdError,
     FAVORITE_FIELD,
     type ConvertEvent,
     type LoopSegment,
@@ -53,6 +54,7 @@
     onpop,
     onbrowse,
     onpull,
+    onremoved,
   }: {
     ids: number[];
     index: number;
@@ -71,6 +73,8 @@
     onbrowse?: () => void;
     /** How far a pull-to-close drag has gone (0 none .. 1 smallest), so the shell can fade. */
     onpull?: (progress: number) => void;
+    /** The item `id` was deleted: the shell drops it from every pane. */
+    onremoved?: (id: number) => void;
   } = $props();
 
   let showInfo = $state(false);
@@ -255,6 +259,58 @@
         onchanged?.();
       })
       .catch(() => favs.delete(target));
+  }
+
+  // ---- save the video frame on screen as a picture (next to the video), delete the item
+  let savingFrame = $state(false);
+  /** A short message over the dock (frame saved, or why it was not). */
+  let notice = $state<{ text: string; err: boolean } | null>(null);
+  let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+  function showNotice(text: string, err = false) {
+    notice = { text, err };
+    clearTimeout(noticeTimer);
+    noticeTimer = setTimeout(() => (notice = null), err ? 5000 : 2200);
+  }
+
+  function saveFrame() {
+    const target = id;
+    if (target === undefined || cur?.kind !== "video" || !video || savingFrame) return;
+    savingFrame = true;
+    api
+      .saveVideoFrame(target, Math.round(video.currentTime * 1000))
+      .then(() => {
+        showNotice(t("viewer.frameSaved"));
+        broadcast("media");
+        onchanged?.();
+      })
+      .catch((e) => showNotice(`${t("viewer.frameFailed")}: ${asCmdError(e).message}`, true))
+      .finally(() => (savingFrame = false));
+  }
+
+  let confirmDelete = $state<number | null>(null);
+  let deleting = $state(false);
+  $effect(() => {
+    if (confirmDelete !== null) return onBack(() => !deleting && (confirmDelete = null));
+  });
+
+  async function deleteConfirmed() {
+    const target = confirmDelete;
+    if (target === null) return;
+    deleting = true;
+    try {
+      const r = await api.deleteMedia([target]);
+      if (r.failed.length) showNotice(`${t("del.failed", { n: r.failed.length })} ${r.failed[0]}`, true);
+      else {
+        broadcast("media", [target]);
+        onchanged?.();
+        onremoved?.(target);
+      }
+    } catch (e) {
+      showNotice(asCmdError(e).message, true);
+    } finally {
+      deleting = false;
+      confirmDelete = null;
+    }
   }
 
   // Huge images show a display copy. Zooming in past its pixels loads a copy twice as
@@ -635,6 +691,10 @@
 
   function onKey(e: KeyboardEvent) {
     if (!active || isTyping(e)) return;
+    if (confirmDelete !== null) {
+      if (e.key === "Escape" && !deleting) confirmDelete = null;
+      return;
+    }
     const k = settings.keys;
     const isVideo = brief?.kind === "video";
     let handled = true;
@@ -653,6 +713,8 @@
     else if (matches(e, k.zoom_in) && zoomable) zoom.zoomBy(step());
     else if (matches(e, k.zoom_out) && zoomable) zoom.zoomBy(1 / step());
     else if (matches(e, k.zoom_reset) && zoomable) zoom.reset();
+    else if (matches(e, k.save_frame ?? []) && isVideo) saveFrame();
+    else if (matches(e, k.delete_item ?? []) && id !== undefined) confirmDelete = id;
     else handled = false;
     if (handled) {
       e.preventDefault();
@@ -1154,6 +1216,11 @@
       </div>
     {/key}
   {/if}
+  {#if notice && !immersive.on}
+    <div class="banner notice" class:err={notice.err} role="status" transition:pop={{ base: "translateX(-50%)" }}>
+      <span>{notice.text}</span>
+    </div>
+  {/if}
   {#if convertError && !immersive.on}
     <div class="banner err" role="alert" transition:pop={{ base: "translateX(-50%)" }}>
       <span>{t("viewer.convertFailed")}: {convertError}</span>
@@ -1254,7 +1321,15 @@
       <button class="hb fav" class:on={isFav} aria-pressed={isFav} onclick={() => setFav(!isFav)} title={t("viewer.favorite")}
         ><Icon name="heart" size={15} /></button
       >
+      {#if cur?.kind === "video"}
+        <button class="hb" disabled={savingFrame} onclick={saveFrame} title={t("viewer.saveFrame")} aria-label={t("viewer.saveFrame")}
+          >{#if savingFrame}<span class="spinner"></span>{:else}<Icon name="camera" size={15} />{/if}</button
+        >
+      {/if}
       <button class="hb" class:on={showInfo} onclick={() => (showInfo = !showInfo)} title={t("viewer.info")}><Icon name="info" size={15} /></button>
+      <button class="hb del" onclick={() => id !== undefined && (confirmDelete = id)} title={t("viewer.delete")} aria-label={t("viewer.delete")}
+        ><Icon name="trash" size={15} /></button
+      >
       {#if onbrowse}
         <button class="hb" onclick={onbrowse} title={t("viewer.browse")}><Icon name="search" size={15} /></button>
       {/if}
@@ -1268,6 +1343,31 @@
       <button class="hb" onclick={() => toggleFullscreen()} title={t("viewer.fullscreen")}><Icon name="maximize" size={15} /></button>
     </span>
   </div>
+  {#if confirmDelete !== null}
+    <div
+      out:fade
+      class="scrim"
+      role="presentation"
+      onpointerdown={(e) => e.stopPropagation()}
+      onpointerup={(e) => e.stopPropagation()}
+      onclick={(e) => e.target === e.currentTarget && !deleting && (confirmDelete = null)}
+    >
+      <div out:pop class="dialog confirm" role="alertdialog" aria-modal="true" aria-labelledby="vdel-title">
+        <header><h2 id="vdel-title">{t("del.title")}</h2></header>
+        <div class="body">
+          <p class="text"><strong>{known.get(confirmDelete)?.name ?? cur?.name ?? ""}</strong></p>
+          <p class="text">{t("viewer.deleteBody")}</p>
+        </div>
+        <footer>
+          <span class="grow"></span>
+          <button class="btn ghost" disabled={deleting} onclick={() => (confirmDelete = null)}>{t("common.cancel")}</button>
+          <button class="btn danger" disabled={deleting} onclick={deleteConfirmed}>
+            {#if deleting}<span class="spinner"></span>{:else}<Icon name="trash" size={14} />{/if}{t("del.confirm")}
+          </button>
+        </footer>
+      </div>
+    </div>
+  {/if}
   {#if prefs.app?.viewer.show_nav_buttons ?? true}
     <button class="nav prev" class:visible={showHud} onclick={() => go(-1)} aria-label={t("viewer.prev")}><Icon name="chevronLeft" size={26} /></button>
     <button class="nav next" class:visible={showHud} onclick={() => go(1)} aria-label={t("viewer.next")}><Icon name="chevronRight" size={26} /></button>
@@ -1402,6 +1502,12 @@
   }
   .banner .bar {
     width: 120px;
+  }
+  .banner.notice {
+    padding-right: 18px;
+  }
+  .banner.notice.err {
+    bottom: var(--above-dock);
   }
   .banner.err {
     bottom: calc(var(--above-dock) + 52px);
@@ -1623,6 +1729,12 @@
   }
   .hb.fav.on {
     color: #ff4d6d;
+  }
+  .hb.del:hover {
+    color: var(--danger);
+  }
+  .hb:disabled {
+    opacity: 0.6;
   }
   .hb.fav.on :global(path),
   .fav-flash.on :global(path) {

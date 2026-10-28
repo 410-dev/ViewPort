@@ -462,6 +462,36 @@ impl Db {
         Ok(self.conn.last_insert_rowid())
     }
 
+    /// Records a file the app wrote into the source of item `beside` (a still saved from a
+    /// video), as seen by the same scan so the next scan keeps it. Returns the new item's id.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_beside(
+        &self,
+        beside: i64,
+        rel_path: &str,
+        kind: MediaKind,
+        size: u64,
+        width: Option<u32>,
+        height: Option<u32>,
+        now_ms: i64,
+    ) -> Result<i64> {
+        let (source_id, seen_gen): (i64, i64) =
+            self.conn.query_row("SELECT source_id, seen_gen FROM media WHERE id = ?1", [beside], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        self.upsert_media(&NewMedia {
+            source_id,
+            rel_path: rel_path.to_string(),
+            kind,
+            size,
+            created_ms: Some(now_ms),
+            modified_ms: Some(now_ms),
+            added_ms: now_ms,
+            duration_ms: None,
+            width,
+            height,
+            seen_gen,
+        })
+    }
+
     /// Inserts or updates the item at `(source_id, rel_path)` and returns its id.
     pub fn upsert_media(&self, m: &NewMedia) -> Result<i64> {
         let (parent, name) = match m.rel_path.rsplit_once('/') {

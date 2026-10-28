@@ -52,6 +52,8 @@ class FrameArgs {
   var atMs: Long = 0
   var maxEdge: Int = 320
   var quality: Int = 85
+  /** The frame at that very time (not the keyframe before it); with maxEdge 0, unscaled. */
+  var exact: Boolean = false
 }
 
 @InvokeArg
@@ -343,8 +345,12 @@ class ViewPortPlugin(private val activity: Activity) : Plugin(activity) {
       val r = MediaMetadataRetriever()
       try {
         r.setDataSource(args.path)
-        val edge = args.maxEdge.coerceAtLeast(16)
-        val bitmap = grab(r, args.atMs * 1000, edge) ?: grab(r, 0, edge) ?: throw Exception("no frame produced")
+        val bitmap = if (args.exact && args.maxEdge <= 0) {
+          r.getFrameAtTime(args.atMs * 1000, MediaMetadataRetriever.OPTION_CLOSEST) ?: throw Exception("no frame produced")
+        } else {
+          val edge = args.maxEdge.coerceAtLeast(16)
+          grab(r, args.atMs * 1000, edge) ?: grab(r, 0, edge) ?: throw Exception("no frame produced")
+        }
         val out = File.createTempFile("vpframe", ".jpg", activity.cacheDir)
         out.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, args.quality.coerceIn(1, 100), it) }
         bitmap.recycle()
