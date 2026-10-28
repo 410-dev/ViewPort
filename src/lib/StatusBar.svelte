@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { pop } from "./ui/motion";
+  import { fade, pop } from "./ui/motion";
   import { onBack } from "./back.svelte";
   import { api, type TaskInfo } from "./api";
   import { fmtBytes, fmtCount } from "./format";
@@ -67,8 +67,8 @@
 </footer>
 
 {#if open}
-  <div class="pop-scrim" role="presentation" onclick={() => (open = false)}></div>
-  <div class="pop" role="dialog" aria-label={t("status.tasks")} transition:pop>
+  <div class="pop-scrim" role="presentation" transition:fade onclick={() => (open = false)}></div>
+  <div class="pop" role="dialog" aria-label={t("status.tasks")} transition:pop={{ y: 24 }}>
     <header>
       <span class="eyebrow">{t("status.tasks")}</span>
       <span class="grow"></span>

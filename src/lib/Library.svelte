@@ -131,6 +131,8 @@
   const columns = $derived(columnsFor(ui().columns));
   /** The source whose mirrors are being set up. */
   let mirroring = $state<SourceRow | null>(null);
+  /** Sources holding a replica mirror: target id → name of the source it copies. */
+  let replicas = $state<Record<number, string>>({});
   /** Bumped when a new image decoder arrives: views remount and drop thumbnails they gave up on. */
   let decoderEpoch = $state(0);
 
@@ -152,6 +154,14 @@
     }
     refreshShards();
     refreshOffline();
+    refreshReplicas();
+  }
+  async function refreshReplicas() {
+    const mirrors = await api.mirrorList().catch(() => null);
+    if (!mirrors) return;
+    const next: Record<number, string> = {};
+    for (const m of mirrors.filter((m) => m.replica)) next[m.target_id] = sources.find((s) => s.id === m.source_id)?.name ?? `#${m.source_id}`;
+    replicas = next;
   }
   async function refreshOffline() {
     const list = await api.offlineSources().catch(() => offline);
@@ -360,7 +370,7 @@
       invalidate(changed);
       runSearch(false);
     }),
-    onSync("sources", () => refreshSources()),
+    onSync("sources", () => refreshSources().then(() => runSearch(false))),
     onSync("saved", () => refreshSaved()),
     onSync("settings", () => api.getSettings().then((s) => (settings = s))),
   );
@@ -930,6 +940,7 @@
         {saved}
         activeQuery={query}
         {offline}
+        {replicas}
         cansavecurrent={canSaveCurrent}
         closeLabel={embedded ? t("side.closeSplit") : undefined}
         onsavecurrent={() => (savingCurrent = { label: "", error: "" })}
@@ -952,6 +963,13 @@
         ondedup={embedded ? undefined : () => (showDedup = true)}
         onclose={close}
         onsave={() => api.saveBundle().catch((e) => alert(asCmdError(e).message))}
+        onrename={async (name) => {
+          try {
+            onbundle(await api.renameBundle(name));
+          } catch (e) {
+            throw asCmdError(e).message;
+          }
+        }}
       />
       <div class="resizer" role="separator" aria-orientation="vertical" onpointerdown={(e) => drag(e, "sidebar")}></div>
     </div>
@@ -1255,7 +1273,18 @@
 
 
 {#if mirroring}
-  <MirrorDialog source={mirroring} {sources} onclose={() => (mirroring = null)} />
+  <MirrorDialog
+    source={mirroring}
+    {sources}
+    onclose={() => (mirroring = null)}
+    onchange={() => {
+      // Replica mode decides what searches show: here and in other windows.
+      refreshReplicas();
+      invalidate();
+      runSearch(false);
+      broadcast("sources");
+    }}
+  />
 {/if}
 
 {#if showDedup}

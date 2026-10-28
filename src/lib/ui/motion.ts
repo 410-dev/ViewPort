@@ -40,3 +40,45 @@ export function slide(_node: Element, { x = 0, y = 0, duration }: { x?: number; 
     css: (t, u) => `opacity: ${Math.min(1, t * 1.5)}; transform: translate(${u * x}px, ${u * y}px)`,
   };
 }
+
+/**
+ * Opens (and closes) in place by growing from no height, pushing what follows down
+ * smoothly (menus and sections that open inside a list rather than over it).
+ */
+export function expand(node: Element, { duration }: { duration?: number } = {}): TransitionConfig {
+  const st = getComputedStyle(node);
+  const px = (v: string) => parseFloat(v) || 0;
+  const [h, pt, pb, mt, mb] = [st.height, st.paddingTop, st.paddingBottom, st.marginTop, st.marginBottom].map(px);
+  return {
+    duration: reduced() ? 0 : (duration ?? token("--t-pop", 220)),
+    easing: cubicOut,
+    css: (t) =>
+      `overflow: hidden; opacity: ${Math.min(1, t * 1.4)}; height: ${t * h}px; padding-top: ${t * pt}px; padding-bottom: ${t * pb}px;` +
+      ` margin-top: ${t * mt}px; margin-bottom: ${t * mb}px; transform: translateY(${(t - 1) * 6}px)`,
+  };
+}
+
+/**
+ * Slides all the way in from (and out to) the nearest screen `side` (side panels and
+ * sheets that sit against an edge), fading only at the start.
+ */
+export function edge(node: Element, { side = "right", duration }: { side?: "left" | "right" | "bottom"; duration?: number } = {}): TransitionConfig {
+  const r = node.getBoundingClientRect();
+  const dist =
+    side === "right" ? window.innerWidth - r.left : side === "left" ? r.right : window.innerHeight - r.top;
+  const [x, y] = side === "bottom" ? [0, dist] : [side === "left" ? -dist : dist, 0];
+  return {
+    duration: reduced() ? 0 : (duration ?? token("--t-pop", 220) * 1.4),
+    easing: cubicOut,
+    css: (t, u) => `opacity: ${Math.min(1, t * 3)}; transform: translate(${u * x}px, ${u * y}px)`,
+  };
+}
+
+/** Grows into place from a little smaller, fading (a full-screen view opening over the library). */
+export function zoom(_node: Element, { from = 0.9, duration }: { from?: number; duration?: number } = {}): TransitionConfig {
+  return {
+    duration: reduced() ? 0 : (duration ?? token("--t-pop", 220) * 1.2),
+    easing: cubicOut,
+    css: (t, u) => `opacity: ${t}; transform: scale(${from + (1 - from) * t}); transform-origin: center`,
+  };
+}

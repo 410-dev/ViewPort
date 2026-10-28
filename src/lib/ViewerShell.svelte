@@ -8,6 +8,7 @@
   import { prefs } from "./prefs.svelte";
   import { t } from "./i18n.svelte";
   import Viewer from "./Viewer.svelte";
+  import { zoom } from "./ui/motion";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { fullscreenChanged, resetImmersive } from "./immersive.svelte";
 
@@ -19,8 +20,9 @@
    *
    * Dividers between panes are dragged to resize them. A pane dragged past
    * `switch_at_percent` enters switching mode: it takes `switch_main_percent`, the others
-   * fold to a strip showing the edge of their (full-size) picture, and tapping a strip
-   * swaps the two, sliding one aside as the other comes in.
+   * fold to a strip showing the outer edge of their (full-size) picture, and tapping a
+   * strip swaps the two: the divider sweeps across while both pictures stay in place, one
+   * uncovered as the other is covered.
    */
   type Pane = {
     key: number;
@@ -64,7 +66,7 @@
   let sizes = $state<number[]>(untrack(() => initial.map(() => 1 / initial.length)));
   /** Switching mode: the large pane, or null. */
   let main = $state<number | null>(null);
-  /** The large pane before the last switch: the one sliding aside. */
+  /** The large pane before the last switch: the one being covered. */
   let prevMain = $state<number | null>(null);
   let animating = $state(false);
   /**
@@ -151,12 +153,18 @@
 
   /**
    * Switching mode: every pane is drawn at the large size, clipped by its slot and held
-   * against the side facing the large pane, so a folding pane looks pushed aside.
+   * against its outer side, away from the large pane (the large one: away from the pane
+   * it took over from). Pictures then stay put while a divider moves over them; held
+   * against the moving divider instead, a growing pane's picture came in from the far
+   * edge of the screen rather than out of its strip. With two panes a pane never changes
+   * sides, so nothing jumps when a switch starts.
    */
   function anchor(i: number): "start" | "end" | null {
     if (main === null) return null;
-    if (i !== main) return i > main ? "start" : "end";
-    return prevMain !== null && prevMain > i ? "end" : "start";
+    if (i !== main) return i < main ? "start" : "end";
+    const from = prevMain ?? i;
+    if (from !== i) return from > i ? "start" : "end";
+    return i === 0 ? "start" : "end";
   }
 
   /** Scale of a frozen pane in its current slot (never enlarged: the rest stays black). */
@@ -243,6 +251,7 @@
 
 <div
   class="shell"
+  transition:zoom
   class:rows={!cols}
   class:animating
   bind:clientWidth={width}
@@ -306,7 +315,7 @@
       </div>
       {#if main !== null && i !== main}
         <!-- A folded pane: a tap swaps it in. -->
-        <button class="peek" class:end={side === "end"} aria-label={t("viewer.switchPane")} onclick={() => switchTo(i)}></button>
+        <button class="peek" class:end={i < main} aria-label={t("viewer.switchPane")} onclick={() => switchTo(i)}></button>
       {/if}
     </div>
   {/each}
@@ -337,7 +346,7 @@
     position: absolute;
     inset: 0;
   }
-  /* Switching mode: drawn at the large size, against the side facing the large pane. */
+  /* Switching mode: drawn at the large size, against the outer side (`anchor`). */
   .inner.start,
   .inner.end {
     width: var(--big);

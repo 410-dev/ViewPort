@@ -6,6 +6,7 @@
   import { isMobile } from "./platform";
   import { prefs, savePrefs } from "./prefs.svelte";
   import Icon from "./ui/Icon.svelte";
+  import { expand } from "./ui/motion";
 
   /** Bottom banner offering to download the HEIF decoder once an image needed it (`heif.rs`). */
   let { oninstalled }: { oninstalled: () => void } = $props();
@@ -59,7 +60,7 @@
 </script>
 
 {#if visible && status}
-  <div class="banner" role="status">
+  <div class="banner" role="status" transition:expand>
     <Icon name="image" size={15} />
     <span class="text">
       {t("heif.banner")}

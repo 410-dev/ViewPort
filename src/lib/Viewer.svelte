@@ -1,6 +1,6 @@
 <script lang="ts">
   import { dismiss } from "./ui/dismiss";
-  import { fade, pop, slide } from "./ui/motion";
+  import { edge, fade, pop } from "./ui/motion";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { onDestroy, onMount, untrack } from "svelte";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
@@ -1210,7 +1210,7 @@
       onpointerup={(e) => e.stopPropagation()}
       onclick={() => (showInfo = false)}
     ></div>
-    <div class="side" role="presentation" transition:slide={{ x: 24 }} onpointerdown={(e) => e.stopPropagation()} onpointerup={(e) => e.stopPropagation()}>
+    <div class="side" role="presentation" transition:edge onpointerdown={(e) => e.stopPropagation()} onpointerup={(e) => e.stopPropagation()}>
       <InfoPanel ids={[id]} {onchanged} />
     </div>
   {/if}

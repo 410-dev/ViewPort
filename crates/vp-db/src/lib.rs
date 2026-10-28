@@ -338,6 +338,9 @@ pub struct Scope {
     pub recursive: bool,
     /// Sources left out (e.g. ones whose storage is not connected).
     pub exclude_sources: Vec<i64>,
+    /// Folders `(source, folder)` left out unless the search is limited to that source
+    /// (replica mirrors' copies, `Db::replica_folders`). `""` is the whole source.
+    pub exclude_folders: Vec<(i64, String)>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -570,6 +573,15 @@ impl Db {
         if !scope.exclude_sources.is_empty() {
             let ids: Vec<String> = scope.exclude_sources.iter().map(|id| id.to_string()).collect();
             source_filter.push_str(&format!(" AND m.source_id NOT IN ({})", ids.join(",")));
+        }
+        for (source, folder) in scope.exclude_folders.iter().filter(|(s, _)| scope.source_id != Some(*s)) {
+            c.params.push(SqlValue::Int(*source));
+            let s = c.params.len();
+            c.params.push(SqlValue::Text(folder.trim_matches('/').to_string()));
+            let n = c.params.len();
+            source_filter.push_str(&format!(
+                " AND NOT (m.source_id = ?{s} AND (?{n} = '' OR m.parent_path = ?{n} OR substr(m.parent_path, 1, length(?{n}) + 1) = ?{n} || '/'))"
+            ));
         }
         let sql = format!(
             "SELECT m.id, {expr} FROM media m

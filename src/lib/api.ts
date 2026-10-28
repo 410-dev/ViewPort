@@ -488,6 +488,8 @@ export interface TaskInfo {
   label: string;
   detail: string;
   media_id: number | null;
+  /** The source this task fills (a mirror's target). */
+  source_id: number | null;
   done: number;
   total: number | null;
   unit: "items" | "bytes" | "permille";
@@ -581,6 +583,7 @@ export const api = {
   openBundle: (path: string, allowNewer = false) => invoke<BundleSummary>("open_bundle", { path, allowNewer }),
   closeBundle: () => invoke<void>("close_bundle"),
   currentBundle: () => invoke<BundleSummary | null>("current_bundle"),
+  renameBundle: (name: string) => invoke<BundleSummary>("rename_bundle", { name }),
   /** Where a bundle was last browsed on this device (state stored by the library view). */
   lastView: (path: string) => invoke<unknown>("last_view", { path }),
   saveLastView: (path: string, view: unknown) => invoke<void>("save_last_view", { path, view }),
@@ -720,9 +723,9 @@ export const api = {
     targetId: number,
     targetFolder: string,
     enabled: boolean,
-    propagateDeletes: boolean,
+    replica: boolean,
     triggers?: MirrorTriggers,
-  ) => invoke<number>("mirror_save", { id, sourceId, targetId, targetFolder, enabled, propagateDeletes, triggers: triggers ?? null }),
+  ) => invoke<number>("mirror_save", { id, sourceId, targetId, targetFolder, enabled, replica, triggers: triggers ?? null }),
   mirrorDelete: (id: number) => invoke<void>("mirror_delete", { id }),
   mirrorSync: (id: number) => invoke<void>("mirror_sync", { id }),
   dupScan: (sources: number[], across: boolean) => invoke<DupScan>("dup_scan", { sources, across }),
@@ -830,7 +833,9 @@ export interface MirrorRow {
   target_id: number;
   target_folder: string;
   enabled: boolean;
-  propagate_deletes: boolean;
+  /** Replica mode: files gone from the source are deleted from the copy, and the copies are
+   *  left out of searches not limited to the target source. */
+  replica: boolean;
   created_ms: number;
   last_sync_ms: number | null;
   last_result: string | null;

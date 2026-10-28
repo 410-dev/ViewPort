@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api, type Vocabulary } from "../api";
   import { t, tx } from "../i18n.svelte";
+  import { pop } from "../ui/motion";
   import { normalize, opAllowed, quoteParam, type Lang, type Token } from "../query";
 
   /**
@@ -181,7 +182,7 @@
     onblur={() => setTimeout(() => (open = false), 150)}
   ></textarea>
   {#if open}
-    <ul class="menu" role="listbox">
+    <ul class="menu" role="listbox" transition:pop={{ y: -4, duration: 140 }}>
       {#each items as it, i (it.label + i)}
         <li>
           <button

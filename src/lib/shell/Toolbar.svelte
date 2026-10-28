@@ -187,7 +187,7 @@
 </div>
 
 {#if basic}
-  <div class="pop-scrim" role="presentation" onclick={() => (basic = false)}></div>
+  <div class="pop-scrim" role="presentation" transition:fade onclick={() => (basic = false)}></div>
   <div class="pop" transition:pop={{ base: "translateX(-50%)" }}>
     <BasicSearch onquery={(text) => (query = text)} onclose={() => (basic = false)} />
   </div>

@@ -35,6 +35,8 @@ pub struct BundleSummary {
 
 pub struct Workspace {
     pub bundle: Bundle,
+    /// The bundle's display name (`info.json`), which can change while it is open.
+    pub name: RwLock<String>,
     pub settings: RwLock<Settings>,
     /// A read connection of the viewer's own (not for encrypted bundles, which have one
     /// in-memory connection): background work holding `read_db` never makes it wait.
@@ -168,6 +170,7 @@ impl Workspace {
         let cache = MediaCache::new(capacity, c.chunk_bytes, c.max_item_bytes);
         let prefetch_permits = Arc::new(tokio::sync::Semaphore::new(c.prefetch_workers.max(1) as usize));
         Ok(Self {
+            name: RwLock::new(bundle.info.name.clone()),
             bundle,
             write_db,
             read_db,
@@ -190,6 +193,24 @@ impl Workspace {
             view_db,
             view_locations: Mutex::default(),
         })
+    }
+
+    /// Renames the bundle (its `info.json` name; the folder stays).
+    pub fn rename(&self, name: &str) -> CmdResult<()> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(CmdError::new("invalid", "the name is empty"));
+        }
+        if !self.autosave() {
+            return Err(CmdError::new("read_only", "the bundle is open without autosave"));
+        }
+        // From disk: the lock may have changed since the bundle was opened.
+        let mut b = self.bundle.clone();
+        b.info = vp_bundle::Bundle::read_info(&b.root)?;
+        b.info.name = name.to_string();
+        b.write_info()?;
+        *self.name.write().unwrap() = b.info.name;
+        Ok(())
     }
 
     /// Whether changes are written to the bundle as they happen.
@@ -327,7 +348,7 @@ impl Workspace {
     pub fn summary(&self) -> BundleSummary {
         BundleSummary {
             path: self.bundle.root.display().to_string(),
-            name: self.bundle.info.name.clone(),
+            name: self.name.read().unwrap().clone(),
             mode: self.bundle.mode,
             bundle_version: self.bundle.info.bundle_version,
             locked: self.key.is_some(),

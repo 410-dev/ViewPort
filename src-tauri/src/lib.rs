@@ -75,6 +75,7 @@ pub fn run() {
             commands::open_bundle,
             commands::close_bundle,
             commands::current_bundle,
+            commands::rename_bundle,
             commands::recent_bundles,
             commands::forget_recent_bundle,
             commands::last_view,

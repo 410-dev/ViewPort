@@ -418,6 +418,13 @@ fn folder_browsing() {
     assert_eq!(lib.db.search_in(&all, &lib.reg, &ctx, &direct).unwrap().len(), 3);
     let deep = Scope { recursive: true, ..direct };
     assert_eq!(lib.db.search_in(&all, &lib.reg, &ctx, &deep).unwrap().len(), 6, "tripx is not inside trip");
+    // A replica folder is left out of searches everywhere but in its own source.
+    let total = lib.db.search_in(&all, &lib.reg, &ctx, &Scope::default()).unwrap().len();
+    let hide = vec![(1, "trip".to_string())];
+    let hidden = Scope { exclude_folders: hide.clone(), ..Default::default() };
+    assert_eq!(lib.db.search_in(&all, &lib.reg, &ctx, &hidden).unwrap().len(), total - 6, "trip and below, not tripx");
+    let own = Scope { source_id: Some(1), folder: Some("trip".into()), recursive: true, exclude_folders: hide, ..Default::default() };
+    assert_eq!(lib.db.search_in(&all, &lib.reg, &ctx, &own).unwrap().len(), 6);
 
     // Folder operations work on everything inside, not on look-alike siblings.
     assert_eq!(lib.db.folder_media(1, "trip/day1").unwrap().len(), 2);
@@ -795,6 +802,9 @@ fn mirrors_track_what_they_copied() {
     lib.db.save_mirror(Some(id), 1, 2, "elsewhere", true, true, 1).unwrap();
     assert!(lib.db.mirror_items(id).unwrap().is_empty());
     assert_eq!(lib.db.present_files(1).unwrap().len(), 3);
+    assert_eq!(lib.db.replica_folders().unwrap(), [(2, "elsewhere".to_string())]);
+    lib.db.save_mirror(Some(id), 1, 2, "elsewhere", true, false, 1).unwrap();
+    assert!(lib.db.replica_folders().unwrap().is_empty());
     lib.db.delete_mirror(id).unwrap();
     assert!(lib.db.mirrors().unwrap().is_empty());
 }

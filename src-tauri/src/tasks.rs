@@ -47,6 +47,8 @@ pub struct TaskInfo {
     pub detail: String,
     /// The media item this task works on, if any (the preview shows its read progress).
     pub media_id: Option<i64>,
+    /// The source this task fills, if any (the sidebar shows a mirror's progress on its target).
+    pub source_id: Option<i64>,
     pub done: u64,
     pub total: Option<u64>,
     pub unit: Unit,
@@ -104,6 +106,7 @@ pub fn begin_with_cancel(
             label: label.into(),
             detail: String::new(),
             media_id: None,
+            source_id: None,
             done: 0,
             total,
             unit,
@@ -179,6 +182,12 @@ impl Task {
 
     pub fn media(self, id: i64) -> Self {
         self.inner.info.lock().unwrap().media_id = Some(id);
+        self
+    }
+
+    pub fn source(self, id: i64) -> Self {
+        self.inner.info.lock().unwrap().source_id = Some(id);
+        self.emit(true);
         self
     }
 

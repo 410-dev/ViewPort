@@ -7,7 +7,7 @@
 //! (and the target writable): a source that is away is never read as "everything deleted".
 //! The source is scanned first, then:
 //! - files gone from the source are deleted from the target if the mirror's copy there is
-//!   unchanged (`propagate_deletes`);
+//!   unchanged (replica mode, `MirrorRow::replica`);
 //! - new files are copied; changed ones replace the mirror's copy if that copy is unchanged,
 //!   otherwise go in beside it under a new name;
 //! - a file already at a new file's place that the mirror did not put there is left alone:
@@ -55,7 +55,7 @@ pub async fn mirror_save(
     target_id: i64,
     target_folder: String,
     enabled: bool,
-    propagate_deletes: bool,
+    replica: bool,
     triggers: Option<MirrorTriggers>,
 ) -> CmdResult<i64> {
     let ws = workspace(&app)?;
@@ -71,7 +71,7 @@ pub async fn mirror_save(
         for s in [source_id, target_id] {
             db.source(s)?.ok_or_else(|| CmdError::new("not_found", "source"))?;
         }
-        let saved = db.save_mirror(id, source_id, target_id, &folder, enabled, propagate_deletes, now_ms())?;
+        let saved = db.save_mirror(id, source_id, target_id, &folder, enabled, replica, now_ms())?;
         if let Some(t) = &triggers {
             db.set_mirror_triggers(saved, t)?;
         }
@@ -263,7 +263,7 @@ fn sync_with(
     // Working out what to copy looks at every file in the target and may read existing
     // ones whole to compare them: its own task, counted in files, so it is not a copy
     // stuck at 0 bytes.
-    let plan = tasks::begin_with_cancel("mirror_plan", label.clone(), Unit::Items, None, Some(cancel.clone()));
+    let plan = tasks::begin_with_cancel("mirror_plan", label.clone(), Unit::Items, None, Some(cancel.clone())).source(tgt.id);
     // The source's and the target's own shard folders, when they lie inside the source,
     // are never copied (the target would copy into itself). Other shards are just files.
     let mut present = ws.read_db.lock().unwrap().present_files(src.id)?;
@@ -281,7 +281,7 @@ fn sync_with(
         }
         plan.detail(&item.target_path);
         plan.add(1);
-        if m.propagate_deletes
+        if m.replica
             && let Ok(e) = out.stat(&item.target_path)
             && untouched(&e, item)
         {
@@ -347,7 +347,7 @@ fn sync_with(
         });
     }
     drop(plan);
-    let task = tasks::begin_with_cancel("mirror", label, Unit::Bytes, None, Some(cancel.clone()));
+    let task = tasks::begin_with_cancel("mirror", label, Unit::Bytes, None, Some(cancel.clone())).source(tgt.id);
     let rels: HashMap<i64, String> = jobs.iter().map(|j| (j.id, j.rel.clone())).collect();
     let wanted = jobs.len();
     let report = if jobs.is_empty() {

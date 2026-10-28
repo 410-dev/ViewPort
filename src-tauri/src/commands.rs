@@ -197,6 +197,17 @@ pub async fn save_bundle(app: AppHandle) -> CmdResult<()> {
     blocking(move || ws.save()).await
 }
 
+/// Renames the open bundle.
+#[tauri::command]
+pub async fn rename_bundle(app: AppHandle, name: String) -> CmdResult<BundleSummary> {
+    let ws = workspace(&app.state::<AppState>())?;
+    blocking(move || {
+        ws.rename(&name)?;
+        Ok(ws.summary())
+    })
+    .await
+}
+
 #[tauri::command]
 pub fn current_bundle(state: State<'_, AppState>) -> Option<BundleSummary> {
     state.workspace.read().unwrap().as_ref().map(|w| w.summary())
@@ -458,6 +469,7 @@ pub async fn search(
         let offline = ws.offline_sources();
         let db = ws.read_db.lock().unwrap();
         let reg = db.field_registry()?;
+        let replicas = db.replica_folders()?;
         let mut q = if query.trim().is_empty() {
             vp_query::Query::default()
         } else {
@@ -471,7 +483,7 @@ pub async fn search(
             }
         }
         let scope =
-            vp_db::Scope { source_id, folder, recursive: recursive.unwrap_or(false), exclude_sources: offline };
+            vp_db::Scope { source_id, folder, recursive: recursive.unwrap_or(false), exclude_sources: offline, exclude_folders: replicas };
         let (ids, sections) = db.search_sections(&q, &reg, &Db::compile_context(now_ms(), tz_offset_minutes), &scope)?;
         Ok(SearchResult { ids, elapsed_ms: started.elapsed().as_secs_f64() * 1000.0, sections })
     })

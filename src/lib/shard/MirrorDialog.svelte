@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { fade, pop } from "../ui/motion";
+  import { expand, fade, pop } from "../ui/motion";
   import { onMount } from "svelte";
   import { api, type MirrorRow, type MirrorTriggers, type SourceRow } from "../api";
   import { onBack } from "../back.svelte";
@@ -16,7 +16,18 @@
    * changed in a scan, every so often) or by hand. Only what a mirror copied is ever
    * replaced or deleted in the target.
    */
-  let { source, sources, onclose }: { source: SourceRow; sources: SourceRow[]; onclose: () => void } = $props();
+  let {
+    source,
+    sources,
+    onclose,
+    onchange,
+  }: {
+    source: SourceRow;
+    sources: SourceRow[];
+    onclose: () => void;
+    /** Mirrors were added, changed or removed (the library re-reads which sources are replicas). */
+    onchange?: () => void;
+  } = $props();
 
   let mirrors = $state<MirrorRow[]>([]);
   let error = $state<string | null>(null);
@@ -25,7 +36,7 @@
   // New mirror
   let target = $state("");
   let folder = $state("");
-  let deletes = $state(true);
+  let replica = $state(true);
   let triggers = $state<MirrorTriggers>({ on_open: true, on_connect: true, on_scan: false, interval_mins: null });
   /** Mirror whose trigger settings are open. */
   let editing = $state<number | null>(null);
@@ -64,6 +75,7 @@
     try {
       await f();
       await refresh();
+      onchange?.();
     } catch (e) {
       error = errText(e);
     } finally {
@@ -73,18 +85,18 @@
 
   const add = () =>
     run(async () => {
-      await api.mirrorSave(null, source.id, Number(target), folder.trim(), true, deletes, { ...triggers });
+      await api.mirrorSave(null, source.id, Number(target), folder.trim(), true, replica, { ...triggers });
       target = "";
     });
   const update = (m: MirrorRow, change: Partial<MirrorRow>) => {
     const n = { ...m, ...change };
-    return run(() => api.mirrorSave(n.id, n.source_id, n.target_id, n.target_folder, n.enabled, n.propagate_deletes));
+    return run(() => api.mirrorSave(n.id, n.source_id, n.target_id, n.target_folder, n.enabled, n.replica));
   };
   const setTriggers = (m: MirrorRow, change: Partial<MirrorTriggers>) => {
     const tr = { ...m.triggers, ...change };
     // Shown at once; the list refreshes when saved.
     mirrors = mirrors.map((x) => (x.id === m.id ? { ...x, triggers: tr } : x));
-    return run(() => api.mirrorSave(m.id, m.source_id, m.target_id, m.target_folder, m.enabled, m.propagate_deletes, tr));
+    return run(() => api.mirrorSave(m.id, m.source_id, m.target_id, m.target_folder, m.enabled, m.replica, tr));
   };
 
   function fmtMins(n: number): string {
@@ -123,15 +135,18 @@
       {#each mine as m (m.id)}
         <div class="card">
           <div class="line">
-            <Icon name="loop" size={14} />
-            <span class="grow"><b>{nameOf(m.target_id)}</b>{m.target_folder ? ` / ${m.target_folder}` : ""}</span>
+            <Icon name="mirror" size={14} />
+            <span class="grow"
+              >{nameOf(m.source_id)}<span class="arrow"><Icon name="arrowRight" size={13} /></span><b>{nameOf(m.target_id)}</b
+              >{m.target_folder ? ` / ${m.target_folder}` : ""}</span
+            >
             <button type="button" class="switch" class:on={m.enabled} aria-label={t("mirror.enabled")} title={t("mirror.enabled")}
               onclick={() => update(m, { enabled: !m.enabled })}></button>
           </div>
           <label class="check">
-            <button type="button" class="switch" class:on={m.propagate_deletes} aria-label={t("mirror.deletes")}
-              onclick={() => update(m, { propagate_deletes: !m.propagate_deletes })}></button>
-            <span>{t("mirror.deletes")}</span>
+            <button type="button" class="switch" class:on={m.replica} aria-label={t("mirror.replica")}
+              onclick={() => update(m, { replica: !m.replica })}></button>
+            <span>{t("mirror.replica")}</span>
           </label>
           <div class="when">
             <button class="when-head" aria-expanded={editing === m.id} onclick={() => (editing = editing === m.id ? null : m.id)}>
@@ -140,7 +155,7 @@
               <span class="chev" class:open={editing === m.id}><Icon name="chevronDown" size={13} /></span>
             </button>
             {#if editing === m.id}
-              {@render triggerEditor(m.triggers, (c) => setTriggers(m, c))}
+              <div transition:expand>{@render triggerEditor(m.triggers, (c) => setTriggers(m, c))}</div>
             {/if}
           </div>
           <p class="hint">
@@ -172,10 +187,10 @@
           <input class="input" bind:value={folder} placeholder={t("mirror.folderRoot")} />
         </label>
         <label class="check">
-          <button type="button" class="switch" class:on={deletes} aria-label={t("mirror.deletes")} onclick={() => (deletes = !deletes)}></button>
-          <span>{t("mirror.deletes")}</span>
+          <button type="button" class="switch" class:on={replica} aria-label={t("mirror.replica")} onclick={() => (replica = !replica)}></button>
+          <span>{t("mirror.replica")}</span>
         </label>
-        <p class="hint">{t("mirror.deletesHint")}</p>
+        <p class="hint">{t("mirror.replicaHint")}</p>
         <span class="eyebrow">{t("mirror.when")}</span>
         {@render triggerEditor(triggers, (c) => (triggers = { ...triggers, ...c }))}
         <div class="line">
@@ -286,6 +301,12 @@
     align-items: center;
     gap: 8px;
     min-width: 0;
+  }
+  .arrow {
+    display: inline-block;
+    vertical-align: -2px;
+    margin: 0 6px;
+    color: var(--muted);
   }
   .grow {
     flex: 1;

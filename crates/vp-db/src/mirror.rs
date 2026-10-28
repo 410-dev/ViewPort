@@ -16,9 +16,11 @@ pub struct MirrorRow {
     pub target_id: i64,
     pub target_folder: String,
     pub enabled: bool,
-    /// Files gone from the source are deleted from the target (when the mirror's copy is
-    /// unchanged).
-    pub propagate_deletes: bool,
+    /// Replica mode: the target folder is kept a copy of the source. Files gone from the
+    /// source are deleted from the target (when the mirror's copy is unchanged), and the
+    /// copies are left out of searches that are not limited to the target source.
+    /// Stored in the `propagate_deletes` column.
+    pub replica: bool,
     pub created_ms: i64,
     pub last_sync_ms: Option<i64>,
     /// Summary of the last sync (or why it did not run).
@@ -85,7 +87,7 @@ impl Db {
                 target_id: r.get(2)?,
                 target_folder: r.get(3)?,
                 enabled: r.get(4)?,
-                propagate_deletes: r.get(5)?,
+                replica: r.get(5)?,
                 created_ms: r.get(6)?,
                 last_sync_ms: r.get(7)?,
                 last_result: r.get(8)?,
@@ -100,18 +102,26 @@ impl Db {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Target folders `(source, folder)` of replica mirrors, which searches leave out
+    /// unless they look in that source.
+    pub fn replica_folders(&self) -> Result<Vec<(i64, String)>> {
+        let mut stmt = self.conn.prepare_cached("SELECT target_id, target_folder FROM mirror WHERE propagate_deletes ORDER BY id")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     pub fn mirror(&self, id: i64) -> Result<Option<MirrorRow>> {
         Ok(self.mirrors()?.into_iter().find(|m| m.id == id))
     }
 
     /// Creates (`id` None) or updates a mirror; returns its id. Changing the target starts
     /// over: what was copied to the old target is no longer tracked.
-    pub fn save_mirror(&self, id: Option<i64>, source_id: i64, target_id: i64, target_folder: &str, enabled: bool, propagate_deletes: bool, now_ms: i64) -> Result<i64> {
+    pub fn save_mirror(&self, id: Option<i64>, source_id: i64, target_id: i64, target_folder: &str, enabled: bool, replica: bool, now_ms: i64) -> Result<i64> {
         match id {
             None => {
                 self.conn.execute(
                     "INSERT INTO mirror (source_id, target_id, target_folder, enabled, propagate_deletes, created_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![source_id, target_id, target_folder, enabled, propagate_deletes, now_ms],
+                    params![source_id, target_id, target_folder, enabled, replica, now_ms],
                 )?;
                 Ok(self.conn.last_insert_rowid())
             }
@@ -125,7 +135,7 @@ impl Db {
                 }
                 self.conn.execute(
                     "UPDATE mirror SET source_id = ?2, target_id = ?3, target_folder = ?4, enabled = ?5, propagate_deletes = ?6 WHERE id = ?1",
-                    params![id, source_id, target_id, target_folder, enabled, propagate_deletes],
+                    params![id, source_id, target_id, target_folder, enabled, replica],
                 )?;
                 Ok(id)
             }
