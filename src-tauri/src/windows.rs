@@ -22,10 +22,12 @@ static HIDDEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// Creates a window with the device's hardware settings applied to its WebView.
 pub fn build(app: &AppHandle, label: &str, title: &str, width: f64, height: f64) -> tauri::Result<WebviewWindow> {
     let hw = crate::recent::app_settings(app).hardware;
-    let builder = tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::default())
-        .title(title)
-        .inner_size(width, height)
-        .min_inner_size(480.0, 360.0);
+    let builder = tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::default()).title(title);
+    // On iOS a given size becomes the WebView's frame instead of filling the screen.
+    #[cfg(desktop)]
+    let builder = builder.inner_size(width, height).min_inner_size(480.0, 360.0);
+    #[cfg(mobile)]
+    let _ = (width, height);
     // WebView2 shares one browser process per app; every window must use the same arguments.
     #[cfg(windows)]
     let builder = builder.additional_browser_args(&crate::browser_args(&hw));
