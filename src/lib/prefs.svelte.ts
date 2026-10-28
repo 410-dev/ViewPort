@@ -5,7 +5,7 @@
  */
 import { api, platformApi, type AppSettings, type UiSettings } from "./api";
 import { i18n, resolveLocale } from "./i18n.svelte";
-import { isAndroid } from "./platform";
+import { isMobile } from "./platform";
 
 export const prefs = $state<{ app: AppSettings | null }>({ app: null });
 
@@ -41,9 +41,9 @@ export function applyPrefs(app: AppSettings) {
 }
 
 let lastBars = "";
-/** Android: the status and navigation bars follow the theme. */
+/** Mobile: the status and navigation bars (iOS: the safe areas) follow the theme. */
 function matchSystemBars(theme: string) {
-  if (!isAndroid) return;
+  if (!isMobile) return;
   const bg = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
   const key = `${theme}|${bg}`;
   if (key === lastBars) return;

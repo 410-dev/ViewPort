@@ -5285,6 +5285,8 @@ dependencies = [
  "keyring",
  "libc",
  "libloading 0.9.0",
+ "objc2",
+ "objc2-ui-kit",
  "serde",
  "serde_json",
  "sha2 0.11.1",

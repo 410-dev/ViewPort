@@ -268,8 +268,49 @@ pub async fn set_system_fullscreen(on: bool) {
 
 /// Matches the system bars (mobile) to the UI theme: icon contrast and the color behind them.
 #[tauri::command]
-pub async fn set_system_bars(dark: bool, background: String) {
+pub async fn set_system_bars(app: tauri::AppHandle, dark: bool, background: String) {
+    #[cfg(target_os = "ios")]
+    ios::system_bars(&app, dark, &background);
+    let _ = &app;
     let _ = tauri::async_runtime::spawn_blocking(move || imp::system_bars(dark, &background)).await;
+}
+
+/// iOS: the WebView stays inside the safe areas; what shows around it (behind the status
+/// bar and the home indicator) takes the theme's background, and the status bar text
+/// follows the theme through the window's interface style.
+#[cfg(target_os = "ios")]
+mod ios {
+    use objc2::MainThreadMarker;
+    use objc2_ui_kit::{UIColor, UIUserInterfaceStyle, UIView};
+    use tauri::Manager;
+
+    pub fn system_bars(app: &tauri::AppHandle, dark: bool, background: &str) {
+        let Some((r, g, b)) = parse_hex(background) else { return };
+        let Some(window) = app.get_webview_window(crate::windows::MAIN) else { return };
+        let _ = window.with_webview(move |wv| {
+            let Some(_mtm) = MainThreadMarker::new() else { return };
+            // SAFETY: on iOS `inner()` is the WKWebView, a UIView, alive while the window is.
+            let view: &UIView = unsafe { &*(wv.inner() as *const UIView) };
+            let color = UIColor::colorWithRed_green_blue_alpha(r, g, b, 1.0);
+            view.setBackgroundColor(Some(&color));
+            if let Some(parent) = view.superview() {
+                parent.setBackgroundColor(Some(&color));
+            }
+            if let Some(win) = view.window() {
+                win.setBackgroundColor(Some(&color));
+                win.setOverrideUserInterfaceStyle(if dark { UIUserInterfaceStyle::Dark } else { UIUserInterfaceStyle::Light });
+            }
+        });
+    }
+
+    fn parse_hex(css: &str) -> Option<(f64, f64, f64)> {
+        let hex = css.trim().strip_prefix('#')?;
+        if hex.len() != 6 {
+            return None;
+        }
+        let ch = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok().map(|v| v as f64 / 255.0);
+        Some((ch(0)?, ch(2)?, ch(4)?))
+    }
 }
 
 #[derive(Serialize, Deserialize)]

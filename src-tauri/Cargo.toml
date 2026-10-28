@@ -68,5 +68,10 @@ windows-sys = { version = "0.59", features = ["Win32_System_Threading"] }
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }
 
+# Safe-area colors around the WebView (`platform::ios`).
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.6"
+objc2-ui-kit = { version = "0.3", features = ["UIColor", "UIResponder", "UIView", "UIWindow", "UIInterface"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
