@@ -8,8 +8,19 @@ import type { TransitionConfig } from "svelte/transition";
  */
 function token(name: string, fallback: number): number {
   if (typeof document === "undefined") return fallback;
-  const v = parseFloat(getComputedStyle(document.documentElement).getPropertyValue(name));
-  return Number.isFinite(v) ? v : fallback;
+  return ms(getComputedStyle(document.documentElement).getPropertyValue(name)) ?? fallback;
+}
+
+/**
+ * A CSS time in milliseconds. The production CSS minifier rewrites `220ms` as `.22s`;
+ * read as a bare number that made every transition last 0.22 ms in release builds.
+ */
+export function ms(css: string): number | null {
+  const m = /^\s*(-?[\d.]+)(ms|s)?\s*$/i.exec(css);
+  if (!m) return null;
+  const v = parseFloat(m[1]);
+  if (!Number.isFinite(v)) return null;
+  return m[2]?.toLowerCase() === "s" ? v * 1000 : v;
 }
 
 /** The app's own "reduce motion" setting (`ui.reduce_motion`, set on the root by `prefs`). */

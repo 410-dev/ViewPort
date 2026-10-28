@@ -102,7 +102,8 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
 - 쿼리 편집기 모달은 열에서 고르거나 입력할 때마다 미완성 조건을 텍스트에 바로 쓴다(`live()`). '조건 완료하기'는 초안을
   확정하고 열을 비우며, '다음 조건'은 연결어(그리고/혹은)까지 미리 쓴다. 폭 640px 이하에서는 네 열이 슬라이드(조건 → 값 →
   비교 → 연결)가 되고, 조건을 고르면 값으로 넘어가며 연결어를 고르면 다음 조건으로 첫 슬라이드에 돌아온다.
-- 오버레이 열림·닫힘 모션은 `ui/motion.ts`(`fade`/`pop`/`slide`, 대화 상자는 CSS로 열리고 `out:`으로 닫힘, 길이는 `--t-pop`),
+- 오버레이 열림·닫힘 모션은 `ui/motion.ts`(`fade`/`pop`/`slide`, 대화 상자는 CSS로 열리고 `out:`으로 닫힘, 길이는 `--t-pop`. 빌드된 CSS는 `220ms`를 `.22s`로 줄이므로 CSS 시간 값은
+  `motion.ts`의 `ms()`로 읽는다 — `parseFloat`로 읽으면 릴리즈에서만 애니메이션이 0.22ms가 된다),
   작은 오버레이의 바깥 누름 닫기는 `ui/dismiss.ts`(`use:dismiss`)를 쓴다. 모션은 OS 설정(`prefers-reduced-motion`)이 아니라
   앱 설정 `ui.reduce_motion`만 따른다(Windows에서 애니메이션 효과가 꺼져 있으면 OS 설정은 늘 reduce).
 - 분할 보기 분할선을 끄는 동안 패널은 다시 배치하지 않고 시작 크기 그대로 축소해 그린다(큰 이미지 재래스터화 깜빡임 방지).
@@ -111,6 +112,8 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
 - 모바일(Android): 파일·폴더 선택은 항상 `pick.svelte.ts`를 쓴다(`@tauri-apps/plugin-dialog`의 `open`/`save` 직접 호출 금지).
   새 오버레이·대화 상자는 열려 있는 동안 `back.svelte.ts`의 `onBack`으로 닫기를 등록한다. 호버로만 보이는 컨트롤은
   `@media (hover: none)`에서 항상 보이게 한다. 저장소 경로를 하드코딩하지 않는다(`/storage/emulated/0`은 보안 폴더·작업 프로필에서 다름 → `storage_roots`). 네이티브 기능은 `platform.rs` ↔ `gen/android/.../ViewPortPlugin.kt`.
+  원본 미디어는 앱 자체 루프백 HTTP(`media_server.rs`)로 읽으므로 릴리즈에서도 127.0.0.1 평문 접속을 허용한다
+  (`res/xml/network_security_config.xml`, 디버그는 `src/debug`의 같은 파일이 전부 허용). 애니메이션·미디어 확인은 디버그가 아닌 릴리즈 빌드로 한다.
   APK 빌드는 아래 'APK 빌드 요령'을 따른다.
 
 ### APK 빌드 요령 (Windows)

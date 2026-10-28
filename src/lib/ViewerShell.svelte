@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount, untrack } from "svelte";
+  import { onDestroy, onMount, tick, untrack } from "svelte";
   import { api, platformApi, type BundleSummary, type Settings } from "./api";
   import Library, { type BrowseState } from "./Library.svelte";
   import { toggleMute } from "./audio.svelte";
@@ -20,9 +20,8 @@
    *
    * Dividers between panes are dragged to resize them. A pane dragged past
    * `switch_at_percent` enters switching mode: it takes `switch_main_percent`, the others
-   * fold to a strip showing the outer edge of their (full-size) picture, and tapping a
-   * strip swaps the two: the divider sweeps across while both pictures stay in place, one
-   * uncovered as the other is covered.
+   * fold to a strip showing the edge of their (full-size) picture, and tapping a strip
+   * swaps the two, sliding one aside as the other comes in.
    */
   type Pane = {
     key: number;
@@ -66,7 +65,7 @@
   let sizes = $state<number[]>(untrack(() => initial.map(() => 1 / initial.length)));
   /** Switching mode: the large pane, or null. */
   let main = $state<number | null>(null);
-  /** The large pane before the last switch: the one being covered. */
+  /** The large pane before the last switch: the one sliding aside. */
   let prevMain = $state<number | null>(null);
   let animating = $state(false);
   /**
@@ -76,6 +75,7 @@
    */
   let frozen = $state<{ w: number; h: number }[] | null>(null);
   const inners: HTMLDivElement[] = [];
+  let shell = $state<HTMLDivElement>();
   let animTimer: ReturnType<typeof setTimeout> | undefined;
 
   const win = $derived(prefs.app?.windows);
@@ -106,11 +106,16 @@
   }
 
   /** Switching mode with pane `i` large. */
-  function switchTo(i: number) {
+  async function switchTo(i: number) {
     if (panes.length < 2) return;
     const rest = (1 - mainShare) / (panes.length - 1);
-    prevMain = main ?? i;
+    // The transition must be on before any pane changes size. Set in the same update,
+    // the WebView could restyle a pane in between (the tapped strip is removed then) and
+    // that pane jumped while the other grew from the wrong edge.
     animate();
+    await tick();
+    void shell?.offsetHeight;
+    prevMain = main ?? i;
     main = i;
     active = i;
     sizes = panes.map((_, j) => (j === i ? mainShare : rest));
@@ -153,18 +158,12 @@
 
   /**
    * Switching mode: every pane is drawn at the large size, clipped by its slot and held
-   * against its outer side, away from the large pane (the large one: away from the pane
-   * it took over from). Pictures then stay put while a divider moves over them; held
-   * against the moving divider instead, a growing pane's picture came in from the far
-   * edge of the screen rather than out of its strip. With two panes a pane never changes
-   * sides, so nothing jumps when a switch starts.
+   * against the side facing the large pane, so a folding pane looks pushed aside.
    */
   function anchor(i: number): "start" | "end" | null {
     if (main === null) return null;
-    if (i !== main) return i < main ? "start" : "end";
-    const from = prevMain ?? i;
-    if (from !== i) return from > i ? "start" : "end";
-    return i === 0 ? "start" : "end";
+    if (i !== main) return i > main ? "start" : "end";
+    return prevMain !== null && prevMain > i ? "end" : "start";
   }
 
   /** Scale of a frozen pane in its current slot (never enlarged: the rest stays black). */
@@ -251,6 +250,7 @@
 
 <div
   class="shell"
+  bind:this={shell}
   transition:zoom
   class:rows={!cols}
   class:animating
@@ -315,7 +315,7 @@
       </div>
       {#if main !== null && i !== main}
         <!-- A folded pane: a tap swaps it in. -->
-        <button class="peek" class:end={i < main} aria-label={t("viewer.switchPane")} onclick={() => switchTo(i)}></button>
+        <button class="peek" class:end={side === "end"} aria-label={t("viewer.switchPane")} onclick={() => switchTo(i)}></button>
       {/if}
     </div>
   {/each}
@@ -346,7 +346,7 @@
     position: absolute;
     inset: 0;
   }
-  /* Switching mode: drawn at the large size, against the outer side (`anchor`). */
+  /* Switching mode: drawn at the large size, against the side facing the large pane. */
   .inner.start,
   .inner.end {
     width: var(--big);
