@@ -355,6 +355,8 @@ export interface AppSettings {
     double_click_zoom: number;
     wheel_zoom: boolean;
     show_nav_buttons: boolean;
+    show_name: boolean;
+    pin_controls: boolean;
     tap_to_advance: boolean;
     swipe_favorite: boolean;
     brief_window: number;

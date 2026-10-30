@@ -339,6 +339,7 @@ export const SECTIONS: Section[] = [
           { kind: "number", ...app({ path: "viewer.max_zoom", label: "set.maxZoom" }), min: 1.5, max: 32, step: 0.5, unit: "×" },
           { kind: "number", ...app({ path: "viewer.double_click_zoom", label: "set.doubleClickZoom" }), min: 1.25, max: 16, step: 0.25, unit: "×" },
           { kind: "toggle", ...app({ path: "viewer.wheel_zoom", label: "set.wheelZoom" }) },
+          { kind: "toggle", ...app({ path: "viewer.show_name", label: "set.showName" }) },
           { kind: "toggle", ...app({ path: "viewer.show_nav_buttons", label: "set.showNavButtons", help: "set.showNavButtons.help" }) },
           { kind: "toggle", ...app({ path: "viewer.tap_to_advance", label: "set.tapAdvance", help: "set.tapAdvance.help" }) },
           { kind: "toggle", ...app({ path: "viewer.swipe_favorite", label: "set.swipeFavorite", help: "set.swipeFavorite.help" }) },

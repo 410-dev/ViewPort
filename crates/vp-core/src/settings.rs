@@ -660,6 +660,11 @@ pub struct ViewerSettings {
     pub wheel_zoom: bool,
     /// The previous/next arrow buttons at the sides of the viewer.
     pub show_nav_buttons: bool,
+    /// The file name in the viewer's top bar (off: only the position and the controls).
+    pub show_name: bool,
+    /// Videos: the transport buttons stay on screen (moved to the bottom centre) while the
+    /// other controls hide. Toggled from the viewer.
+    pub pin_controls: bool,
     /// Touch screens: tapping the image goes to the next item.
     pub tap_to_advance: bool,
     /// Touch screens: swiping an item up marks it as a favorite, down unmarks it.
@@ -719,6 +724,8 @@ impl Default for ViewerSettings {
             double_click_zoom: 2.5,
             wheel_zoom: true,
             show_nav_buttons: true,
+            show_name: false,
+            pin_controls: false,
             tap_to_advance: true,
             swipe_favorite: true,
             pull_close: true,

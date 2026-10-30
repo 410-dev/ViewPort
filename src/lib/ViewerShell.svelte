@@ -214,15 +214,12 @@
   }
 
   /** Opened from a pane's explorer: the pane views that list. */
-  function openIn(i: number, ids: number[], index: number, state: BrowseState) {
+  function openIn(i: number, ids: number[], index: number) {
     const p = panes[i];
     p.ids = ids;
     p.index = index;
     p.browse = null;
-    lastBrowse.set(p.key, state);
   }
-  /** Where each pane's explorer was, to return there. */
-  const lastBrowse = new Map<number, BrowseState>();
 
   async function pop(i: number) {
     const p = panes[i];
@@ -311,7 +308,7 @@
               initial={p.browse}
               onclose={() => remove(i)}
               onbundle={() => {}}
-              embedded={{ active: i === active, onopen: (ids, index, state) => openIn(i, ids, index, state) }}
+              embedded={{ active: i === active, onopen: (ids, index) => openIn(i, ids, index) }}
             />
           {/if}
         {:else}
@@ -326,7 +323,6 @@
             onclose={() => remove(i)}
             onsplit={panes.length < max ? split : undefined}
             onpop={isMobile ? undefined : () => pop(i)}
-            onbrowse={panes.length > 1 ? () => (p.browse = lastBrowse.get(p.key) ?? start()) : undefined}
             onpull={(v) => (pulled = v)}
             onremoved={dropItem}
           />

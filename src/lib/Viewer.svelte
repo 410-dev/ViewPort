@@ -28,7 +28,7 @@
   import InfoPanel from "./panel/InfoPanel.svelte";
   import { audible, audio, claimFocus, setMuted, setVolume } from "./audio.svelte";
   import VolumeControl from "./ui/VolumeControl.svelte";
-  import { prefs } from "./prefs.svelte";
+  import { prefs, savePrefs } from "./prefs.svelte";
   import { fullscreenChanged, immersive } from "./immersive.svelte";
   import { ZoomPan } from "./zoom.svelte";
   import { onBack } from "./back.svelte";
@@ -52,7 +52,6 @@
     onactivate,
     onsplit,
     onpop,
-    onbrowse,
     onpull,
     onremoved,
   }: {
@@ -69,8 +68,6 @@
     onsplit?: () => void;
     /** Moves this pane to its own window; absent on mobile. */
     onpop?: () => void;
-    /** Shows an explorer in this pane to pick other items (split view). */
-    onbrowse?: () => void;
     /** How far a pull-to-close drag has gone (0 none .. 1 smallest), so the shell can fade. */
     onpull?: (progress: number) => void;
     /** The item `id` was deleted: the shell drops it from every pane. */
@@ -502,6 +499,27 @@
   function seek(seconds: number) {
     if (!video || !isFinite(video.duration)) return;
     video.currentTime = Math.min(Math.max(0, video.currentTime + seconds), video.duration);
+  }
+
+  /** Frame duration for frame stepping: measured from presented frames where the WebView
+   * reports them (`requestVideoFrameCallback`), else assumed 30 fps. */
+  let frameSecs = 1 / 30;
+  function measureFrames(v: HTMLVideoElement) {
+    if (!("requestVideoFrameCallback" in v)) return;
+    let last = -1;
+    const tick = (_: number, m: VideoFrameCallbackMetadata) => {
+      const d = m.mediaTime - last;
+      if (last >= 0 && d > 0.004 && d < 0.2) frameSecs = d;
+      last = m.mediaTime;
+      if (v.isConnected) v.requestVideoFrameCallback(tick);
+    };
+    v.requestVideoFrameCallback(tick);
+  }
+
+  function stepFrame(dir: 1 | -1) {
+    if (!video || !isFinite(video.duration)) return;
+    video.pause();
+    video.currentTime = Math.min(Math.max(0, video.currentTime + dir * frameSecs), video.duration);
   }
 
   function togglePlay() {
@@ -1048,6 +1066,32 @@
   // Immersive mode hides every control.
   const showHud = $derived(hud && !immersive.on);
 
+  // Pinned video controls: while the rest hides, the transport moves down to where the
+  // timeline was, then to the centre (and back the same way, in reverse).
+  const pinned = $derived(prefs.app?.viewer.pin_controls ?? false);
+  const docked = $derived(pinned && !showHud && cur?.kind === "video" && !immersive.on);
+  let transportEl = $state<HTMLElement | null>(null);
+  let pinDx = $state(0);
+  function measurePin() {
+    if (!dockEl || !transportEl) return;
+    // Offsets ignore transforms, so this is the shown layout even while docked.
+    pinDx = dockEl.offsetWidth / 2 - (transportEl.offsetLeft + transportEl.offsetWidth / 2);
+  }
+  $effect(() => {
+    if (!dockEl || !transportEl) return;
+    const ro = new ResizeObserver(measurePin);
+    ro.observe(dockEl);
+    return () => ro.disconnect();
+  });
+  $effect(() => {
+    if (docked) untrack(measurePin);
+  });
+  function togglePin() {
+    if (!prefs.app) return;
+    prefs.app.viewer.pin_controls = !prefs.app.viewer.pin_controls;
+    savePrefs();
+  }
+
   // ---- HUD auto-hide
   let hudTimer: ReturnType<typeof setTimeout> | undefined;
   function poke() {
@@ -1125,7 +1169,10 @@
               loop
               playsinline
               controls={showHud && swipe === 0}
-              onloadedmetadata={onLoaded}
+              onloadedmetadata={(e) => {
+                measureFrames(e.currentTarget);
+                onLoaded();
+              }}
               onvolumechange={onVolumeChange}
               onplay={() => (paused = false)}
               onpause={() => (paused = true)}
@@ -1282,65 +1329,89 @@
     </div>
   {/if}
 
-  <div class="hud" class:visible={showHud}>
-    <span class="name">{(known.get(id) ?? brief)?.name ?? ""}</span>
-    <span class="pos">{index + 1} / {ids.length}</span>
-    {#if slideshow}
-      <span class="ss">{ssPaused ? t("viewer.slideshowPaused") : t("viewer.slideshow")}</span>
-    {/if}
-    {#if loadingTask}
-      {@const f = fraction(loadingTask)}
-      <span class="load"><span class="spinner"></span><span class="tabular">{fmtBytes(loadingTask.done)} / {fmtBytes(loadingTask.total)}</span>
-        <span class="bar"><i style:width="{(f ?? 0) * 100}%"></i></span></span>
-    {/if}
+  <div class="hud" class:visible={showHud} role="presentation" onpointerdown={(e) => e.stopPropagation()} onpointerup={(e) => e.stopPropagation()}>
+    <span class="tools">
+      <button class="hb fav" class:on={isFav} aria-pressed={isFav} onclick={() => setFav(!isFav)} title={t("viewer.favorite")}
+        ><Icon name="heart" size={15} /></button
+      >
+      <button class="hb" class:on={showInfo} onclick={() => (showInfo = !showInfo)} title={t("viewer.info")}><Icon name="info" size={15} /></button>
+      <button class="hb del" onclick={() => id !== undefined && (confirmDelete = id)} title={t("viewer.delete")} aria-label={t("viewer.delete")}
+        ><Icon name="trash" size={15} /></button
+      >
+    </span>
+    <span class="mid">
+      {#if prefs.app?.viewer.show_name}<span class="name">{(known.get(id) ?? brief)?.name ?? ""}</span>{/if}
+      <span class="pos">{index + 1} / {ids.length}</span>
+      {#if slideshow}
+        <span class="ss">{ssPaused ? t("viewer.slideshowPaused") : t("viewer.slideshow")}</span>
+      {/if}
+      {#if loadingTask}
+        {@const f = fraction(loadingTask)}
+        <span class="load"><span class="spinner"></span><span class="tabular">{fmtBytes(loadingTask.done)} / {fmtBytes(loadingTask.total)}</span>
+          <span class="bar"><i style:width="{(f ?? 0) * 100}%"></i></span></span>
+      {/if}
+    </span>
+    <span class="tools">
+      {#if onsplit}
+        <button class="hb" onclick={onsplit} title={t("viewer.split")}><Icon name="columns" size={15} /></button>
+      {/if}
+      <button class="hb" onclick={() => (immersive.on = true)} title={t("viewer.immersive")}><Icon name="eyeOff" size={15} /></button>
+      <button class="hb" onclick={() => toggleFullscreen()} title={t("viewer.fullscreen")}><Icon name="maximize" size={15} /></button>
+    </span>
     <span class="tools">
       <button class="hb" onclick={close} title={t("common.close")}><Icon name="x" size={15} /></button>
     </span>
   </div>
-  <!-- Everything but "close" sits at the bottom, above a video's own control bar. -->
+  <!-- Bottom: slideshow, video transport, then the rest. -->
   <div
     class="dock"
     bind:this={dockEl}
     class:visible={showHud}
+    class:docked
     class:above-controls={cur?.kind === "video"}
     role="presentation"
     onpointerdown={(e) => e.stopPropagation()}
     onpointerup={(e) => e.stopPropagation()}
   >
-    <span class="tools vol">
-      <VolumeControl dark />
-    </span>
-    <span class="tools">
+    <span class="tools solo">
       <button class="hb" class:on={slideshow} onclick={toggleSlideshow} title={t("viewer.slideshow")}><Icon name={slideshow ? "stop" : "film"} size={15} /></button>
-      {#if cur?.kind === "video"}
-        <button class="hb" onclick={togglePlay} title={paused ? t("viewer.play") : t("viewer.pause")} aria-label={paused ? t("viewer.play") : t("viewer.pause")}
-          ><Icon name={paused ? "play" : "pause"} size={15} /></button
+    </span>
+    {#if cur?.kind === "video"}
+      {@const step = settings.playback.seek_step_secs}
+      <span class="pin-y" bind:this={transportEl} style:--pin-dx="{pinDx}px"><span class="tools transport">
+        <button class="hb" onclick={() => seek(-step)} title={t("viewer.seekBack", { n: step })} aria-label={t("viewer.seekBack", { n: step })}
+          ><Icon name="rewind" size={15} /></button
         >
-        <button class="hb" class:on={showLoops} onclick={() => (showLoops = !showLoops)} title={t("viewer.loops")}><Icon name="loop" size={15} /></button>
-      {/if}
-      <button class="hb fav" class:on={isFav} aria-pressed={isFav} onclick={() => setFav(!isFav)} title={t("viewer.favorite")}
-        ><Icon name="heart" size={15} /></button
-      >
-      {#if cur?.kind === "video"}
+        <button class="hb" onclick={() => stepFrame(-1)} title={t("viewer.frameBack")} aria-label={t("viewer.frameBack")}><Icon name="frameBack" size={15} /></button>
+        <button class="hb play" onclick={togglePlay} title={paused ? t("viewer.play") : t("viewer.pause")} aria-label={paused ? t("viewer.play") : t("viewer.pause")}
+          ><Icon name={paused ? "play" : "pause"} size={17} /></button
+        >
         <button class="hb" disabled={savingFrame} onclick={saveFrame} title={t("viewer.saveFrame")} aria-label={t("viewer.saveFrame")}
           >{#if savingFrame}<span class="spinner"></span>{:else}<Icon name="camera" size={15} />{/if}</button
         >
-      {/if}
-      <button class="hb" class:on={showInfo} onclick={() => (showInfo = !showInfo)} title={t("viewer.info")}><Icon name="info" size={15} /></button>
-      <button class="hb del" onclick={() => id !== undefined && (confirmDelete = id)} title={t("viewer.delete")} aria-label={t("viewer.delete")}
-        ><Icon name="trash" size={15} /></button
-      >
-      {#if onbrowse}
-        <button class="hb" onclick={onbrowse} title={t("viewer.browse")}><Icon name="search" size={15} /></button>
-      {/if}
-      {#if onsplit}
-        <button class="hb" onclick={onsplit} title={t("viewer.split")}><Icon name="columns" size={15} /></button>
-      {/if}
-      {#if onpop}
-        <button class="hb" onclick={onpop} title={t("viewer.popOut")}><Icon name="external" size={15} /></button>
-      {/if}
-      <button class="hb" onclick={() => (immersive.on = true)} title={t("viewer.immersive")}><Icon name="eyeOff" size={15} /></button>
-      <button class="hb" onclick={() => toggleFullscreen()} title={t("viewer.fullscreen")}><Icon name="maximize" size={15} /></button>
+        <button class="hb" onclick={() => stepFrame(1)} title={t("viewer.frameForward")} aria-label={t("viewer.frameForward")}
+          ><Icon name="frameForward" size={15} /></button
+        >
+        <button class="hb" onclick={() => seek(step)} title={t("viewer.seekForward", { n: step })} aria-label={t("viewer.seekForward", { n: step })}
+          ><Icon name="fastForward" size={15} /></button
+        >
+      </span></span>
+    {/if}
+    {#if cur?.kind === "video" || onpop}
+      <span class="tools">
+        {#if cur?.kind === "video"}
+          <button class="hb" class:on={showLoops} onclick={() => (showLoops = !showLoops)} title={t("viewer.loops")}><Icon name="loop" size={15} /></button>
+          <button class="hb" class:on={pinned} aria-pressed={pinned} onclick={togglePin} title={t("viewer.pinControls")} aria-label={t("viewer.pinControls")}
+            ><Icon name="pin" size={15} /></button
+          >
+        {/if}
+        {#if onpop}
+          <button class="hb" onclick={onpop} title={t("viewer.popOut")}><Icon name="external" size={15} /></button>
+        {/if}
+      </span>
+    {/if}
+    <span class="tools vol">
+      <VolumeControl dark />
     </span>
   </div>
   {#if confirmDelete !== null}
@@ -1400,10 +1471,12 @@
     color-scheme: dark;
     /* Bottom tool dock; banners and panels stack above it. */
     --dock-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    /* Height of a video's own control bar, which the dock sits above. */
+    --controls-h: 48px;
     --above-dock: calc(var(--dock-bottom) + 56px);
   }
   .viewer:has(.dock.above-controls) {
-    --dock-bottom: calc(64px + env(safe-area-inset-bottom, 0px));
+    --dock-bottom: calc(16px + var(--controls-h) + env(safe-area-inset-bottom, 0px));
   }
   .viewer.active::after {
     content: "";
@@ -1672,18 +1745,50 @@
     align-items: center;
     gap: 8px;
     max-width: calc(100% - 24px);
+    pointer-events: none;
+  }
+  /* The dock's groups fade on their own, so a pinned transport can stay. */
+  .dock > * {
     opacity: 0;
     pointer-events: none;
     transition: opacity var(--t-med) var(--ease);
   }
+  .dock.visible > *,
+  .dock.docked > .pin-y {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  /* Docking is two moves: down first, then to the centre; undocking reverses them. */
+  .pin-y {
+    display: flex;
+    transition:
+      opacity var(--t-med) var(--ease),
+      transform var(--t-med) var(--ease) var(--t-med);
+  }
+  .pin-y > .transport {
+    transition: transform var(--t-med) var(--ease);
+  }
+  .dock.docked > .pin-y {
+    transform: translateY(var(--controls-h));
+    transition-delay: 0s;
+  }
+  .dock.docked > .pin-y > .transport {
+    transform: translateX(var(--pin-dx));
+    transition-delay: var(--t-med);
+  }
   .hud.visible,
-  .dock.visible,
   .nav.visible {
     opacity: 1;
     pointer-events: auto;
   }
-  .name {
+  .mid {
     flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .name {
     min-width: 0;
     font-weight: 500;
     overflow: hidden;
@@ -1716,6 +1821,11 @@
       background var(--t-fast) var(--ease),
       color var(--t-fast) var(--ease),
       transform var(--t-fast) var(--ease);
+  }
+  .hb.play {
+    margin: 0 2px;
+    background: rgb(255 255 255 / 0.12);
+    color: #fff;
   }
   .hb:hover {
     background: var(--hover);
@@ -1811,8 +1921,12 @@
   }
   @media (max-width: 600px) {
     .hud {
+      gap: 6px;
+      padding: 0 6px;
+    }
+    .mid {
+      justify-content: center;
       gap: 8px;
-      padding: 0 6px 0 12px;
     }
     .dock {
       gap: 4px;
