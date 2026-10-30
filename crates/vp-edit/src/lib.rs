@@ -4,6 +4,7 @@
 //! are kept where the format can hold them.
 
 use std::io::Cursor;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use image::{DynamicImage, ImageDecoder, ImageEncoder, ImageFormat, ImageReader, Rgba, RgbaImage, metadata::Orientation};
 use vp_core::edit::EditSpec;
@@ -46,6 +47,22 @@ impl Format {
     }
 }
 
+/// Why an edit did not finish.
+#[derive(Debug)]
+pub enum EditError {
+    Cancelled,
+    Failed(String),
+}
+
+impl std::fmt::Display for EditError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EditError::Cancelled => f.write_str("cancelled"),
+            EditError::Failed(e) => f.write_str(e),
+        }
+    }
+}
+
 /// An edited picture, encoded.
 pub struct Edited {
     pub data: Vec<u8>,
@@ -57,9 +74,18 @@ pub struct Edited {
 }
 
 /// Applies `spec` to the picture `data` (in `format`) and encodes the result in the same
-/// format. `quality` is the JPEG quality.
-pub fn edit_image(data: &[u8], format: Format, spec: &EditSpec, quality: u8) -> Result<Edited, String> {
-    let err = |e: image::ImageError| e.to_string();
+/// format. `quality` is the JPEG quality. `progress` gets the part done (0..1) after each
+/// stage (decoding, transforming, encoding); `cancel` stops it between stages.
+pub fn edit_image(
+    data: &[u8],
+    format: Format,
+    spec: &EditSpec,
+    quality: u8,
+    progress: &mut dyn FnMut(f64),
+    cancel: &AtomicBool,
+) -> Result<Edited, EditError> {
+    let err = |e: image::ImageError| EditError::Failed(e.to_string());
+    let check = || if cancel.load(Ordering::Relaxed) { Err(EditError::Cancelled) } else { Ok(()) };
     let mut decoder = ImageReader::with_format(Cursor::new(data), format.image_format()).into_decoder().map_err(err)?;
     let mut exif = decoder.exif_metadata().ok().flatten();
     let icc = decoder.icc_profile().ok().flatten();
@@ -70,8 +96,13 @@ pub fn edit_image(data: &[u8], format: Format, spec: &EditSpec, quality: u8) -> 
     let mut img = DynamicImage::from_decoder(decoder).map_err(err)?;
     img.apply_orientation(orientation);
     let (source_width, source_height) = (img.width(), img.height());
+    progress(0.35);
+    check()?;
 
     let out = transform(&img, spec, format.has_alpha());
+    drop(img);
+    progress(0.6);
+    check()?;
     let (width, height) = (out.width(), out.height());
     let mut buf = Vec::new();
     let w = Cursor::new(&mut buf);
@@ -96,6 +127,7 @@ pub fn edit_image(data: &[u8], format: Format, spec: &EditSpec, quality: u8) -> 
             out.write_to(&mut w, format.image_format()).map_err(err)?;
         }
     }
+    progress(1.0);
     Ok(Edited { data: buf, width, height, source_width, source_height })
 }
 
@@ -130,13 +162,25 @@ pub fn transform(img: &DynamicImage, spec: &EditSpec, alpha: bool) -> DynamicIma
     let (s, c) = spec.angle().to_radians().sin_cos();
     let (bw, bh) = (g.box_w as f64, g.box_h as f64);
     let mut out = RgbaImage::new(g.w, g.h);
-    for (ox, oy, px) in out.enumerate_pixels_mut() {
-        // Centre of the output pixel, relative to the box's centre.
-        let (bx, by) = (g.x as f64 + ox as f64 + 0.5 - bw / 2.0, g.y as f64 + oy as f64 + 0.5 - bh / 2.0);
-        // Undo the clockwise rotation, back into source pixel coordinates.
-        let (sx, sy) = (bx * c + by * s + sw / 2.0 - 0.5, -bx * s + by * c + sh / 2.0 - 0.5);
-        *px = bilinear(&src, sx, sy, fill);
-    }
+    // Bands of rows on every core: large photos take seconds on one.
+    let row = g.w as usize * 4;
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let band_rows = (g.h as usize).div_ceil(threads).max(1);
+    std::thread::scope(|scope| {
+        for (band, rows) in out.chunks_mut(band_rows * row.max(1)).enumerate() {
+            let src = &src;
+            scope.spawn(move || {
+                for (i, px) in rows.chunks_exact_mut(4).enumerate() {
+                    let (ox, oy) = (i % g.w as usize, band * band_rows + i / g.w as usize);
+                    // Centre of the output pixel, relative to the box's centre.
+                    let (bx, by) = (g.x as f64 + ox as f64 + 0.5 - bw / 2.0, g.y as f64 + oy as f64 + 0.5 - bh / 2.0);
+                    // Undo the clockwise rotation, back into source pixel coordinates.
+                    let (sx, sy) = (bx * c + by * s + sw / 2.0 - 0.5, -bx * s + by * c + sh / 2.0 - 0.5);
+                    px.copy_from_slice(&bilinear(src, sx, sy, fill).0);
+                }
+            });
+        }
+    });
     let out = DynamicImage::ImageRgba8(out);
     if alpha || img.color().has_alpha() { out } else { DynamicImage::ImageRgb8(out.to_rgb8()) }
 }
@@ -200,14 +244,16 @@ mod tests {
         let mut png = Vec::new();
         img.write_to(&mut Cursor::new(&mut png), ImageFormat::Png).unwrap();
         let spec = EditSpec { crop: Some(Crop { x: 0.5, y: 0.0, w: 0.5, h: 1.0 }), ..Default::default() };
-        let out = edit_image(&png, Format::Png, &spec, 90).unwrap();
+        let out = edit_image(&png, Format::Png, &spec, 90, &mut |_| {}, &AtomicBool::new(false)).unwrap();
         assert_eq!((out.width, out.height), (32, 32));
         let back = image::load_from_memory_with_format(&out.data, ImageFormat::Png).unwrap();
         assert_eq!(back.to_rgb8().get_pixel(5, 5), &Rgb([0, 0, 255]));
 
         let mut jpg = Vec::new();
         img.write_to(&mut Cursor::new(&mut jpg), ImageFormat::Jpeg).unwrap();
-        let out = edit_image(&jpg, Format::Jpeg, &EditSpec { rotate_deg: 270.0, ..Default::default() }, 90).unwrap();
+        let out = edit_image(&jpg, Format::Jpeg, &EditSpec { rotate_deg: 270.0, ..Default::default() }, 90, &mut |_| {}, &AtomicBool::new(false)).unwrap();
         assert_eq!((out.width, out.height), (32, 64));
+        let cancelled = edit_image(&jpg, Format::Jpeg, &EditSpec::default(), 90, &mut |_| {}, &AtomicBool::new(true));
+        assert!(matches!(cancelled, Err(EditError::Cancelled)));
     }
 }

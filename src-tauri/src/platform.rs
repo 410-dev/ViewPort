@@ -188,12 +188,13 @@ mod imp {
                 r
             })
         };
-        let mut cancelled = false;
         while !done.load(std::sync::atomic::Ordering::Relaxed) {
             std::thread::sleep(std::time::Duration::from_millis(300));
-            if !cancelled && cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                cancelled = true;
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                // Settles the `editVideo` call; the runner is not waited for, so a stuck
+                // export cannot hold the task open.
                 let _ = h.run_mobile_plugin::<serde_json::Value>("editCancel", ());
+                return Err("cancelled".into());
             }
             if let Ok(p) = h.run_mobile_plugin::<Progress>("editProgress", ()) {
                 if p.progress >= 0.0 {
@@ -201,8 +202,7 @@ mod imp {
                 }
             }
         }
-        let r = runner.join().map_err(|_| "editor thread failed".to_string())?;
-        if cancelled { Err("cancelled".into()) } else { r }
+        runner.join().map_err(|_| "editor thread failed".to_string())?
     }
 }
 

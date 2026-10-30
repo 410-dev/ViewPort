@@ -70,7 +70,7 @@ fn edit(ws: &Arc<Workspace>, registry: &DriverRegistry, id: i64, spec: &EditSpec
     let cancel = Arc::new(AtomicBool::new(false));
     let task = tasks::begin_with_cancel("edit", file_name(&loc.rel_path), Unit::Permille, Some(1000), Some(cancel.clone())).media(id);
     let r = match loc.kind {
-        MediaKind::Image => edit_image(ws, driver.as_ref(), id, &loc, spec, mode),
+        MediaKind::Image => edit_image(ws, driver.as_ref(), id, &loc, spec, mode, &task, &cancel),
         MediaKind::Video => edit_video(ws, registry, driver.as_ref(), id, &loc, spec, mode, &task, &cancel),
         MediaKind::NonMedia => Err(CmdError::new("unsupported", "not a picture or video")),
     };
@@ -107,13 +107,36 @@ fn exists(driver: &dyn MediaDriver, rel: &str) -> bool {
     driver.stat(rel).is_ok()
 }
 
-fn edit_image(ws: &Workspace, driver: &dyn MediaDriver, id: i64, loc: &MediaLocation, spec: &EditSpec, mode: SaveMode) -> CmdResult<i64> {
+#[allow(clippy::too_many_arguments)]
+fn edit_image(
+    ws: &Workspace,
+    driver: &dyn MediaDriver,
+    id: i64,
+    loc: &MediaLocation,
+    spec: &EditSpec,
+    mode: SaveMode,
+    task: &tasks::Task,
+    cancel: &AtomicBool,
+) -> CmdResult<i64> {
     spec.validate(None).map_err(|e| CmdError::new("invalid", e))?;
     let (stem, ext) = split_ext(&loc.rel_path);
     let format = vp_edit::Format::from_ext(&ext).ok_or_else(|| CmdError::new("unsupported", format!("cannot edit .{ext} pictures")))?;
-    let data = crate::workspace::read_tracked(driver.open(&loc.rel_path)?.as_ref(), &loc.rel_path, Some(id))?;
+    let cancelled = || if cancel.load(Ordering::Relaxed) { Err(CmdError::new("cancelled", "cancelled")) } else { Ok(()) };
+    // Someone is waiting on the save: read at the viewer's priority, not as background work.
+    let data = crate::sched::run(crate::sched::Class::Viewer, || {
+        crate::workspace::read_tracked(driver.open(&loc.rel_path)?.as_ref(), &loc.rel_path, Some(id))
+    })?;
+    // Reading is the first fifth, writing the last tenth.
+    task.set(200, Some(1000));
+    cancelled()?;
     let quality = crate::recent::cached_app_settings().viewer.edit_quality;
-    let out = vp_edit::edit_image(&data, format, spec, quality).map_err(|e| CmdError::new("edit_failed", e))?;
+    let mut progress = |p: f64| task.set(200 + (p * 700.0) as u64, Some(1000));
+    let out = vp_edit::edit_image(&data, format, spec, quality, &mut progress, cancel).map_err(|e| match e {
+        vp_edit::EditError::Cancelled => CmdError::new("cancelled", "cancelled"),
+        vp_edit::EditError::Failed(e) => CmdError::new("edit_failed", e),
+    })?;
+    drop(data);
+    cancelled()?;
     let target = match mode {
         SaveMode::Copy => edited_name(stem, &ext, |p| exists(driver, p)),
         SaveMode::Overwrite => loc.rel_path.clone(),

@@ -558,6 +558,10 @@ class ViewPortPlugin(private val activity: Activity) : Plugin(activity) {
   /** The export running (one at a time); only touched on the main thread. */
   private var transformer: Transformer? = null
 
+  /** The `editVideo` call and output of [transformer]: `cancel()` calls no listener, so
+   *  `editCancel` settles it. */
+  private var editing: Pair<Invoke, String>? = null
+
   /**
    * Edits a video with Media3 Transformer into an H.264/AAC MP4 at `output`. Resolves when
    * the export ends; `editProgress` and `editCancel` act on it meanwhile.
@@ -598,20 +602,24 @@ class ViewPortPlugin(private val activity: Activity) : Plugin(activity) {
           .addListener(object : Transformer.Listener {
             override fun onCompleted(composition: Composition, result: ExportResult) {
               transformer = null
+              editing = null
               invoke.resolve()
             }
 
             override fun onError(composition: Composition, result: ExportResult, exception: ExportException) {
               transformer = null
+              editing = null
               File(a.output).delete()
               invoke.reject(exception.message ?: "edit failed")
             }
           })
           .build()
         transformer = t
+        editing = invoke to a.output
         t.start(edited, a.output)
       } catch (e: Exception) {
         transformer = null
+        editing = null
         invoke.reject(e.message ?: "edit failed")
       }
     }
@@ -632,6 +640,11 @@ class ViewPortPlugin(private val activity: Activity) : Plugin(activity) {
     activity.runOnUiThread {
       transformer?.cancel()
       transformer = null
+      editing?.let { (call, output) ->
+        File(output).delete()
+        call.reject("cancelled")
+      }
+      editing = null
       invoke.resolve()
     }
   }
