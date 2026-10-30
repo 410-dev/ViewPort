@@ -1,5 +1,6 @@
 //! Shared types for ViewPort crates.
 
+pub mod edit;
 pub mod settings;
 
 use serde::{Deserialize, Serialize};

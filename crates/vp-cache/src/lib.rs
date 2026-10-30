@@ -293,6 +293,14 @@ impl MediaCache {
         }
     }
 
+    /// Drops every item whose key `pred` accepts.
+    pub fn remove_where(&self, pred: impl Fn(Key) -> bool) {
+        let keys: Vec<Key> = self.meta.lock().unwrap().map.keys().copied().filter(|&k| pred(k)).collect();
+        for k in keys {
+            self.remove(k);
+        }
+    }
+
     pub fn clear(&self) {
         let keys: Vec<Key> = self.meta.lock().unwrap().map.keys().copied().collect();
         for k in keys {

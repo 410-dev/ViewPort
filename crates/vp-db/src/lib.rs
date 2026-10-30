@@ -492,6 +492,68 @@ impl Db {
         })
     }
 
+    /// The file of item `id` was replaced by an edited version: records its new size, time
+    /// and pixel size (the triggers drop its thumbnail, probe and converted copy).
+    pub fn media_replaced(&self, id: i64, size: u64, modified_ms: i64, width: Option<u32>, height: Option<u32>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE media SET size = ?2, modified_ms = ?3, width = ?4, height = ?5, duration_ms = NULL, missing = 0 WHERE id = ?1",
+            params![id, size as i64, modified_ms, width, height],
+        )?;
+        Ok(())
+    }
+
+    /// Moves item `id`'s faces with its picture: `map` takes a box (fractions of the old
+    /// picture) to the new picture, or drops it (None) when it was cut away.
+    pub fn remap_faces(&self, id: i64, map: impl Fn(f64, f64, f64, f64) -> Option<(f64, f64, f64, f64)>) -> Result<()> {
+        let boxes: Vec<(i64, f64, f64, f64, f64)> = {
+            let mut stmt = self.conn.prepare("SELECT id, x, y, w, h FROM face WHERE media_id = ?1")?;
+            stmt.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?.collect::<rusqlite::Result<_>>()?
+        };
+        self.batch(|db| {
+            for (face, x, y, w, h) in boxes {
+                match map(x, y, w, h) {
+                    Some((x, y, w, h)) => db.conn.execute("UPDATE face SET x = ?2, y = ?3, w = ?4, h = ?5 WHERE id = ?1", params![face, x, y, w, h])?,
+                    None => db.conn.execute("DELETE FROM face WHERE id = ?1", [face])?,
+                };
+            }
+            Ok(())
+        })
+    }
+
+    /// Moves item `id`'s loop segments onto the timeline of its edited video, which keeps
+    /// `start_ms..end_ms` of the old one played at `speed`. Segments cut away go.
+    pub fn remap_loop_segments(&self, id: i64, start_ms: i64, end_ms: i64, speed: f64) -> Result<()> {
+        let segs: Vec<(i64, i64, i64)> = {
+            let mut stmt = self.conn.prepare("SELECT id, start_ms, end_ms FROM loop_segment WHERE media_id = ?1")?;
+            stmt.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<rusqlite::Result<_>>()?
+        };
+        let to = |t: i64| ((t.clamp(start_ms, end_ms) - start_ms) as f64 / speed).round() as i64;
+        self.batch(|db| {
+            for (seg, a, b) in segs {
+                let (a, b) = (to(a), to(b));
+                if b > a {
+                    db.conn.execute("UPDATE loop_segment SET start_ms = ?2, end_ms = ?3 WHERE id = ?1", params![seg, a, b])?;
+                } else {
+                    db.conn.execute("DELETE FROM loop_segment WHERE id = ?1", [seg])?;
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// Copies item `from`'s field values (tags, favorite, ...) to item `to`, replacing its own.
+    pub fn copy_values(&self, from: i64, to: i64) -> Result<()> {
+        self.batch(|db| {
+            db.conn.execute("DELETE FROM ext_value WHERE media_id = ?1", [to])?;
+            db.conn.execute(
+                "INSERT INTO ext_value (media_id, field_id, int_val, real_val, text_val, origin)
+                 SELECT ?2, field_id, int_val, real_val, text_val, origin FROM ext_value WHERE media_id = ?1",
+                params![from, to],
+            )?;
+            Ok(())
+        })
+    }
+
     /// Inserts or updates the item at `(source_id, rel_path)` and returns its id.
     pub fn upsert_media(&self, m: &NewMedia) -> Result<i64> {
         let (parent, name) = match m.rel_path.rsplit_once('/') {

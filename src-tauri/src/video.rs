@@ -53,7 +53,7 @@ impl Workspace {
     }
 
     /// Input for FFmpeg: a direct path for local files, otherwise a stream from the driver.
-    fn media_input(&self, drivers: &DriverRegistry, loc: &MediaLocation) -> CmdResult<Input> {
+    pub(crate) fn media_input(&self, drivers: &DriverRegistry, loc: &MediaLocation) -> CmdResult<Input> {
         let source =
             self.read_db.lock().unwrap().source(loc.source_id)?.ok_or_else(|| CmdError::new("not_found", "source"))?;
         let driver = self.driver(drivers, &source)?;

@@ -5305,6 +5305,7 @@ dependencies = [
  "vp-crypto",
  "vp-db",
  "vp-driver",
+ "vp-edit",
  "vp-media",
  "vp-ml",
  "vp-query",
@@ -5382,12 +5383,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "vp-edit"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "vp-core",
+]
+
+[[package]]
 name = "vp-media"
 version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "vp-core",
 ]
 
 [[package]]

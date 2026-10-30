@@ -10,6 +10,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
+use vp_core::edit::EditSpec;
 
 #[derive(Debug, thiserror::Error)]
 pub enum MediaError {
@@ -345,6 +346,21 @@ impl Ffmpeg {
         // Progress goes to stderr, since stdout carries the video.
         let mut args = Self::convert_args(&input, plan, encoder, "pipe:2");
         args.extend(["-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"].map(String::from));
+        self.run_stream(args, input, out, probe.duration_ms, encoder, progress, cancel)
+    }
+
+    /// Runs FFmpeg writing the result to stdout (progress on stderr) into `out`.
+    #[allow(clippy::too_many_arguments)]
+    fn run_stream(
+        &self,
+        args: Vec<String>,
+        input: Input,
+        out: &mut dyn Write,
+        total_ms: Option<i64>,
+        encoder: &str,
+        progress: &mut dyn FnMut(f64),
+        cancel: &AtomicBool,
+    ) -> Result<()> {
         let (mut child, feeder) = self.spawn(&self.ffmpeg, &args, input)?;
         let mut stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
@@ -361,7 +377,7 @@ impl Ffmpeg {
             }
             errors
         });
-        let total_us = probe.duration_ms.unwrap_or(0) as f64 * 1000.0;
+        let total_us = total_ms.unwrap_or(0) as f64 * 1000.0;
         let mut buf = vec![0u8; 256 * 1024];
         let mut write_err = None;
         loop {
@@ -439,14 +455,14 @@ impl Ffmpeg {
         let mut args = Self::convert_args(&input, plan, encoder, "pipe:1");
         args.extend(["-movflags", "+faststart", "-f", "mp4"].map(String::from));
         args.push(output.display().to_string());
-        self.run_convert(args, input, probe, encoder, progress, cancel)
+        self.run_convert(args, input, probe.duration_ms, encoder, progress, cancel)
     }
 
     fn run_convert(
         &self,
         args: Vec<String>,
         input: Input,
-        probe: &Probe,
+        total_ms: Option<i64>,
         encoder: &str,
         progress: &mut dyn FnMut(f64),
         cancel: &AtomicBool,
@@ -459,7 +475,7 @@ impl Ffmpeg {
             let _ = stderr.read_to_end(&mut s);
             s
         });
-        let total_us = probe.duration_ms.unwrap_or(0) as f64 * 1000.0;
+        let total_us = total_ms.unwrap_or(0) as f64 * 1000.0;
         for line in BufReader::new(stdout).lines() {
             if cancel.load(Ordering::Relaxed) {
                 let _ = child.kill();
@@ -483,6 +499,154 @@ impl Ffmpeg {
         progress(1.0);
         Ok(())
     }
+}
+
+/// Container FFmpeg writes an edited video into, from the original's extension; None when
+/// it cannot hold H.264/AAC (the edit is then written as MP4).
+pub fn edit_container(ext: &str) -> Option<&'static str> {
+    Some(match ext.to_ascii_lowercase().as_str() {
+        "mp4" | "m4v" => "mp4",
+        "mov" => "mov",
+        "mkv" => "matroska",
+        _ => return None,
+    })
+}
+
+/// FFmpeg video and audio filters for `spec`. The crop is relative (`iw`/`ih`), so it fits
+/// the frame as FFmpeg sees it after applying the file's own rotation; the editor always
+/// sends an explicit crop for free rotations.
+pub fn edit_filters(spec: &EditSpec) -> (String, String) {
+    let mut v = Vec::new();
+    if (spec.speed - 1.0).abs() > 1e-9 {
+        v.push(format!("setpts=PTS/{}", spec.speed));
+    }
+    match spec.quarter_turns() {
+        Some(1) => v.push("transpose=clock".into()),
+        Some(2) => v.push("hflip,vflip".into()),
+        Some(3) => v.push("transpose=cclock".into()),
+        Some(_) => {}
+        None => {
+            let a = spec.angle().to_radians();
+            v.push(format!("rotate=a={a:.9}:ow=rotw({a:.9}):oh=roth({a:.9}):c=black"));
+        }
+    }
+    if let Some(c) = spec.crop.filter(|c| c.x > 0.0 || c.y > 0.0 || c.w < 1.0 || c.h < 1.0) {
+        v.push(format!("crop=w=iw*{:.6}:h=ih*{:.6}:x=iw*{:.6}:y=ih*{:.6}", c.w, c.h, c.x, c.y));
+    }
+    v.push("scale=trunc(iw/2)*2:trunc(ih/2)*2".into());
+    v.push("format=yuv420p".into());
+    let mut a = Vec::new();
+    let mut s = spec.speed;
+    while s > 2.0 {
+        a.push("atempo=2".to_string());
+        s /= 2.0;
+    }
+    while s < 0.5 {
+        a.push("atempo=0.5".to_string());
+        s /= 0.5;
+    }
+    if (s - 1.0).abs() > 1e-9 {
+        a.push(format!("atempo={}", (s * 1e6).round() / 1e6));
+    }
+    (v.join(","), if a.is_empty() { "anull".into() } else { a.join(",") })
+}
+
+impl Ffmpeg {
+    fn edit_args(input: &Input, spec: &EditSpec, has_audio: bool, encoder: &str, progress_to: &str) -> Vec<String> {
+        let mut args: Vec<String> = ["-v", "error", "-y", "-nostats", "-progress", progress_to].map(String::from).to_vec();
+        if let Some(t) = spec.trim {
+            args.extend(["-ss".into(), secs(t.start_ms), "-t".into(), secs(t.end_ms - t.start_ms)]);
+        }
+        let (vf, af) = edit_filters(spec);
+        args.extend(["-i".into(), input.arg(), "-map".into(), "0:v:0".into(), "-map".into(), "0:a:0?".into()]);
+        args.extend(["-vf".into(), vf, "-c:v".into(), encoder.into()]);
+        match encoder {
+            "libx264" => args.extend(["-preset", "medium", "-crf", "18"].map(String::from)),
+            _ => args.extend(["-b:v", "12M"].map(String::from)),
+        }
+        if has_audio {
+            args.extend(["-af".into(), af, "-c:a".into(), "aac".into(), "-b:a".into(), "192k".into()]);
+        }
+        // The frames are already turned; no rotation tag may turn them again.
+        args.extend(["-map_metadata", "0", "-metadata:s:v:0", "rotate=0"].map(String::from));
+        args
+    }
+
+    /// Applies `spec` to a video and writes it to `output` in `format` (an FFmpeg muxer
+    /// from [`edit_container`]). `duration_ms` is the original's length (for progress).
+    /// `hw_encoders` are tried in order before libx264.
+    #[allow(clippy::too_many_arguments)]
+    pub fn edit(
+        &self,
+        make_input: &mut dyn FnMut() -> Result<Input>,
+        output: &Path,
+        format: &str,
+        spec: &EditSpec,
+        probe: &Probe,
+        hw_encoders: &[String],
+        progress: &mut dyn FnMut(f64),
+        cancel: &AtomicBool,
+    ) -> Result<()> {
+        let total = probe.duration_ms.map(|d| spec.output_duration_ms(d));
+        let mut last_err = None;
+        for enc in hw_encoders.iter().map(String::as_str).filter(|e| *e != "libx264").chain(["libx264"]) {
+            let input = make_input()?;
+            let mut args = Self::edit_args(&input, spec, probe.audio_codec.is_some(), enc, "pipe:1");
+            if format != "matroska" {
+                args.extend(["-movflags", "+faststart"].map(String::from));
+            }
+            args.extend(["-f".into(), format.into(), output.display().to_string()]);
+            match self.run_convert(args, input, total, enc, progress, cancel) {
+                Ok(()) => return Ok(()),
+                Err(MediaError::Cancelled) => {
+                    let _ = std::fs::remove_file(output);
+                    return Err(MediaError::Cancelled);
+                }
+                Err(e) => last_err = Some(e),
+            }
+        }
+        let _ = std::fs::remove_file(output);
+        Err(last_err.unwrap_or_else(|| MediaError::Failed("no encoder".into())))
+    }
+
+    /// Like [`Ffmpeg::edit`], but streams into writers made by `open` (fragmented MP4/MOV
+    /// or Matroska) and completed by `commit`, so the result never touches the disk
+    /// unencrypted (shards).
+    #[allow(clippy::too_many_arguments)]
+    pub fn edit_to_writer<W: Write>(
+        &self,
+        make_input: &mut dyn FnMut() -> Result<Input>,
+        open: &mut dyn FnMut() -> Result<W>,
+        commit: &mut dyn FnMut(W) -> Result<()>,
+        format: &str,
+        spec: &EditSpec,
+        probe: &Probe,
+        hw_encoders: &[String],
+        progress: &mut dyn FnMut(f64),
+        cancel: &AtomicBool,
+    ) -> Result<()> {
+        let total = probe.duration_ms.map(|d| spec.output_duration_ms(d));
+        let mut last_err = None;
+        for enc in hw_encoders.iter().map(String::as_str).filter(|e| *e != "libx264").chain(["libx264"]) {
+            let input = make_input()?;
+            let mut args = Self::edit_args(&input, spec, probe.audio_codec.is_some(), enc, "pipe:2");
+            if format != "matroska" {
+                args.extend(["-movflags", "frag_keyframe+empty_moov+default_base_moof"].map(String::from));
+            }
+            args.extend(["-f".into(), format.into(), "pipe:1".into()]);
+            let mut out = open()?;
+            match self.run_stream(args, input, &mut out, total, enc, progress, cancel) {
+                Ok(()) => return commit(out),
+                Err(MediaError::Cancelled) => return Err(MediaError::Cancelled),
+                Err(e) => last_err = Some(e),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| MediaError::Failed("no encoder".into())))
+    }
+}
+
+fn secs(ms: i64) -> String {
+    format!("{:.3}", ms.max(0) as f64 / 1000.0)
 }
 
 fn last_lines(stderr: &[u8]) -> String {
@@ -590,6 +754,22 @@ mod tests {
         assert_eq!(dims(&bmp), (512, 512), "all four tiles");
     }
 
+    #[test]
+    fn edit_filter_chains() {
+        use vp_core::edit::{Crop, EditSpec};
+        let spec = EditSpec { rotate_deg: 90.0, speed: 4.0, ..Default::default() };
+        let (v, a) = edit_filters(&spec);
+        assert!(v.starts_with("setpts=PTS/4,transpose=clock,"), "{v}");
+        assert_eq!(a, "atempo=2,atempo=2");
+        let spec = EditSpec { rotate_deg: 10.0, crop: Some(Crop { x: 0.1, y: 0.2, w: 0.5, h: 0.5 }), speed: 0.25, ..Default::default() };
+        let (v, a) = edit_filters(&spec);
+        assert!(v.contains("rotate=a=0.174532925:ow=rotw(") && v.contains("crop=w=iw*0.500000"), "{v}");
+        assert_eq!(a, "atempo=0.5,atempo=0.5");
+        assert_eq!(edit_filters(&EditSpec::default()).1, "anull");
+        assert_eq!(edit_container("MKV"), Some("matroska"));
+        assert_eq!(edit_container("webm"), None);
+    }
+
     /// Runs against a real FFmpeg when `VP_TEST_FFMPEG` points at its folder.
     #[test]
     fn real_ffmpeg_round_trip() {
@@ -641,6 +821,42 @@ mod tests {
         std::fs::write(&streamed, got.expect("committed")).unwrap();
         let p = ff.probe(Input::File(streamed)).unwrap();
         assert!(p.webview_compatible("mp4") && p.duration_ms.is_some_and(|d| d > 0), "{p:?}");
+
+        // Edits: turned a quarter, cropped to the left half, the first second at double speed.
+        use vp_core::edit::{Crop, EditSpec, Trim};
+        let spec = EditSpec {
+            rotate_deg: 90.0,
+            crop: Some(Crop { x: 0.0, y: 0.0, w: 1.0, h: 0.5 }),
+            trim: Some(Trim { start_ms: 500, end_ms: 1500 }),
+            speed: 2.0,
+            ..Default::default()
+        };
+        let edited = tmp.join("edited.mkv");
+        ff.edit(&mut || Ok(Input::File(src.clone())), &edited, "matroska", &spec, &probe, &[], &mut |_| {}, &AtomicBool::new(false)).unwrap();
+        let e = ff.probe(Input::File(edited)).unwrap();
+        assert_eq!((e.width, e.height), (Some(240), Some(160)), "{e:?}");
+        assert!(e.duration_ms.is_some_and(|d| (400..=700).contains(&d)), "{e:?}");
+        let free = EditSpec { rotate_deg: 15.0, crop: Some(Crop { x: 0.2, y: 0.2, w: 0.6, h: 0.6 }), ..Default::default() };
+        let mut got = None;
+        ff.edit_to_writer(
+            &mut || Ok(Input::File(src.clone())),
+            &mut || Ok(Vec::<u8>::new()),
+            &mut |v| {
+                got = Some(v);
+                Ok(())
+            },
+            "mp4",
+            &free,
+            &probe,
+            &[],
+            &mut |_| {},
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let streamed = tmp.join("edited-stream.mp4");
+        std::fs::write(&streamed, got.expect("committed")).unwrap();
+        let e = ff.probe(Input::File(streamed)).unwrap();
+        assert!(e.width.is_some_and(|w| w % 2 == 0) && e.video_codec.as_deref() == Some("h264"), "{e:?}");
         let _ = std::fs::remove_dir_all(tmp);
     }
 }

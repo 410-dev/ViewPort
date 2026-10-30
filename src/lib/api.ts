@@ -1,3 +1,4 @@
+import { fileVersion } from "./edit/versions.svelte";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
@@ -120,6 +121,19 @@ export interface MediaBrief {
 
 /** Key of the built-in on/off favorite field. */
 export const FAVORITE_FIELD = "x.favorite";
+
+/** Mirror of `vp_core::edit::EditSpec`. */
+export interface EditSpec {
+  /** Clockwise, any angle. */
+  rotate_deg: number;
+  /** Keep all of the turned picture on a larger canvas (black or transparent fill). */
+  expand: boolean;
+  /** Kept part, in fractions of the turned frame's bounding box. */
+  crop: { x: number; y: number; w: number; h: number } | null;
+  trim: { start_ms: number; end_ms: number } | null;
+  speed: number;
+}
+export type SaveMode = "copy" | "overwrite";
 
 export interface LoopSegment {
   id: number;
@@ -375,6 +389,8 @@ export interface AppSettings {
     load_retries: number;
     load_retry_ms: number;
     frame_quality: number;
+    edit_quality: number;
+    edit_speeds: number[];
   };
   ml: {
     runtime_path: string;
@@ -696,6 +712,10 @@ export const api = {
   deleteMedia: (ids: number[]) => invoke<{ deleted: number; failed: string[] }>("delete_media", { ids }),
   /** Saves the frame of video `id` at `atMs` as a picture beside it; returns the new item's id. */
   saveVideoFrame: (id: number, atMs: number) => invoke<number>("save_video_frame", { id, atMs }),
+  /** Edits item `id` and saves it as a copy beside it or over it; returns the id holding the result. */
+  editMedia: (id: number, spec: EditSpec, mode: SaveMode) => invoke<number>("edit_media", { id, spec, mode }),
+  /** Which kinds can be edited here (videos need FFmpeg, or Android's media framework). */
+  editSupport: () => invoke<{ image: boolean; video: boolean }>("edit_support"),
 
   // Shard sources (src-tauri/src/shards.rs)
   shardStatus: () => invoke<ShardStatus[]>("shard_status"),
@@ -911,7 +931,15 @@ export const onThumbs = (f: (e: ThumbsEvent) => void): Promise<UnlistenFn> =>
 export const onConvert = (f: (e: ConvertEvent) => void): Promise<UnlistenFn> =>
   listen<ConvertEvent>("convert-progress", (e) => f(e.payload));
 
-export const thumbUrl = (id: number) => convertFileSrc(String(id), "vpthumb");
+/** `?e=<time>` on URLs of items edited in this session (`edit/versions.svelte.ts`). */
+const edited = (id: number) => {
+  const v = fileVersion(id);
+  return v ? `e=${v}` : "";
+};
+export const thumbUrl = (id: number) => {
+  const e = edited(id);
+  return convertFileSrc(String(id), "vpthumb") + (e ? `?${e}` : "");
+};
 /** A face picture of the people view (`thumbs.rs`). */
 export const faceUrl = (id: number) => convertFileSrc(`face-${id}`, "vpthumb");
 let mediaBase: string | null = null;
@@ -922,7 +950,8 @@ export async function initMediaUrls() {
 /** The original file, or with `fit` a display copy scaled to fit that many px (`media.rs`). */
 export const mediaUrl = (id: number, fit?: number) => {
   const url = mediaBase ? `${mediaBase}/${id}` : convertFileSrc(String(id), "vpmedia");
-  return fit ? `${url}?fit=${fit}` : url;
+  const query = [fit ? `fit=${fit}` : "", edited(id)].filter(Boolean).join("&");
+  return query ? `${url}?${query}` : url;
 };
 
 /**

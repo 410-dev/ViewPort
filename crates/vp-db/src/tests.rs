@@ -222,6 +222,29 @@ fn still_saved_beside_a_video() {
 }
 
 #[test]
+fn edited_items_follow_their_new_file() {
+    let lib = library();
+    // An edited copy beside item 4 takes its values (search finds it by them).
+    let copy = lib.db.add_beside(4, "trip/a1_edited.mp4", MediaKind::Video, 99, None, None, OCT18).unwrap();
+    lib.db.copy_values(4, copy).unwrap();
+    let both = lib.ids("유형(영상)");
+    assert!(both.contains(&4) && both.contains(&copy));
+    let rating = |id: i64| lib.db.conn().query_row(
+        "SELECT int_val FROM ext_value v JOIN ext_field f ON f.id = v.field_id WHERE f.key = 'x.rating' AND v.media_id = ?1", [id], |r| r.get::<_, i64>(0)).unwrap();
+    assert_eq!(rating(copy), rating(4));
+
+    // Overwritten: loop segments move onto the cut, sped-up timeline; ones cut away go.
+    let seg = |a, b| LoopSegment { id: 0, media_id: 4, label: String::new(), start_ms: a, end_ms: b, autoplay: false };
+    lib.db.save_loop_segment(&seg(2000, 4000)).unwrap();
+    lib.db.save_loop_segment(&seg(100, 500)).unwrap();
+    lib.db.media_replaced(4, 77, OCT18 + 1, None, None).unwrap();
+    lib.db.remap_loop_segments(4, 1000, 5000, 2.0).unwrap();
+    let segs = lib.db.loop_segments(4).unwrap();
+    assert_eq!(segs.iter().map(|s| (s.start_ms, s.end_ms)).collect::<Vec<_>>(), vec![(500, 1500)]);
+    assert_eq!(lib.db.media_location(4).unwrap().unwrap().size, 77);
+}
+
+#[test]
 fn rescan_marks_missing_and_invalidates_thumbs() {
     let lib = library();
     let ok = ThumbRow { status: ThumbStatus::Ok, pack: 0, offset: 0, len: 10, width: 4, height: 3, mime: "image/jpeg".into() };

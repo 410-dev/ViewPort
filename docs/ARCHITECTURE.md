@@ -35,6 +35,7 @@ crates/
   vp-crypto/            Argon2id 키 도출, XChaCha20-Poly1305 봉인(통째·조각 단위), 키 래핑
   vp-shard/             샤드 저장소(.vpshard): 작은 파일 다수를 큰 청크 파일로 묶어 저장, 선택적 암호화
   vp-ml/                이미지 분석: 모델 팩, ONNX Runtime 동적 로드·실행 장치 선택, 검출 출력 해석, 얼굴 정렬, 태거, 묶기
+  vp-edit/              사진 편집: 임의 각도 회전·크롭, 원래 형식으로 저장(EXIF·색 프로필 유지)
 src-tauri/              Tauri 앱: 커맨드, 상태, 백그라운드 작업 조율
 src/                    SvelteKit UI
 ```
@@ -447,6 +448,26 @@ UI에 전달되며 작업별로 `progress.emit_interval_ms` 간격으로 제한�
 - `playback.fallback_mode`: `auto`(필요할 때), `always`(모든 영상을 변환본으로 재생), `never`.
 - 구간 반복: 영상별 이름 붙은 A-B 구간, 영상당 하나를 "자동 시작"으로 지정 가능.
 - 슬라이드쇼: 이미지는 `image_interval_secs`, 영상은 재생 횟수 또는 지정 지점부터 n초.
+
+## 편집
+
+- 뷰어 윗줄의 편집 버튼이 그 패널 위에 편집기(`src/lib/edit/Editor.svelte`)를 연다. 사진: 크롭, 임의 각도 회전.
+  영상: 같은 크롭·회전과 컷 편집(구간 자르기), 배속(`viewer.edit_speeds`).
+- 편집 내용은 `vp_core::edit::EditSpec` 하나로 표현한다: 원본을 가운데 기준으로 시계 방향 `rotate_deg`만큼 돌려
+  돌린 프레임의 경계 상자에 놓고, 그 상자 기준 비율(0..1)로 크롭한다. 해상도와 무관하므로 미리보기(축소 사본)에서 정한
+  값을 원본에 그대로 쓴다. 기하 계산은 `src/lib/edit/geometry.ts`가 미러한다.
+- 회전 시 기본은 크롭 상자를 돌린 사진 안쪽에만 두어 빈 모서리가 생기지 않게 한다(각도를 바꾸면 상자가 안에 들어가게 줄어듦).
+  '여백 채우기'(`expand`)를 켜면 상자 전체를 쓸 수 있고 빈 곳은 검게(PNG·WebP·TIFF는 투명하게) 채운다.
+- 저장은 사본(`이름_edited.확장자`, 원본 옆, 태그 등 필드 값 복사) 또는 원본 덮어쓰기. 덮어쓰기는 항목 id·태그·통계를 그대로
+  두고 크기·수정 시각을 갱신해 트리거로 썸네일·분석·변환본을 버린다. 얼굴 상자와 구간 반복은 새 사진·시간축으로 옮기고,
+  잘려 나간 것은 지운다. 메모리 캐시(원본·표시용 사본·위치)는 `media::forget`으로 비우고, UI는 `?e=<시각>`을 붙인 URL로
+  WebView 캐시를 피한다(`edit/versions.svelte.ts`, 창 사이에는 `edited` 동기화).
+- 사진(`vp-edit`): JPEG·PNG·WebP(무손실)·BMP·TIFF. EXIF 방향을 먼저 적용하고 결과에서는 방향 태그를 지운다. 나머지 EXIF·ICC는 유지.
+  JPEG 품질은 `viewer.edit_quality`.
+- 영상: 데스크톱은 FFmpeg(`vp_media::Ffmpeg::edit`)로 H.264/AAC 재인코딩. mp4·m4v·mov·mkv는 같은 컨테이너, 그 밖은 MP4로
+  쓰고 덮어쓰기면 확장자가 바뀐 이름으로 항목을 옮긴다. 하드웨어 인코더를 먼저 시도한다. 샤드는 결과를 샤드에 바로 스트리밍(평문 임시 파일 없음),
+  네트워크 소스는 임시 파일을 만든 뒤 드라이버로 쓴다. Android는 FFmpeg 대신 Media3 Transformer(`ViewPortPlugin.kt`의 `editVideo`)로
+  항상 MP4를 만들며, 기기 안 파일만 편집할 수 있다.
 
 ## 향후 확장을 위한 고려
 

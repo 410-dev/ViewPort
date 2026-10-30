@@ -26,6 +26,8 @@
   import Icon from "./ui/Icon.svelte";
   import { isTyping, matches } from "./keys";
   import InfoPanel from "./panel/InfoPanel.svelte";
+  import Editor from "./edit/Editor.svelte";
+  import { bumpFile } from "./edit/versions.svelte";
   import { audible, audio, claimFocus, setMuted, setVolume } from "./audio.svelte";
   import VolumeControl from "./ui/VolumeControl.svelte";
   import { prefs, savePrefs } from "./prefs.svelte";
@@ -161,7 +163,10 @@
     if (mode === "always" && !b.has_variant && !converting[b.id] && hasFfmpeg) convert(b.id);
   });
 
-  const src = (id: number) => again(`m:${id}`, srcVersion[id] ? `${mediaUrl(id)}?v=${srcVersion[id]}` : mediaUrl(id));
+  const src = (id: number) => {
+    const url = mediaUrl(id);
+    return again(`m:${id}`, srcVersion[id] ? `${url}${url.includes("?") ? "&" : "?"}v=${srcVersion[id]}` : url);
+  };
 
   // ---- failed loads. A request can fail while the app is in the background (Android
   // pauses the WebView), which left a broken picture on return: retry a few times
@@ -282,6 +287,50 @@
       })
       .catch((e) => showNotice(`${t("viewer.frameFailed")}: ${asCmdError(e).message}`, true))
       .finally(() => (savingFrame = false));
+  }
+
+  // ---- editing
+  let editing = $state(false);
+  let canEditVideo = $state(false);
+  api
+    .editSupport()
+    .then((s) => (canEditVideo = s.video))
+    .catch(() => {});
+  /** Picture formats the editor writes back (`vp_edit::Format`). */
+  const EDITABLE_IMAGES = new Set(["jpg", "jpeg", "jpe", "jfif", "png", "webp", "bmp", "tif", "tiff"]);
+
+  function openEditor() {
+    const b = cur;
+    if (!b) return;
+    if (b.kind === "video" ? !canEditVideo : b.kind !== "image" || !EDITABLE_IMAGES.has(b.ext.toLowerCase())) {
+      showNotice(b.kind === "video" ? t("edit.noVideo") : t("edit.unsupported"), true);
+      return;
+    }
+    video?.pause();
+    if (slideshow) toggleSlideshow();
+    editing = true;
+  }
+
+  function edited(result: number, mode: "copy" | "overwrite") {
+    editing = false;
+    if (mode === "copy") {
+      showNotice(t("edit.savedCopy"));
+      broadcast("media");
+    } else {
+      bumpFile(result);
+      invalidate([result]);
+      tiers.delete(result);
+      broadcast("edited", [result]);
+      broadcast("media", [result]);
+      api.mediaBrief([result]).then((bs) => {
+        for (const b of bs) {
+          known.set(b.id, b);
+          if (brief?.id === b.id) brief = b;
+        }
+      });
+      showNotice(t("edit.saved"));
+    }
+    onchanged?.();
   }
 
   let confirmDelete = $state<number | null>(null);
@@ -708,7 +757,7 @@
   );
 
   function onKey(e: KeyboardEvent) {
-    if (!active || isTyping(e)) return;
+    if (!active || isTyping(e) || editing) return;
     if (confirmDelete !== null) {
       if (e.key === "Escape" && !deleting) confirmDelete = null;
       return;
@@ -1335,6 +1384,9 @@
         ><Icon name="heart" size={15} /></button
       >
       <button class="hb" class:on={showInfo} onclick={() => (showInfo = !showInfo)} title={t("viewer.info")}><Icon name="info" size={15} /></button>
+      <button class="hb" disabled={!cur || cur.kind === "nonmedia"} onclick={openEditor} title={t("viewer.edit")} aria-label={t("viewer.edit")}
+        ><Icon name="pencil" size={15} /></button
+      >
       <button class="hb del" onclick={() => id !== undefined && (confirmDelete = id)} title={t("viewer.delete")} aria-label={t("viewer.delete")}
         ><Icon name="trash" size={15} /></button
       >
@@ -1438,6 +1490,9 @@
         </footer>
       </div>
     </div>
+  {/if}
+  {#if editing && cur}
+    <Editor brief={cur} src={cur.kind === "video" ? src(cur.id) : imageSrc(cur)} onclose={() => (editing = false)} onsaved={edited} />
   {/if}
   {#if prefs.app?.viewer.show_nav_buttons ?? true}
     <button class="nav prev" class:visible={showHud} onclick={() => go(-1)} aria-label={t("viewer.prev")}><Icon name="chevronLeft" size={26} /></button>

@@ -116,6 +116,14 @@ fn display_key(id: i64, edge: u32) -> i64 {
     -((1i64 << 62) | ((edge.min(16383) as i64) << 40) | (id & ((1i64 << 40) - 1)))
 }
 
+/// Forgets what is cached about item `id` (its file was replaced): the original, its
+/// converted copy, display copies and where it is.
+pub fn forget(ws: &Workspace, id: i64) {
+    ws.view_locations.lock().unwrap().remove(&id);
+    let low = id & ((1i64 << 40) - 1);
+    ws.cache.remove_where(|k| k == id || k == -id || (k < 0 && (-k) >> 62 == 1 && (-k) & ((1i64 << 40) - 1) == low));
+}
+
 /// Largest display copy edge (`display_key` keeps 14 bits of it).
 const MAX_DISPLAY_EDGE: u32 = 16383;
 

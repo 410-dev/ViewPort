@@ -44,6 +44,7 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
 | `vp-media` | 외부 FFmpeg/ffprobe: 분석, 프레임 추출, 고호환 변환(HW 인코더 → libx264) |
 | `vp-crypto` | Argon2id 키 도출, XChaCha20-Poly1305 봉인(통째·조각 단위), 키 래핑 |
 | `vp-shard` | 샤드 저장소(`.vpshard`): 작은 파일 다수를 4 GiB 미만 청크로 묶음, 선택적 암호화, 최적화·검증·재구축 |
+| `vp-edit` | 사진 편집: 임의 각도 회전·크롭(`vp_core::edit::EditSpec`), 원래 형식으로 저장(EXIF·ICC 유지, EXIF 방향은 적용 후 지움) |
 | `vp-ml` | 이미지 분석: 모델 팩(`manifest.json`), ONNX Runtime 동적 로드(feature `onnx`, 데스크톱만)·실행 장치 순서(CUDA→DirectML→CPU), 검출 출력 해석, 얼굴 정렬, 태거, 묶기. DB 비의존 |
 
 의존 방향: `src-tauri → vp-* → vp-core`. **vp-query는 DB에 의존하지 않는다** — `(sql, params)`만 만들고 컬럼 매핑은 주입받는다.
@@ -69,6 +70,8 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
   `mirror.rs`(소스 미러: 미러가 복사한 파일만 추적·교체·삭제, 원본·대상이 둘 다 있을 때만 동기화),
   `ml.rs`(이미지 분석 작업·묶기·인물 커맨드. 결과는 `vp-db::faces`, 자동 값은 `x.people`/`x.characters`/`x.auto_tags`에 `auto:*` 출처로).
   모델·ONNX Runtime은 번들하지 않는다(`models/README.md`).
+- `edit.rs`: 사진·영상 편집(`edit_media`, 사본 저장/원본 덮어쓰기). 영상은 FFmpeg, Android는 Media3(`platform::edit_video`).
+  덮어쓰면 `media_replaced`(트리거가 썸네일·분석·변환본 정리)·얼굴 상자·구간 반복을 옮기고 `media::forget`으로 캐시를 비운다.
 - `dedup.rs`: 중복 파일 찾기(크기 → 앞뒤 해시 → 전체 SHA-256, 샤드는 저장된 해시, `media_hash` 캐시)와 처리(삭제,
   샤드 안 공간 최적화 = `Shard::link` 공유 본문), 기록(`dup_report`, 라이브러리에만).
 
@@ -77,7 +80,9 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
   (다크 기본, `data-theme="light"`)과 알약형 기본 컴포넌트(`.btn`, `.icon-btn`, `.seg`, `.input`, `.switch`, `.dialog`)를 정의한다.
 - `Library.svelte`가 조합: `shell/Sidebar`, `shell/Toolbar`, `views/*`(그리드·목록·트리), `panel/RightPanel`(미리보기/결합/정보),
   `StatusBar`(작업 진행), `query/QueryModal`(쿼리 명령어 편집기), `settings/SettingsPanel`, `SourceDialog`, `Viewer`,
-  `people/PeopleView`(인물·캐릭터 그룹, 이름 붙이기·합치기·"이 사람 아님"), `dedup/DedupDialog`(중복 파일 찾기·처리·기록).
+  `people/PeopleView`(인물·캐릭터 그룹, 이름 붙이기·합치기·"이 사람 아님"), `dedup/DedupDialog`(중복 파일 찾기·처리·기록),
+  `edit/Editor`(뷰어 안 편집기, 기하 계산은 `edit/geometry.ts`가 `vp_core::edit` 미러). 파일을 덮어쓴 항목은
+  `edit/versions.svelte.ts`의 버전이 미디어·썸네일 URL에 붙어 WebView 캐시를 피한다.
 - `views/`: 모든 보기는 `ViewProps`(`views/types.ts`)를 받고 `Selection`·`briefs` 캐시를 공유한다. 새 보기는 `views/index.ts`의
   `VIEWS`에, 새 열은 `views/columns.ts`의 `COLUMNS`에 항목 하나로 추가한다. 그리드·목록은 기본 스크롤바 대신
   `SectionScrollbar`(드래그, 구간 선, 드래그 중 구간 이름)를 쓴다. 구간은 검색 결과의 `sections`(가장 우선하는 정렬 키가

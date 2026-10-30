@@ -156,6 +156,54 @@ mod imp {
         let data = data.filter(|d| !d.is_empty())?;
         Some(super::ScaledImage { data, width: out.width, height: out.height, png: out.png })
     }
+
+    #[derive(Deserialize)]
+    struct Progress {
+        progress: f64,
+    }
+
+    /// Edits a video with Media3 Transformer (H.264/AAC MP4 at `output`). Blocks until it
+    /// is done; `progress` is polled meanwhile and `cancel` stops it.
+    pub fn edit_video(
+        input: &Path,
+        output: &Path,
+        spec: &vp_core::edit::EditSpec,
+        progress: &mut dyn FnMut(f64),
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<(), String> {
+        let h = HANDLE.get().ok_or("no media framework")?.clone();
+        let c = spec.crop.unwrap_or(vp_core::edit::Crop { x: 0.0, y: 0.0, w: 0.0, h: 0.0 });
+        let args = json!({
+            "input": input, "output": output, "rotateDeg": spec.rotate_deg,
+            "cropX": c.x, "cropY": c.y, "cropW": c.w, "cropH": c.h,
+            "startMs": spec.trim.map_or(0, |t| t.start_ms), "endMs": spec.trim.map_or(-1, |t| t.end_ms),
+            "speed": spec.speed,
+        });
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let runner = {
+            let (h, done) = (h.clone(), done.clone());
+            std::thread::spawn(move || {
+                let r = h.run_mobile_plugin::<serde_json::Value>("editVideo", args).map(|_| ()).map_err(|e| e.to_string());
+                done.store(true, std::sync::atomic::Ordering::Relaxed);
+                r
+            })
+        };
+        let mut cancelled = false;
+        while !done.load(std::sync::atomic::Ordering::Relaxed) {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            if !cancelled && cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                cancelled = true;
+                let _ = h.run_mobile_plugin::<serde_json::Value>("editCancel", ());
+            }
+            if let Ok(p) = h.run_mobile_plugin::<Progress>("editProgress", ()) {
+                if p.progress >= 0.0 {
+                    progress(p.progress.clamp(0.0, 1.0));
+                }
+            }
+        }
+        let r = runner.join().map_err(|_| "editor thread failed".to_string())?;
+        if cancelled { Err("cancelled".into()) } else { r }
+    }
 }
 
 #[cfg(not(target_os = "android"))]
@@ -203,9 +251,19 @@ mod imp {
     pub fn scaled_image(_path: &Path, _max_edge: u32, _quality: u8) -> Option<super::ScaledImage> {
         None
     }
+
+    pub fn edit_video(
+        _input: &Path,
+        _output: &Path,
+        _spec: &vp_core::edit::EditSpec,
+        _progress: &mut dyn FnMut(f64),
+        _cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<(), String> {
+        Err("no media framework".into())
+    }
 }
 
-pub use imp::{frame, media_available, probe, scaled_image};
+pub use imp::{edit_video, frame, media_available, probe, scaled_image};
 
 /// Android: when the media store first saw each file under folder `root`, by path relative
 /// to it (ms). The file system there keeps no usable birth time. `None` elsewhere.

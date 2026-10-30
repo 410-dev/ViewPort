@@ -24,6 +24,7 @@ tauri-plugin-opener = "2"
 serde.workspace = true
 serde_json.workspace = true
 vp-core.workspace = true
+vp-edit.workspace = true
 vp-query.workspace = true
 vp-db.workspace = true
 vp-driver.workspace = true

@@ -28,6 +28,20 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.audio.SonicAudioProcessor
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.effect.Crop
+import androidx.media3.effect.ScaleAndRotateTransformation
+import androidx.media3.effect.SpeedChangeEffect
+import androidx.media3.transformer.Composition
+import androidx.media3.transformer.EditedMediaItem
+import androidx.media3.transformer.Effects
+import androidx.media3.transformer.ExportException
+import androidx.media3.transformer.ExportResult
+import androidx.media3.transformer.ProgressHolder
+import androidx.media3.transformer.Transformer
 import app.tauri.annotation.ActivityCallback
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
@@ -54,6 +68,24 @@ class FrameArgs {
   var quality: Int = 85
   /** The frame at that very time (not the keyframe before it); with maxEdge 0, unscaled. */
   var exact: Boolean = false
+}
+
+/** A video edit (`vp_core::edit::EditSpec`, flattened by `platform.rs`). */
+@InvokeArg
+class EditArgs {
+  lateinit var input: String
+  lateinit var output: String
+  /** Clockwise. */
+  var rotateDeg: Double = 0.0
+  /** Kept part in fractions of the rotated frame's bounding box; cropW 0 keeps it all. */
+  var cropX: Double = 0.0
+  var cropY: Double = 0.0
+  var cropW: Double = 0.0
+  var cropH: Double = 0.0
+  /** Kept span in ms; endMs < 0 keeps the rest. */
+  var startMs: Long = 0
+  var endMs: Long = -1
+  var speed: Double = 1.0
 }
 
 @InvokeArg
@@ -519,5 +551,88 @@ class ViewPortPlugin(private val activity: Activity) : Plugin(activity) {
     "audio/amr-wb" -> "amr_wb"
     "audio/raw" -> "pcm"
     else -> mime.substringAfter('/')
+  }
+
+  // ------------------------------------------------------------------ video editing
+
+  /** The export running (one at a time); only touched on the main thread. */
+  private var transformer: Transformer? = null
+
+  /**
+   * Edits a video with Media3 Transformer into an H.264/AAC MP4 at `output`. Resolves when
+   * the export ends; `editProgress` and `editCancel` act on it meanwhile.
+   */
+  @androidx.annotation.OptIn(UnstableApi::class)
+  @Command
+  fun editVideo(invoke: Invoke) {
+    val a = invoke.parseArgs(EditArgs::class.java)
+    activity.runOnUiThread {
+      try {
+        if (transformer != null) return@runOnUiThread invoke.reject("another edit is running")
+        val clip = MediaItem.ClippingConfiguration.Builder().setStartPositionMs(a.startMs)
+        if (a.endMs >= 0) clip.setEndPositionMs(a.endMs)
+        val item = MediaItem.Builder().setUri(Uri.fromFile(File(a.input))).setClippingConfiguration(clip.build()).build()
+        val video = mutableListOf<androidx.media3.common.Effect>()
+        val audio = mutableListOf<androidx.media3.common.audio.AudioProcessor>()
+        if (Math.abs(a.speed - 1.0) > 1e-6) {
+          video.add(SpeedChangeEffect(a.speed.toFloat()))
+          audio.add(SonicAudioProcessor().apply { setSpeed(a.speed.toFloat()) })
+        }
+        val turn = ((a.rotateDeg % 360) + 360) % 360
+        if (turn > 1e-6) {
+          // Media3 turns counter-clockwise and grows the frame to fit the turned picture.
+          video.add(ScaleAndRotateTransformation.Builder().setRotationDegrees((-turn).toFloat()).build())
+        }
+        if (a.cropW > 0 && (a.cropX > 0 || a.cropY > 0 || a.cropW < 1 || a.cropH < 1)) {
+          // Normalized device coordinates: -1..1, y up.
+          val l = (a.cropX * 2 - 1).toFloat()
+          val r = ((a.cropX + a.cropW) * 2 - 1).toFloat()
+          val t = (1 - a.cropY * 2).toFloat()
+          val b = (1 - (a.cropY + a.cropH) * 2).toFloat()
+          video.add(Crop(l, r, b, t))
+        }
+        val edited = EditedMediaItem.Builder(item).setEffects(Effects(audio, video)).build()
+        val t = Transformer.Builder(activity)
+          .setVideoMimeType(MimeTypes.VIDEO_H264)
+          .setAudioMimeType(MimeTypes.AUDIO_AAC)
+          .addListener(object : Transformer.Listener {
+            override fun onCompleted(composition: Composition, result: ExportResult) {
+              transformer = null
+              invoke.resolve()
+            }
+
+            override fun onError(composition: Composition, result: ExportResult, exception: ExportException) {
+              transformer = null
+              File(a.output).delete()
+              invoke.reject(exception.message ?: "edit failed")
+            }
+          })
+          .build()
+        transformer = t
+        t.start(edited, a.output)
+      } catch (e: Exception) {
+        transformer = null
+        invoke.reject(e.message ?: "edit failed")
+      }
+    }
+  }
+
+  @androidx.annotation.OptIn(UnstableApi::class)
+  @Command
+  fun editProgress(invoke: Invoke) {
+    activity.runOnUiThread {
+      val holder = ProgressHolder()
+      val known = transformer?.getProgress(holder) == Transformer.PROGRESS_STATE_AVAILABLE
+      invoke.resolve(JSObject().put("progress", if (known) holder.progress / 100.0 else -1.0))
+    }
+  }
+
+  @Command
+  fun editCancel(invoke: Invoke) {
+    activity.runOnUiThread {
+      transformer?.cancel()
+      transformer = null
+      invoke.resolve()
+    }
   }
 }

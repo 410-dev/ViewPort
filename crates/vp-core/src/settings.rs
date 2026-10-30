@@ -713,6 +713,10 @@ pub struct ViewerSettings {
     pub load_retry_ms: u32,
     /// JPEG quality (0..=100) of a video frame saved as a picture from the viewer.
     pub frame_quality: u8,
+    /// JPEG quality (0..=100) of edited pictures (crop, rotation).
+    pub edit_quality: u8,
+    /// Speeds the editor offers for videos.
+    pub edit_speeds: Vec<f64>,
 }
 
 impl Default for ViewerSettings {
@@ -744,6 +748,8 @@ impl Default for ViewerSettings {
             load_retries: 3,
             load_retry_ms: 700,
             frame_quality: 95,
+            edit_quality: 92,
+            edit_speeds: vec![0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 4.0],
         }
     }
 }
