@@ -18,12 +18,15 @@
   let {
     brief,
     src,
+    poster,
     onclose,
     onsaved,
   }: {
     brief: MediaBrief;
     /** URL of the picture or video to show while editing. */
     src: string;
+    /** A video's thumbnail, shown until its first frame is decoded. */
+    poster?: string;
     onclose: () => void;
     /** Saved: `id` holds the result (a new item for a copy). */
     onsaved: (id: number, mode: SaveMode) => void;
@@ -202,6 +205,8 @@
     natH = v.videoHeight;
     duration = isFinite(v.duration) ? v.duration * 1000 : (brief.duration_ms ?? 0);
     trimEnd = duration;
+    // Android's WebView shows nothing until a frame is decoded: ask for the first one.
+    v.currentTime = 0.001;
     refit();
   }
 
@@ -259,6 +264,8 @@
     } else {
       video.currentTime = at / 1000;
     }
+    // A paused WebView may report the new time only later; "start/end here" needs it now.
+    now = video.currentTime * 1000;
   }
 
   function setStartHere() {
@@ -377,6 +384,7 @@
           bind:this={video}
           class="media"
           {src}
+          {poster}
           playsinline
           preload="auto"
           style:width="{natW * (box?.k ?? 0)}px"
@@ -850,6 +858,9 @@
     scrollbar-width: none;
     touch-action: pan-x;
   }
+  .chips::-webkit-scrollbar {
+    display: none;
+  }
   .speeds {
     flex-wrap: wrap;
     overflow: visible;
@@ -899,10 +910,11 @@
     color: var(--fg);
     font-weight: 600;
   }
+  /* Far enough from the screen edges that dragging a grip is not the system back gesture. */
   .track {
     position: relative;
     height: 40px;
-    margin: 0 12px;
+    margin: 0 28px;
     border-radius: 8px;
     background: rgb(255 255 255 / 0.06);
     touch-action: none;

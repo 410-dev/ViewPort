@@ -1492,7 +1492,7 @@
     </div>
   {/if}
   {#if editing && cur}
-    <Editor brief={cur} src={cur.kind === "video" ? src(cur.id) : imageSrc(cur)} onclose={() => (editing = false)} onsaved={edited} />
+    <Editor brief={cur} src={cur.kind === "video" ? src(cur.id) : imageSrc(cur)} poster={thumbUrl(cur.id)} onclose={() => (editing = false)} onsaved={edited} />
   {/if}
   {#if prefs.app?.viewer.show_nav_buttons ?? true}
     <button class="nav prev" class:visible={showHud} onclick={() => go(-1)} aria-label={t("viewer.prev")}><Icon name="chevronLeft" size={26} /></button>
