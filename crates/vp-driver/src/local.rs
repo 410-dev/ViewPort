@@ -195,13 +195,19 @@ impl MediaDriver for LocalDriver {
     }
 }
 
-/// Writes via a temp file + rename so readers never see a partial file.
+/// Writes via a temp file + rename so readers never see a partial file. The data reaches
+/// the disk before the rename, so a power cut cannot leave an empty file in place of the
+/// old one.
 pub fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
     let tmp = path.with_extension(format!(
         "{}.tmp",
         path.extension().and_then(|e| e.to_str()).unwrap_or_default()
     ));
-    fs::write(&tmp, data)?;
+    {
+        let mut f = File::create(&tmp)?;
+        std::io::Write::write_all(&mut f, data)?;
+        f.sync_all()?;
+    }
     fs::rename(&tmp, path)
 }
 

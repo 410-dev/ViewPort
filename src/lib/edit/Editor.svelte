@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { api, asCmdError, type EditSpec, type MediaBrief, type SaveMode } from "../api";
+  import { api, asCmdError, type EditSpec, type LoopSegment, type MediaBrief, type SaveMode } from "../api";
   import { t } from "../i18n.svelte";
   import Icon from "../ui/Icon.svelte";
   import { fade, pop } from "../ui/motion";
@@ -210,8 +210,52 @@
     refit();
   }
 
+  // ---- loop segments: drawn in lanes on the cut track, and offered as cut spans
+  let segments = $state<LoopSegment[]>([]);
+  $effect(() => {
+    if (!isVideo) return;
+    const id = brief.id;
+    api
+      .loopSegments(id)
+      .then((list) => {
+        if (id === brief.id) segments = list;
+      })
+      .catch(() => {});
+  });
+  /** Lanes the track is laid out for at least; more overlapping segments add lanes and
+   * every line gets thinner. */
+  const LANES = 3;
+  /** Each segment with its lane: the first whose segments all end before it starts. */
+  const laned = $derived.by(() => {
+    const ends: number[] = [];
+    return [...segments]
+      .sort((a, b) => a.start_ms - b.start_ms || a.end_ms - b.end_ms)
+      .map((seg) => {
+        let lane = ends.findIndex((e) => e <= seg.start_ms);
+        if (lane < 0) lane = ends.length;
+        ends[lane] = seg.end_ms;
+        return { seg, lane };
+      });
+  });
+  /** Height unit of the lanes, in % of the track: a line is two units, the gaps between
+   * lines and at the edges one (three lanes: fifths of the track for the lines). */
+  const laneUnit = $derived(100 / (3 * Math.max(LANES, ...laned.map((x) => x.lane + 1)) + 1));
+  let loopMenu = $state(false);
+  let loopBtn = $state<HTMLElement | null>(null);
+  const segName = (seg: LoopSegment, i: number) => seg.label.trim() || t("edit.loopNamed", { n: i + 1 });
+
+  function pickLoop(i: number) {
+    loopMenu = false;
+    const seg = segments[i];
+    if (!seg || duration <= 0) return;
+    trimEnd = Math.min(duration, Math.max(seg.end_ms, MIN_SPAN));
+    trimStart = Math.max(0, Math.min(seg.start_ms, trimEnd - MIN_SPAN));
+    video?.pause();
+    seekTo(trimStart);
+  }
+
   function onTime() {
-    if (!video) return;
+    if (!video || seeking || pendingSeek !== null) return;
     now = video.currentTime * 1000;
     // Play only the kept span, over and over.
     if (!video.paused && (now >= trimEnd - 20 || now < trimStart - 250)) video.currentTime = trimStart / 1000;
@@ -257,15 +301,48 @@
     const at = trimAt(e);
     if (trimDrag === "start") {
       trimStart = Math.min(at, trimEnd - MIN_SPAN);
-      video.currentTime = trimStart / 1000;
+      seekTo(trimStart);
     } else if (trimDrag === "end") {
       trimEnd = Math.max(at, trimStart + MIN_SPAN);
-      video.currentTime = trimEnd / 1000;
+      seekTo(trimEnd);
     } else {
-      video.currentTime = at / 1000;
+      seekTo(at);
     }
-    // A paused WebView may report the new time only later; "start/end here" needs it now.
-    now = video.currentTime * 1000;
+  }
+
+  function endTrim() {
+    if (!trimDrag) return;
+    trimDrag = null;
+    if (pendingSeek !== null && !seeking) seekTo(pendingSeek);
+  }
+
+  // Seeks are chained: a new one starts when the last has shown its frame, so a drag shows
+  // frames as fast as the device decodes them instead of restarting a seek on every move.
+  // Without live skimming a drag seeks only when it ends.
+  const liveScrub = $derived(prefs.app?.viewer.edit_live_scrub ?? true);
+  let seeking = false;
+  let seekStarted = 0;
+  let pendingSeek: number | null = null;
+  /** A seek that never reports back (it happens) stops holding the next one after this. */
+  const SEEK_STUCK_MS = 4000;
+
+  function seekTo(ms: number) {
+    // "Start/end here" need the time at once; a paused WebView may report it only later.
+    now = ms;
+    if (!video) return;
+    if ((trimDrag && !liveScrub) || (seeking && performance.now() - seekStarted < SEEK_STUCK_MS)) {
+      pendingSeek = ms;
+      return;
+    }
+    pendingSeek = null;
+    seeking = true;
+    seekStarted = performance.now();
+    video.currentTime = ms / 1000;
+  }
+
+  function onSeeked() {
+    seeking = false;
+    if (pendingSeek !== null && (liveScrub || !trimDrag)) seekTo(pendingSeek);
   }
 
   function setStartHere() {
@@ -332,6 +409,7 @@
       if (saving) return;
       if (confirming) confirming = false;
       else if (menu) menu = false;
+      else if (loopMenu) loopMenu = false;
       else onclose();
     }),
   );
@@ -341,6 +419,7 @@
       e.stopPropagation();
       if (confirming) confirming = false;
       else if (menu) menu = false;
+      else if (loopMenu) loopMenu = false;
       else onclose();
     }
   }
@@ -392,6 +471,7 @@
           style:transform="translate(-50%, -50%) rotate({deg}deg)"
           onloadedmetadata={onMeta}
           ontimeupdate={onTime}
+          onseeked={onSeeked}
           onplay={() => (playing = true)}
           onpause={() => (playing = false)}
         ></video>
@@ -479,10 +559,15 @@
           role="presentation"
           onpointerdown={(e) => startTrim(e, "head")}
           onpointermove={moveTrim}
-          onpointerup={() => (trimDrag = null)}
-          onpointercancel={() => (trimDrag = null)}
+          onpointerup={endTrim}
+          onpointercancel={endTrim}
         >
           {#if duration > 0}
+            {#each laned as { seg, lane } (seg.id)}
+              {@const a = Math.max(0, Math.min(duration, seg.start_ms))}
+              {@const b = Math.max(a, Math.min(duration, seg.end_ms))}
+              <span class="lane" class:auto={seg.autoplay} style:top="{laneUnit * (1 + 3 * lane)}%" style:height="{laneUnit * 2}%" style:left="{(a / duration) * 100}%" style:width="{((b - a) / duration) * 100}%"></span>
+            {/each}
             <span class="kept" style:left="{(trimStart / duration) * 100}%" style:width="{((trimEnd - trimStart) / duration) * 100}%"></span>
             <span class="head" style:left="{(now / duration) * 100}%"></span>
             <span
@@ -491,7 +576,8 @@
               role="presentation"
               onpointerdown={(e) => startTrim(e, "start")}
               onpointermove={moveTrim}
-              onpointerup={() => (trimDrag = null)}
+              onpointerup={endTrim}
+              onpointercancel={endTrim}
             ></span>
             <span
               class="grip end"
@@ -499,16 +585,33 @@
               role="presentation"
               onpointerdown={(e) => startTrim(e, "end")}
               onpointermove={moveTrim}
-              onpointerup={() => (trimDrag = null)}
+              onpointerup={endTrim}
+              onpointercancel={endTrim}
             ></span>
           {/if}
         </div>
-        <div class="row chips">
+        <div class="row chips trim-chips">
           <button class="chip" onclick={setStartHere}>{t("edit.setStart")}</button>
           <button class="chip" onclick={setEndHere}>{t("edit.setEnd")}</button>
+          {#if segments.length}
+            <button class="chip" class:on={loopMenu} bind:this={loopBtn} onclick={() => (loopMenu = !loopMenu)}>{t("edit.fromLoop")}</button>
+          {/if}
           <span class="sep"></span>
           <span class="note tabular">{t("edit.result", { t: fmt((trimEnd - trimStart) / speed) })}</span>
         </div>
+        {#if loopMenu}
+          <div class="loops" transition:pop use:dismiss={{ onclose: () => (loopMenu = false), keep: () => [loopBtn] }}>
+            {#each segments as seg, i (seg.id)}
+              {@const picked = Math.abs(seg.start_ms - trimStart) < 1 && Math.abs(seg.end_ms - trimEnd) < 1}
+              <button class:on={picked} onclick={() => pickLoop(i)}>
+                <span class="name">{segName(seg, i)}</span>
+                <span class="range tabular">{fmt(seg.start_ms)} – {fmt(seg.end_ms)}</span>
+                {#if seg.autoplay}<span class="badge">{t("viewer.auto")}</span>{/if}
+                {#if picked}<Icon name="check" size={14} />{/if}
+              </button>
+            {/each}
+          </div>
+        {/if}
       {:else}
         <div class="row chips speeds">
           {#each speeds as s (s)}
@@ -809,6 +912,7 @@
   }
   /* Every tab takes the same height, so the picture does not jump when switching. */
   .panel {
+    position: relative;
     display: flex;
     flex-direction: column;
     justify-content: center;
@@ -860,6 +964,68 @@
   }
   .chips::-webkit-scrollbar {
     display: none;
+  }
+  .trim-chips {
+    flex-wrap: wrap;
+    overflow: visible;
+  }
+  .trim-chips .note {
+    margin-left: auto;
+  }
+  /* Loop segments to cut to, above the panel: full width on a phone. */
+  .loops {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 8px);
+    z-index: 5;
+    width: min(100%, 420px);
+    max-height: 50vh;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    padding: 4px;
+    border-radius: var(--radius-lg);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    box-shadow: 0 10px 30px rgb(0 0 0 / 0.5);
+  }
+  .loops button {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 44px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: var(--radius);
+    background: transparent;
+    color: var(--fg);
+    text-align: left;
+  }
+  .loops button:hover,
+  .loops button.on {
+    background: var(--hover);
+  }
+  .loops .name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 600;
+  }
+  .loops .range {
+    color: var(--fg-2);
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  .loops .badge {
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 25%, transparent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
   }
   .speeds {
     flex-wrap: wrap;
@@ -918,6 +1084,16 @@
     border-radius: 8px;
     background: rgb(255 255 255 / 0.06);
     touch-action: none;
+  }
+  .lane {
+    position: absolute;
+    min-width: 6px;
+    border-radius: 999px;
+    background: rgb(255 255 255 / 0.32);
+    pointer-events: none;
+  }
+  .lane.auto {
+    background: color-mix(in srgb, var(--accent) 75%, #fff);
   }
   .kept {
     position: absolute;

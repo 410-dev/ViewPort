@@ -717,6 +717,9 @@ pub struct ViewerSettings {
     pub edit_quality: u8,
     /// Speeds the editor offers for videos.
     pub edit_speeds: Vec<f64>,
+    /// The editor's video follows a dragged cut grip or playhead frame by frame (off: it
+    /// shows the frame only when the drag ends, for slow devices).
+    pub edit_live_scrub: bool,
 }
 
 impl Default for ViewerSettings {
@@ -750,6 +753,7 @@ impl Default for ViewerSettings {
             frame_quality: 95,
             edit_quality: 92,
             edit_speeds: vec![0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 4.0],
+            edit_live_scrub: true,
         }
     }
 }

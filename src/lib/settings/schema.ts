@@ -359,6 +359,7 @@ export const SECTIONS: Section[] = [
           { kind: "number", ...app({ path: "viewer.load_retry_ms", label: "set.loadRetryMs" }), min: 100, max: 10000, step: 100, unit: "ms" },
           { kind: "number", ...app({ path: "viewer.frame_quality", label: "set.frameQuality", help: "set.frameQuality.help" }), min: 1, max: 100, step: 1 },
           { kind: "number", ...app({ path: "viewer.edit_quality", label: "set.editQuality", help: "set.editQuality.help" }), min: 1, max: 100, step: 1 },
+          { kind: "toggle", ...app({ path: "viewer.edit_live_scrub", label: "set.editLiveScrub", help: "set.editLiveScrub.help" }) },
         ],
       },
       {

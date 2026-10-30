@@ -391,6 +391,7 @@ export interface AppSettings {
     frame_quality: number;
     edit_quality: number;
     edit_speeds: number[];
+    edit_live_scrub: boolean;
   };
   ml: {
     runtime_path: string;

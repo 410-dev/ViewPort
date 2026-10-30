@@ -161,6 +161,14 @@ fn edit_image(
     }
 }
 
+/// Moves a finished output over `target` once its data is on the disk: a power cut then
+/// leaves the old file or the new one, never an empty one.
+fn finish_part(part: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
+    // Windows flushes only through a handle that may write.
+    std::fs::OpenOptions::new().write(true).open(part)?.sync_all()?;
+    std::fs::rename(part, target)
+}
+
 /// A temporary file removed when dropped (unless taken).
 struct Temp(Option<PathBuf>);
 
@@ -234,7 +242,7 @@ fn edit_video(
         } else if let Some(final_path) = driver.local_path(&target) {
             let part = Temp(Some(part_path(&final_path)));
             ff.edit(&mut make_input, part.0.as_ref().unwrap(), format, spec, &probe, &encoders, &mut progress, cancel).map_err(failed)?;
-            std::fs::rename(part.0.as_ref().unwrap(), &final_path)?;
+            finish_part(part.0.as_ref().unwrap(), &final_path)?;
         } else {
             // Network sources: made in a temporary file, then written through the driver.
             let tmp = Temp(Some(std::env::temp_dir().join(format!("viewport-edit-{id}-{}.{out_ext}", now_ms()))));
@@ -250,7 +258,7 @@ fn edit_video(
         crate::platform::edit_video(&input, part.0.as_ref().unwrap(), spec, &mut progress, cancel).map_err(|e| {
             if e == "cancelled" { CmdError::new("cancelled", e) } else { CmdError::new("edit_failed", e) }
         })?;
-        std::fs::rename(part.0.as_ref().unwrap(), &final_path)?;
+        finish_part(part.0.as_ref().unwrap(), &final_path)?;
     }
     if cancel.load(Ordering::Relaxed) {
         return Err(CmdError::new("cancelled", "cancelled"));
