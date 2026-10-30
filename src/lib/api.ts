@@ -307,6 +307,13 @@ export interface UiSettings {
   font_ui: string;
   font_editor: string;
   font_size: number;
+  page_zoom: number;
+  page_zoom_step: number;
+  page_zoom_min: number;
+  page_zoom_max: number;
+  page_zoom_in_keys: string[];
+  page_zoom_out_keys: string[];
+  page_zoom_reset_keys: string[];
   view_mode: "grid" | "list" | "tree";
   recursive: boolean;
   panel_mode: "preview" | "both" | "info";

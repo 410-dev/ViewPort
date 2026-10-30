@@ -5,6 +5,7 @@
  */
 import { api, platformApi, type AppSettings, type UiSettings } from "./api";
 import { i18n, resolveLocale } from "./i18n.svelte";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { isMobile } from "./platform";
 
 export const prefs = $state<{ app: AppSettings | null }>({ app: null });
@@ -38,6 +39,21 @@ export function applyPrefs(app: AppSettings) {
   i18n.queryLocale = u.query_locale === "auto" ? i18n.locale : resolveLocale(u.query_locale);
   root.lang = i18n.locale;
   matchSystemBars(theme);
+  applyZoom(u);
+}
+
+/** Desktop: the window's scale, `ui.page_zoom` clamped to its range. */
+export function pageZoom(u: UiSettings, z = u.page_zoom): number {
+  return Math.min(u.page_zoom_max || 200, Math.max(u.page_zoom_min || 50, z || 100));
+}
+
+let lastZoom = 100;
+function applyZoom(u: UiSettings) {
+  if (isMobile) return;
+  const z = pageZoom(u);
+  if (z === lastZoom) return;
+  lastZoom = z;
+  getCurrentWebview().setZoom(z / 100).catch(() => {});
 }
 
 let lastBars = "";
@@ -54,10 +70,17 @@ function matchSystemBars(theme: string) {
 const FALLBACK_FONTS = `"Segoe UI", "Malgun Gothic", -apple-system, "Apple SD Gothic Neo", system-ui, sans-serif`;
 
 let timer: ReturnType<typeof setTimeout> | undefined;
-/** Applies and saves the current preferences after `delay` ms. */
-export function savePrefs(delay = 400) {
+/** Applies and saves the current preferences after `delay` ms, then calls `saved`. */
+export function savePrefs(delay = 400, saved?: () => void) {
   if (!prefs.app) return;
   applyPrefs(prefs.app);
   clearTimeout(timer);
-  timer = setTimeout(() => api.saveAppSettings($state.snapshot(prefs.app!) as AppSettings).catch(() => {}), delay);
+  timer = setTimeout(
+    () =>
+      api
+        .saveAppSettings($state.snapshot(prefs.app!) as AppSettings)
+        .then(() => saved?.())
+        .catch(() => {}),
+    delay,
+  );
 }

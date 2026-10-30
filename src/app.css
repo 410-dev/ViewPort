@@ -96,6 +96,8 @@ body {
    viewport to fit, pushing fixed UI off-screen). */
 html {
   overflow: hidden;
+  /* The page never zooms by pinching (the viewer handles its own pinch). */
+  touch-action: pan-x pan-y;
 }
 
 body {

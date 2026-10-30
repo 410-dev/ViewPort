@@ -856,6 +856,15 @@ pub struct UiSettings {
     pub font_editor: String,
     /// Base font size in CSS pixels.
     pub font_size: u32,
+    /// Desktop: scale of the whole window in percent, changed with the keys below. Phones
+    /// never zoom the page (pinching is the viewer's).
+    pub page_zoom: u32,
+    pub page_zoom_step: u32,
+    pub page_zoom_min: u32,
+    pub page_zoom_max: u32,
+    pub page_zoom_in_keys: Vec<String>,
+    pub page_zoom_out_keys: Vec<String>,
+    pub page_zoom_reset_keys: Vec<String>,
     /// Main view: "grid", "list" or "tree".
     pub view_mode: String,
     /// Show files of subfolders too when browsing a folder (flat view).
@@ -911,6 +920,14 @@ impl Default for UiSettings {
             font_editor: String::new(),
             // Phones are read at arm's length and tapped with fingers.
             font_size: if MOBILE { 15 } else { 13 },
+            page_zoom: 100,
+            page_zoom_step: 10,
+            page_zoom_min: 50,
+            page_zoom_max: 200,
+            // "+" needs Shift on most layouts; the numpad sends it without.
+            page_zoom_in_keys: ["Ctrl+=", "Ctrl++", "Ctrl+Shift++", "Meta+=", "Meta++", "Meta+Shift++"].map(String::from).to_vec(),
+            page_zoom_out_keys: ["Ctrl+-", "Ctrl+Shift+_", "Meta+-", "Meta+Shift+_"].map(String::from).to_vec(),
+            page_zoom_reset_keys: ["Ctrl+0", "Meta+0"].map(String::from).to_vec(),
             view_mode: "grid".into(),
             recursive: false,
             panel_mode: "both".into(),

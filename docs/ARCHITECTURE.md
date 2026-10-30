@@ -349,6 +349,8 @@ UI에 전달되며 작업별로 `progress.emit_interval_ms` 간격으로 제한�
 - **확대·패닝**: 이미지는 항상 화면에 맞춰 표시(긴 이미지 포함)하고, 확대는 그 위의 transform이다(`ZoomPan`).
   PC: 더블클릭(`viewer.double_click_zoom`), `=`/`-`/`0` 키, 휠(커서 위치 기준), 확대 중 드래그 = 패닝.
   터치: 탭 = 다음 항목(`viewer.tap_to_advance`), 더블탭 = 확대·축소, 핀치 = 확대·축소, 확대 중 드래그 = 패닝.
+  화면 전체는 핀치·Ctrl+휠로 확대되지 않는다(뷰포트 `user-scalable=no`, `touch-action: pan-x pan-y`). 데스크톱에서만
+  `ui.page_zoom_*_keys`(기본 Ctrl/Cmd +/-/0)로 창 배율(`ui.page_zoom`, 웹뷰 `setZoom`)을 바꾸며, 모든 창에 `zoom` 동기화로 적용된다.
   한 번 탭은 `viewer.double_tap_ms`가 지난 뒤에 처리해 더블탭이 항목을 넘기지 않는다. 확대하지 않았을 때 가로로 끌면 이전·다음
   항목이 붙은 띠가 손가락을 따라 움직이고, 놓으면 `viewer.swipe_threshold`(너비 비율) 이상이거나 튕긴 경우 `viewer.swipe_ms` 동안
   옆 항목으로 미끄러지며 아니면 제자리로 돌아간다. 띠는 id로 키를 줘서 넘어온 이미지가 다시 로드되지 않는다.

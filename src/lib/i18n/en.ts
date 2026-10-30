@@ -379,6 +379,13 @@ const en: Record<Key, string> = {
   "set.fontEditor": "Query editor font",
   "set.fontEditor.help": "Empty uses the UI font.",
   "set.fontSize": "Base font size",
+  "set.pageZoom.group": "Zoom",
+  "set.pageZoom": "Window zoom",
+  "set.pageZoom.help": "Scale of the whole window. The keys below change it too.",
+  "set.pageZoomStep": "Change per key press",
+  "set.pageZoomIn": "Zoom in keys",
+  "set.pageZoomOut": "Zoom out keys",
+  "set.pageZoomReset": "Reset zoom keys",
 
   "set.browse": "Browsing",
   "set.views": "Views",

@@ -49,6 +49,12 @@ const key = (path: string, label: Key): Field => ({ kind: "list", ...bundle({ pa
 /** Settings with no effect on phones and tablets (WebView switches, windows, tray, FFmpeg). */
 export const DESKTOP_ONLY = new Set([
   "privacy.panic_hide",
+  // Phones never zoom the page.
+  "ui.page_zoom",
+  "ui.page_zoom_step",
+  "ui.page_zoom_in_keys",
+  "ui.page_zoom_out_keys",
+  "ui.page_zoom_reset_keys",
   // Phones show analysis results but do not run the models.
   "ml.runtime_path",
   "ml.providers",
@@ -149,6 +155,16 @@ export const SECTIONS: Section[] = [
           { kind: "text", ...app({ path: "ui.font_ui", label: "set.fontUi" }), placeholder: "Segoe UI, Malgun Gothic" },
           { kind: "text", ...app({ path: "ui.font_editor", label: "set.fontEditor", help: "set.fontEditor.help" }), placeholder: "—" },
           { kind: "number", ...app({ path: "ui.font_size", label: "set.fontSize" }), min: 11, max: 20, step: 1, unit: "px" },
+        ],
+      },
+      {
+        title: "set.pageZoom.group",
+        fields: [
+          { kind: "number", ...app({ path: "ui.page_zoom", label: "set.pageZoom", help: "set.pageZoom.help" }), min: 50, max: 200, step: 10, unit: "%" },
+          { kind: "number", ...app({ path: "ui.page_zoom_step", label: "set.pageZoomStep" }), min: 1, max: 50, step: 1, unit: "%" },
+          { kind: "list", ...app({ path: "ui.page_zoom_in_keys", label: "set.pageZoomIn" }) },
+          { kind: "list", ...app({ path: "ui.page_zoom_out_keys", label: "set.pageZoomOut" }) },
+          { kind: "list", ...app({ path: "ui.page_zoom_reset_keys", label: "set.pageZoomReset" }) },
         ],
       },
     ],

@@ -378,6 +378,13 @@ const ko = {
   "set.fontEditor": "쿼리 편집기 글꼴",
   "set.fontEditor.help": "비워 두면 UI 글꼴을 씁니다.",
   "set.fontSize": "기본 글자 크기",
+  "set.pageZoom.group": "화면 배율",
+  "set.pageZoom": "화면 배율",
+  "set.pageZoom.help": "창 전체의 크기. 단축키로도 바꿀 수 있습니다.",
+  "set.pageZoomStep": "단축키 한 번에 바뀌는 양",
+  "set.pageZoomIn": "확대 키",
+  "set.pageZoomOut": "축소 키",
+  "set.pageZoomReset": "원래 크기 키",
 
   "set.browse": "탐색",
   "set.views": "보기",
