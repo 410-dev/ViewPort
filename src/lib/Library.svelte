@@ -2,6 +2,8 @@
   import type { SortSpec as Sort } from "./views/columns";
   /** What the library is browsing: restored on the next start, and used by split-view explorers. */
   export type BrowseState = { sourceId: number | null; folder: string; query: string; sort?: Sort | null };
+  /** A listing already searched, handed to a split-view explorer that starts on it. */
+  export type Listing = { key: string; ids: number[]; sections: import("./api").Sections; elapsed: number };
 </script>
 
 <script lang="ts">
@@ -10,7 +12,7 @@
   import { pickFolder } from "./pick.svelte";
   import { tasks } from "./tasks.svelte";
   import { onBack, PASS } from "./back.svelte";
-  import { onDestroy } from "svelte";
+  import { onDestroy, untrack } from "svelte";
   import {
     api,
     asCmdError,
@@ -62,6 +64,7 @@
     onbundle,
     secondary = false,
     initial = null,
+    seed = null,
     embedded = null,
   }: {
     bundle: BundleSummary;
@@ -70,6 +73,8 @@
     /** An extra explorer window: "close" closes the window, not the bundle. */
     secondary?: boolean;
     initial?: BrowseState | null;
+    /** The listing `initial` shows, when the opener has it: used instead of searching again. */
+    seed?: Listing | null;
     /** An explorer inside a viewer split pane: opening items hands them to the pane. */
     embedded?: { active: boolean; onopen: (ids: number[], index: number, state: BrowseState) => void } | null;
   } = $props();
@@ -171,7 +176,9 @@
     runSearch(false);
   }
   // Drives come and go: check on focus and every `ui.source_check_secs`.
+  // A split-view explorer leaves that to the library behind the viewer.
   $effect(() => {
+    if (embedded) return;
     const secs = ui().source_check_secs;
     const timer = secs > 0 ? setInterval(refreshOffline, secs * 1000) : undefined;
     window.addEventListener("focus", refreshOffline);
@@ -241,10 +248,24 @@
   let searched = $state(false);
   /** Selected and scrolled to once a search lists it (`revealInLibrary`). */
   let revealAfterSearch: number | null = null;
+  /** A new search (not a refresh) is running over results still shown: the view shows a spinner. */
+  let researching = $state(false);
+  const listingKey = () => `${selected}|${folder}|${ui().recursive}|${effectiveQuery}`;
+  /** The opener's listing, when it is this one: the first search is skipped. */
+  const seedNow = untrack(() => seed);
+  let seeded = !!seedNow && seedNow.key === listingKey();
+  if (seeded && seedNow) {
+    ids = seedNow.ids;
+    sections = seedNow.sections;
+    scrollKey = seedNow.key;
+    elapsed = seedNow.elapsed;
+    searched = true;
+  }
   async function runSearch(reset: boolean) {
     const seq = ++searchSeq;
-    const key = `${selected}|${folder}|${ui().recursive}|${effectiveQuery}`;
+    const key = listingKey();
     searching = true;
+    researching = reset;
     try {
       const r = await api.search(effectiveQuery, selected, selected === null ? null : folder, ui().recursive);
       if (seq !== searchSeq) return;
@@ -268,6 +289,7 @@
     } finally {
       if (seq === searchSeq) {
         searching = false;
+        researching = false;
         searched = true;
       }
     }
@@ -319,6 +341,7 @@
     folder;
     ui().recursive;
     if (!restored) return;
+    if (seeded) return void (seeded = false);
     const timer = setTimeout(() => runSearch(true), ui().search_debounce_ms);
     return () => clearTimeout(timer);
   });
@@ -946,7 +969,11 @@
         onsavecurrent={() => (savingCurrent = { label: "", error: "" })}
         {secondary}
         {shards}
-        onselect={selectSource}
+        onselect={(id) => {
+          // "All media" starts over: no query left from before.
+          if (id === null) query = "";
+          selectSource(id);
+        }}
         onaddfolder={addFolder}
         onaddnetwork={() => (sourceDialog = { source: null })}
         onaddshard={() => (shardDialog = true)}
@@ -1050,6 +1077,9 @@
               onfolder={(p) => (folder = p)}
             />
             {/key}
+            {#if researching}
+              <div class="researching" transition:fade><span class="spinner"></span></div>
+            {/if}
           {/if}
         {/if}
       </div>
@@ -1344,6 +1374,7 @@
     {settings}
     {bundle}
     browseFrom={browseState()}
+    browseSeed={{ key: scrollKey, ids, sections, elapsed }}
     onclose={(id) => {
       viewing = null;
       let refreshed: Promise<void> = Promise.resolve();
@@ -1407,6 +1438,20 @@
     flex: 1;
     min-height: 0;
     position: relative;
+  }
+  /* A new search over the results still shown. */
+  .researching {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    display: grid;
+    place-items: center;
+    background: color-mix(in srgb, var(--bg) 40%, transparent);
+    pointer-events: none;
+  }
+  .researching .spinner {
+    width: 28px;
+    height: 28px;
   }
   .resizer {
     position: absolute;

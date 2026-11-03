@@ -1,3 +1,7 @@
+<script lang="ts" module>
+  let paneSeq = 0;
+</script>
+
 <script lang="ts">
   import { dismiss } from "./ui/dismiss";
   import { edge, fade, pop } from "./ui/motion";
@@ -37,6 +41,7 @@
   import { isMobile } from "./platform";
   import { reportBroken } from "./views/briefs.svelte";
   import { heading, lookahead } from "./lookahead";
+  import { keepDecoded } from "./decoded";
   import { briefs as libraryBriefs } from "./views/briefs.svelte";
 
   /**
@@ -92,6 +97,8 @@
   let error = $state(false);
 
   const win = getCurrentWindow();
+  /** Names this pane's look-ahead to the backend (each pane reads ahead on its own). */
+  const paneKey = `${win.label}:${++paneSeq}`;
 
   // ---- playback compatibility / conversion
   let converting = $state<Record<number, ConvertEvent>>({});
@@ -233,7 +240,8 @@
   }
 
   // ---- brief + look-ahead whenever the current item changes
-  const preloaded = new Map<number, HTMLImageElement>();
+  /** This pane, as an owner of shared decoded neighbours (`decoded.ts`). */
+  const decodeOwner = {};
   /** Briefs of the current item and its neighbours, so the swipe strip can draw them. */
   const known = new SvelteMap<number, MediaBrief>();
 
@@ -483,19 +491,12 @@
       const b = known.get(current);
       if (b) brief = b;
       // Decode neighbouring images in the webview too, so switching is instant.
-      const keep = new Set<number>();
+      const keep: string[] = [];
       for (const x of around) {
         const nb = known.get(x);
-        if (!nb || nb.kind !== "image") continue;
-        keep.add(x);
-        if (!preloaded.has(x)) {
-          const img = new Image();
-          img.src = imageSrc(nb);
-          img.decode().catch(() => {});
-          preloaded.set(x, img);
-        }
+        if (nb?.kind === "image") keep.push(imageSrc(nb));
       }
-      for (const k of preloaded.keys()) if (!keep.has(k)) preloaded.delete(k);
+      keepDecoded(decodeOwner, keep);
     };
     preload();
     // The current item is always looked up again (its state may have changed); the rest
@@ -520,7 +521,7 @@
       max: hw?.prefetch_max_items ?? 400,
       forward: Math.min(1 - minSide, Math.max(minSide, (1 + toward) / 2)),
     });
-    api.prefetchPlan(plan, { width: innerWidth * devicePixelRatio, height: innerHeight * devicePixelRatio }).catch(() => {});
+    api.prefetchPlan(plan, { width: innerWidth * devicePixelRatio, height: innerHeight * devicePixelRatio }, paneKey).catch(() => {});
   }
 
   // ---- video
@@ -744,7 +745,7 @@
   }
 
   async function close() {
-    if (fullscreen && panes <= 1) await toggleFullscreen(false);
+    if (fullscreen) await toggleFullscreen(false);
     if (lastId !== undefined) api.recordView(lastId, Math.round(performance.now() - shownAt)).catch(() => {});
     onclose();
   }
@@ -868,7 +869,7 @@
     return Math.hypot(a.x - b.x, a.y - b.y);
   };
 
-  // Back button: leave immersive mode first, then close this pane.
+  // Back button: leave immersive mode first, then close the viewer.
   $effect(() => {
     if (active)
       return onBack(() => {
@@ -1172,7 +1173,8 @@
     clearTimeout(slideTimer);
     clearTimeout(resizeTimer);
     // Stop reading ahead for a viewer that is gone.
-    api.prefetchPlan([], { width: 0, height: 0 }).catch(() => {});
+    api.prefetchPlan([], { width: 0, height: 0 }, paneKey).catch(() => {});
+    keepDecoded(decodeOwner, []);
   });
 </script>
 

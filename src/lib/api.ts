@@ -366,7 +366,6 @@ export interface AppSettings {
   privacy: { panic_keys: string[]; panic_double_ms: number; panic_mute: boolean; panic_hide: boolean; restore_shortcut: string; tray_icon: boolean };
   windows: { max_viewer_panes: number; split_layout: "auto" | "columns" | "rows";
     switch_at_percent: number;
-    switch_main_percent: number;
     switch_anim_ms: number;
     new_width: number; new_height: number };
   viewer: {
@@ -647,7 +646,9 @@ export const api = {
   recordView: (id: number, viewMs: number) => invoke<void>("record_view", { id, viewMs }),
   cacheStats: () => invoke<CacheStats>("cache_stats"),
   /** The viewer's look-ahead, most wanted first; replaces the previous one. */
-  prefetchPlan: (ids: number[], screen: { width: number; height: number }) => invoke<void>("prefetch_plan", { ids, screen }),
+  /** A viewer pane's look-ahead (`pane` names it; an empty plan ends it). */
+  prefetchPlan: (ids: number[], screen: { width: number; height: number }, pane: string) =>
+    invoke<void>("prefetch_plan", { ids, screen, pane }),
   cacheResize: () => invoke<CacheStats>("cache_resize"),
   cacheClear: () => invoke<CacheStats>("cache_clear"),
   listFields: () => invoke<FieldInfo[]>("list_fields"),

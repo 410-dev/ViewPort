@@ -24,7 +24,7 @@ export function ms(css: string): number | null {
 }
 
 /** The app's own "reduce motion" setting (`ui.reduce_motion`, set on the root by `prefs`). */
-const reduced = () => typeof document !== "undefined" && document.documentElement.dataset.motion === "reduce";
+export const reduced = () => typeof document !== "undefined" && document.documentElement.dataset.motion === "reduce";
 
 /** Fades. */
 export function fade(_node: Element, { duration }: { duration?: number } = {}): TransitionConfig {

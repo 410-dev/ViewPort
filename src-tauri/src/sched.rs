@@ -252,18 +252,23 @@ pub fn wait_urgent(max: Duration) {
     }
 }
 
-/// The item the viewer shows now (the first of its look-ahead).
-static SHOWN: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(i64::MIN);
-/// Requests for the shown item being answered.
+/// The items the viewer panes show now (the first of each look-ahead), by pane.
+static SHOWN: std::sync::Mutex<Vec<(String, i64)>> = std::sync::Mutex::new(Vec::new());
+/// Requests for a shown item being answered.
 static SHOWN_WAITING: AtomicUsize = AtomicUsize::new(0);
 
-/// Notes which item the viewer shows now.
-pub fn set_shown(id: i64) {
-    SHOWN.store(id, Ordering::Relaxed);
+/// Notes which item viewer pane `pane` shows now (`None`: the pane is gone).
+pub fn set_shown(pane: &str, id: Option<i64>) {
+    let mut shown = SHOWN.lock().unwrap_or_else(|e| e.into_inner());
+    shown.retain(|(p, _)| p != pane);
+    if let Some(id) = id {
+        shown.push((pane.to_string(), id));
+    }
 }
 
+/// Whether some viewer pane shows item `id`.
 pub fn is_shown(id: i64) -> bool {
-    SHOWN.load(Ordering::Relaxed) == id
+    SHOWN.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|&(_, x)| x == id)
 }
 
 /// Runs `f`, a request for item `id`; if the viewer shows it, everything else that makes

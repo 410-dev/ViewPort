@@ -815,12 +815,10 @@ pub struct WindowSettings {
     pub max_viewer_panes: u32,
     /// "auto" (by window orientation), "columns" or "rows".
     pub split_layout: String,
-    /// Dragging a split divider so one pane passes this share (percent) of the window
-    /// enters switching mode: one pane large, the others a strip that brings them back.
+    /// Dragging a split divider so one pane passes this share (percent) of the two panes'
+    /// length closes the other (the name is from when this entered a switching mode).
     pub switch_at_percent: u32,
-    /// Share (percent) of the large pane in switching mode.
-    pub switch_main_percent: u32,
-    /// Length of the switching animation.
+    /// Length of the split animations (closing, swapping, equal sizes).
     pub switch_anim_ms: u32,
     /// Size of newly opened windows in logical pixels.
     pub new_width: u32,
@@ -831,7 +829,6 @@ impl Default for WindowSettings {
     fn default() -> Self {
         Self { max_viewer_panes: 3, split_layout: "auto".into(),
             switch_at_percent: 90,
-            switch_main_percent: 95,
             switch_anim_ms: 280,
             new_width: 1100, new_height: 760 }
     }

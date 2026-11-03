@@ -1,6 +1,6 @@
 //! Tauri commands called by the UI.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -607,24 +607,45 @@ impl Drop for PrefetchDone {
     }
 }
 
-/// The viewer's look-ahead now running; a newer one stops it.
+/// Numbers each look-ahead.
 static LOOKAHEAD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// The look-ahead running for each viewer pane; a newer one for the same pane stops it.
+static PANE_LOOKAHEAD: std::sync::LazyLock<std::sync::Mutex<HashMap<String, u64>>> = std::sync::LazyLock::new(Default::default);
 
-/// Loads the viewer's look-ahead: `ids` in the order they are wanted (the current item
+fn lookahead_current(pane: &str, generation: u64) -> bool {
+    PANE_LOOKAHEAD.lock().unwrap().get(pane) == Some(&generation)
+}
+
+/// Loads a viewer pane's look-ahead: `ids` in the order they are wanted (the current item
 /// first), each as the viewer will ask for it in a window of `screen` device pixels,
 /// until the scheduler's share of the cache (`HardwareSettings::prefetch_ratio`) is
-/// taken. Items already cached count against it and are marked recently used, so what
-/// is evicted for the rest is what lies outside the look-ahead. Replaces the previous one.
+/// taken — split evenly between the panes reading ahead. Items already cached count
+/// against it and are marked recently used, so what is evicted for the rest is what lies
+/// outside the look-ahead. Replaces the pane's previous one; an empty one ends it.
 #[tauri::command]
-pub fn prefetch_plan(app: AppHandle, state: State<'_, AppState>, ids: Vec<i64>, screen: Option<crate::media::Screen>) -> CmdResult<()> {
+pub fn prefetch_plan(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    ids: Vec<i64>,
+    screen: Option<crate::media::Screen>,
+    pane: Option<String>,
+) -> CmdResult<()> {
     let ws = workspace(&state)?;
+    let pane = pane.unwrap_or_default();
     let generation = LOOKAHEAD.fetch_add(1, Ordering::Relaxed) + 1;
-    if let Some(&shown) = ids.first() {
-        crate::sched::set_shown(shown);
-    }
+    crate::sched::set_shown(&pane, ids.first().copied());
+    let panes = {
+        let mut running = PANE_LOOKAHEAD.lock().unwrap();
+        if ids.is_empty() {
+            running.remove(&pane);
+            return Ok(());
+        }
+        running.insert(pane.clone(), generation);
+        running.len().max(1) as u64
+    };
     let c = ws.settings.read().unwrap().cache.clone();
     let ratio = recent::cached_app_settings().hardware.prefetch_ratio(c.prefetch_ratio);
-    let budget = (ws.cache.capacity_bytes() as f64 * ratio as f64) as u64;
+    let budget = (ws.cache.capacity_bytes() as f64 * ratio as f64) as u64 / panes;
     let chunk = c.chunk_bytes.max(4096);
     let used = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let drivers = app.state::<AppState>().drivers.clone();
@@ -634,7 +655,7 @@ pub fn prefetch_plan(app: AppHandle, state: State<'_, AppState>, ids: Vec<i64>, 
         crate::media::remember_locations(&ws, &ids);
         let queue = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from(ids)));
         for _ in 0..workers {
-            look_ahead(ws.clone(), drivers.clone(), queue.clone(), used.clone(), generation, budget, chunk, screen);
+            look_ahead(ws.clone(), drivers.clone(), queue.clone(), used.clone(), pane.clone(), generation, budget, chunk, screen);
         }
     });
     Ok(())
@@ -647,6 +668,7 @@ fn look_ahead(
     drivers: Arc<vp_driver::DriverRegistry>,
     queue: Arc<std::sync::Mutex<std::collections::VecDeque<i64>>>,
     used: Arc<std::sync::atomic::AtomicU64>,
+    pane: String,
     generation: u64,
     budget: u64,
     chunk: u64,
@@ -654,7 +676,7 @@ fn look_ahead(
 ) {
     tauri::async_runtime::spawn_blocking(move || {
         loop {
-            if LOOKAHEAD.load(Ordering::Relaxed) != generation || ws.closed.load(Ordering::Relaxed) {
+            if !lookahead_current(&pane, generation) || ws.closed.load(Ordering::Relaxed) {
                 return;
             }
             if used.load(Ordering::Relaxed) >= budget {

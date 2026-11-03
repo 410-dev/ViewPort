@@ -79,6 +79,7 @@
     dots: "M5 12h.01M12 12h.01M19 12h.01",
     shield: "M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6z",
     columns: "M4 5h16v14H4zM12 5v14",
+    swap: "M7 4L3 8l4 4M3 8h14M17 12l4 4-4 4M21 16H7",
     rows: "M4 5h16v14H4zM4 12h16",
     external: "M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5",
     windowPlus: "M4 5h16v14H4zM4 9h16M12 12v5M9.5 14.5h5",
