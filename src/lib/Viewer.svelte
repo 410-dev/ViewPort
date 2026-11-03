@@ -1486,7 +1486,7 @@
           <p class="text"><strong>{known.get(confirmDelete)?.name ?? cur?.name ?? ""}</strong></p>
           <p class="text">{t("viewer.deleteBody")}</p>
         </div>
-        <footer>
+        <footer class:choices={!!group}>
           <span class="grow"></span>
           <button class="btn ghost" disabled={deleting} onclick={() => (confirmDelete = null)}>{t("common.cancel")}</button>
           {#if group}

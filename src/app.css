@@ -517,6 +517,13 @@ input.input[type="date"] {
   border-top: 1px solid var(--border);
   flex-shrink: 0;
 }
+/* More choices than fit on a line: wrapped lines stay against the right edge. */
+.dialog > footer.choices {
+  justify-content: flex-end;
+}
+.dialog > footer.choices > .grow {
+  display: none;
+}
 .dialog > .body {
   padding: 18px 20px;
   overflow-y: auto;

@@ -1080,6 +1080,7 @@
         bind:this={toolbar}
         bind:query
         {scope}
+        groupName={groups.get(group)?.name ?? null}
         {folder}
         {settings}
         error={queryError}
@@ -1293,7 +1294,7 @@
     <div out:pop class="dialog confirm" role="alertdialog" aria-modal="true" aria-labelledby="del-title">
       <header><h2 id="del-title">{t("del.title")}</h2></header>
       <div class="body"><p class="text">{t("del.body", { n: confirmDelete.length.toLocaleString() })}</p></div>
-      <footer>
+      <footer class:choices={!!group}>
         <span class="grow"></span>
         <button class="btn ghost" disabled={deleting} onclick={() => (confirmDelete = null)}>{t("common.cancel")}</button>
         {#if group}

@@ -13,6 +13,7 @@
   let {
     query = $bindable(),
     scope,
+    groupName = null,
     folder,
     settings,
     error,
@@ -30,6 +31,8 @@
   }: {
     query: string;
     scope: SourceRow | null;
+    /** Showing a temporary group (by name) instead of all media. */
+    groupName?: string | null;
     folder: string;
     settings: Settings | null;
     error: string | null;
@@ -99,7 +102,7 @@
         <button class="crumb" class:cur={i === parts.length - 1} onclick={() => onfolder(parts.slice(0, i + 1).join("/"))}>{part}</button>
       {/each}
     {:else}
-      <span class="crumb cur static">{t("side.all")}</span>
+      <span class="crumb cur static">{groupName ?? t("side.all")}</span>
     {/if}
   </div>
 
