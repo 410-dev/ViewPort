@@ -22,9 +22,12 @@
    * query; opening an item there turns it into a viewer. On mobile this replaces extra
    * windows; on desktop a pane can also be moved to its own window.
    *
-   * Dividers between panes are dragged to resize them; dragged so far that one of the two
-   * panes keeps less than `100 - switch_at_percent` percent of their length, that pane
-   * closes. The "…" button on a divider opens its menu: swap the two panes, equal sizes,
+   * Dividers between panes are dragged to resize them. A pane dragged past
+   * `switch_at_percent` of the window enters switching mode: it takes `switch_main_percent`,
+   * the others fold to a strip showing the edge of their (full-size) picture, and tapping a
+   * strip swaps the two, sliding one aside as the other comes in. Dragged nearly to the end,
+   * so that one of the two panes keeps less than `100 - close_at_percent` percent of their
+   * length, that pane closes instead. The "…" button on a divider opens its menu: swap the two panes, equal sizes,
    * close either side. Panes stay in `panes` (and in the DOM) where they were added and
    * are placed by CSS `order` from `slots`, so a swap moves no element: a playing video
    * keeps playing.
@@ -76,6 +79,10 @@
 
   /** Share of the split length per pane (sums to 1), by pane index. */
   let sizes = $state<number[]>(untrack(() => initial.map(() => 1 / initial.length)));
+  /** Switching mode: the large pane, or null. */
+  let main = $state<number | null>(null);
+  /** The large pane before the last switch: the one sliding aside. */
+  let prevMain = $state<number | null>(null);
   let animating = $state(false);
   /**
    * While a divider is dragged: each pane's size when the drag started. Panes keep that
@@ -95,8 +102,10 @@
   let animTimer: ReturnType<typeof setTimeout> | undefined;
 
   const win = $derived(prefs.app?.windows);
+  const switchAt = $derived((win?.switch_at_percent ?? 90) / 100);
+  const mainShare = $derived((win?.switch_main_percent ?? 95) / 100);
   /** A pane closes once a drag leaves it less than this share of the two panes' length. */
-  const closeBelow = $derived(1 - (win?.switch_at_percent ?? 90) / 100);
+  const closeBelow = $derived(1 - (win?.close_at_percent ?? 98) / 100);
   const animMs = $derived(reduced() ? 0 : (win?.switch_anim_ms ?? 280));
 
   const max = $derived(Math.min(3, Math.max(1, prefs.app?.windows.max_viewer_panes ?? 3)));
@@ -112,6 +121,7 @@
 
   function equalSizes() {
     sizes = panes.map(() => 1 / panes.length);
+    main = prevMain = null;
   }
 
   /** Turns the size transition on, in the styles, before anything changes size. */
@@ -123,7 +133,24 @@
     void shell?.offsetHeight;
   }
 
-  /** Drags the divider after slot `k`; let go past the threshold, the smaller pane closes. */
+  /** Switching mode with pane `i` large. */
+  async function switchTo(i: number) {
+    if (panes.length < 2) return;
+    const rest = (1 - mainShare) / (panes.length - 1);
+    // The transition must be on before any pane changes size. Set in the same update,
+    // the WebView could restyle a pane in between (the tapped strip is removed then) and
+    // that pane jumped while the other grew from the wrong edge.
+    await animate();
+    prevMain = main ?? i;
+    main = i;
+    active = i;
+    sizes = panes.map((_, j) => (j === i ? mainShare : rest));
+  }
+
+  /**
+   * Drags the divider after slot `k`. Let go past `switchAt`, switching mode starts;
+   * nearly at the end, the smaller pane closes.
+   */
   function drag(e: PointerEvent, k: number) {
     if (e.pointerType === "mouse" && e.button !== 0) return;
     if (leaving) return;
@@ -132,6 +159,7 @@
     e.preventDefault();
     e.stopPropagation();
     menuAt = null;
+    main = prevMain = null;
     frozen = panes.map((_, j) => {
       const r = inners[j]?.getBoundingClientRect();
       return { w: r?.width ?? 0, h: r?.height ?? 0 };
@@ -154,7 +182,9 @@
       frozen = null;
       const gone = closing;
       closing = null;
-      if (gone !== null) collapse(gone, gone === a ? b : a);
+      if (gone !== null) return void collapse(gone, gone === a ? b : a);
+      const big = sizes.findIndex((x) => x > switchAt);
+      if (big >= 0) switchTo(big);
     };
     el.addEventListener("pointermove", move);
     el.addEventListener("pointerup", up);
@@ -167,6 +197,7 @@
     const r = inners[i]?.getBoundingClientRect();
     // Held at its size and against the far side, so it looks pushed off rather than squeezed.
     leaving = { i, w: r?.width ?? 0, h: r?.height ?? 0, end: slots.indexOf(i) < slots.indexOf(into) };
+    main = prevMain = null;
     await animate();
     sizes[into] += sizes[i];
     sizes[i] = 0;
@@ -196,6 +227,17 @@
       el.style.transform = "";
       setTimeout(() => (el.style.transition = ""), animMs + 40);
     });
+  }
+
+  /**
+   * Switching mode: every pane is drawn at the large size, clipped by its slot and held
+   * against the side facing the large pane, so a folding pane looks pushed aside.
+   */
+  function anchor(i: number): "start" | "end" | null {
+    if (main === null) return null;
+    const at = slots.indexOf(i);
+    if (i !== main) return at > slots.indexOf(main) ? "start" : "end";
+    return prevMain !== null && slots.indexOf(prevMain) > at ? "end" : "start";
   }
 
   /** Scale of a frozen pane in its current slot (never enlarged: the rest stays black). */
@@ -232,6 +274,16 @@
     sizes = rest.map((x) => (sum > 0 ? x / sum : 1 / rest.length));
     if (active === i) active = slots[0];
     else if (active > i) active--;
+    if (main !== null) {
+      // Switching mode goes on with the panes left, unless the large one closed.
+      if (main === i || panes.length < 2) equalSizes();
+      else {
+        const at = (x: number | null) => (x !== null && x > i ? x - 1 : x === i ? null : x);
+        main = at(main);
+        prevMain = at(prevMain);
+        sizes = panes.map((_, j) => (j === main ? mainShare : (1 - mainShare) / (panes.length - 1)));
+      }
+    }
     menuAt = null;
   }
 
@@ -331,6 +383,7 @@
 >
   {#each panes as p, i (p.key)}
     {@const slot = slots.indexOf(i)}
+    {@const side = anchor(i)}
     <div
       class="pane"
       bind:this={paneEls[i]}
@@ -344,9 +397,12 @@
         class="inner"
         bind:this={inners[i]}
         class:browse={!!p.browse}
+        class:a-start={side === "start"}
+        class:a-end={side === "end"}
         class:leaving={leaving?.i === i}
         class:end={leaving?.i === i && leaving.end}
         class:frozen={!!frozen?.[i]?.w}
+        style:--big="{avail * mainShare}px"
         style:--lw="{leaving?.w ?? 0}px"
         style:--lh="{leaving?.h ?? 0}px"
         style:--fw="{frozen?.[i]?.w ?? 0}px"
@@ -391,6 +447,10 @@
           />
         {/if}
       </div>
+      {#if main !== null && i !== main}
+        <!-- A folded pane: a tap swaps it in. -->
+        <button class="peek" class:end={side === "end"} aria-label={t("viewer.switchPane")} onclick={() => switchTo(i)}></button>
+      {/if}
     </div>
   {/each}
   {#each slots.slice(1) as _, k (k)}
@@ -473,6 +533,52 @@
   .inner {
     position: absolute;
     inset: 0;
+  }
+  /* Switching mode: drawn at the large size, against the side facing the large pane. */
+  .inner.a-start,
+  .inner.a-end {
+    width: var(--big);
+  }
+  .inner.a-start {
+    right: auto;
+  }
+  .inner.a-end {
+    left: auto;
+  }
+  .rows .inner.a-start,
+  .rows .inner.a-end {
+    width: auto;
+    height: var(--big);
+  }
+  .rows .inner.a-start {
+    right: 0;
+    bottom: auto;
+  }
+  .rows .inner.a-end {
+    left: 0;
+    top: auto;
+  }
+  .peek {
+    position: absolute;
+    inset: 0;
+    z-index: 30;
+    padding: 0;
+    border: 0;
+    background: linear-gradient(to right, rgb(0 0 0 / 0.55), rgb(0 0 0 / 0.25));
+    cursor: pointer;
+    transition: background var(--t-fast) var(--ease);
+  }
+  .peek.end {
+    background: linear-gradient(to left, rgb(0 0 0 / 0.55), rgb(0 0 0 / 0.25));
+  }
+  .rows .peek {
+    background: linear-gradient(to bottom, rgb(0 0 0 / 0.55), rgb(0 0 0 / 0.25));
+  }
+  .rows .peek.end {
+    background: linear-gradient(to top, rgb(0 0 0 / 0.55), rgb(0 0 0 / 0.25));
+  }
+  .peek:hover {
+    background: rgb(255 255 255 / 0.08);
   }
   /* Closing: held at its size against the far side while its slot shrinks. */
   .inner.leaving {

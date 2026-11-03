@@ -325,6 +325,8 @@ export const SECTIONS: Section[] = [
             ],
           },
           { kind: "number", ...app({ path: "windows.switch_at_percent", label: "set.switchAt", help: "set.switchAt.hint" }), min: 60, max: 99, step: 1, unit: "%" },
+          { kind: "number", ...app({ path: "windows.switch_main_percent", label: "set.switchMain" }), min: 60, max: 99, step: 1, unit: "%" },
+          { kind: "number", ...app({ path: "windows.close_at_percent", label: "set.closeAt", help: "set.closeAt.hint" }), min: 60, max: 100, step: 1, unit: "%" },
           { kind: "number", ...app({ path: "windows.switch_anim_ms", label: "set.switchAnim" }), min: 0, max: 2000, step: 20, unit: "ms" },
         ],
       },
