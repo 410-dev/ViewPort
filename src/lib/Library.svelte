@@ -52,6 +52,7 @@
   import { isMobile } from "./platform";
   import { broadcast, onSync } from "./sync";
   import { briefs, goneListeners, invalidate } from "./views/briefs.svelte";
+  import { groups, type TempGroup } from "./groups.svelte";
   import { columnsFor, type SortSpec } from "./views/columns";
   import { VIEWS } from "./views";
   import { Selection, type FolderRef } from "./views/selection.svelte";
@@ -95,6 +96,10 @@
   let query = $state(initial?.query ?? "");
   // svelte-ignore state_referenced_locally
   let sort = $state<SortSpec | null>(initial?.sort ?? null);
+  /** The temporary group being shown (instead of a source or search), by id. */
+  let group = $state<string | null>(null);
+  // svelte-ignore state_referenced_locally
+  groups.open(bundle.path);
   /** False until the last browsing state is restored, so nothing is searched twice. */
   // svelte-ignore state_referenced_locally
   let restored = $state(!persist || !!initial);
@@ -132,7 +137,8 @@
 
   const selection = new Selection();
   const selectedIds = $derived([...selection.set]);
-  const view = $derived(VIEWS.find((v) => v.key === ui().view_mode) ?? VIEWS[0]);
+  /** A temporary group has no folders to walk: the tree shows it as a list. */
+  const view = $derived(VIEWS.find((v) => v.key === (group && ui().view_mode === "tree" ? "list" : ui().view_mode)) ?? VIEWS[0]);
   const columns = $derived(columnsFor(ui().columns));
   /** The source whose mirrors are being set up. */
   let mirroring = $state<SourceRow | null>(null);
@@ -250,7 +256,7 @@
   let revealAfterSearch: number | null = null;
   /** A new search (not a refresh) is running over results still shown: the view shows a spinner. */
   let researching = $state(false);
-  const listingKey = () => `${selected}|${folder}|${ui().recursive}|${effectiveQuery}`;
+  const listingKey = () => (group ? `group:${group}` : `${selected}|${folder}|${ui().recursive}|${effectiveQuery}`);
   /** The opener's listing, when it is this one: the first search is skipped. */
   const seedNow = untrack(() => seed);
   let seeded = !!seedNow && seedNow.key === listingKey();
@@ -267,7 +273,7 @@
     searching = true;
     researching = reset;
     try {
-      const r = await api.search(effectiveQuery, selected, selected === null ? null : folder, ui().recursive);
+      const r = group ? await groupListing(group) : await api.search(effectiveQuery, selected, selected === null ? null : folder, ui().recursive);
       if (seq !== searchSeq) return;
       ids = r.ids;
       sections = r.sections;
@@ -295,6 +301,43 @@
     }
   }
 
+  /** A temporary group's items in their order, without those no longer in the library. */
+  async function groupListing(id: string) {
+    const list = groups.get(id)?.ids ?? [];
+    const found = new Set((list.length ? await api.mediaBrief(list) : []).map((b) => b.id));
+    return { ids: list.filter((x) => found.has(x)), sections: { kind: "none", marks: [] } as Sections, elapsed_ms: 0 };
+  }
+
+  /** Shows temporary group `g`: the viewer opened there goes round that group only. */
+  function showGroup(g: TempGroup) {
+    query = "";
+    sort = null;
+    selected = null;
+    lastSource = null;
+    folder = "";
+    group = g.id;
+  }
+  // Choosing anything else, or typing a search, leaves the group.
+  $effect(() => {
+    if (query.trim()) untrack(() => (group = null));
+  });
+  // A deleted group (here or in another window) is left too.
+  $effect(() => {
+    if (group && !groups.get(group)) group = null;
+  });
+
+  /** The selected items as a new temporary group, in the order they were selected. */
+  function makeGroup() {
+    const list = [...selection.set];
+    if (!list.length) return;
+    groups.add(list, (n) => t("group.name", { n }));
+    selection.clear();
+  }
+  let confirmGroup = $state<TempGroup | null>(null);
+  $effect(() => {
+    if (confirmGroup) return onBack(() => (confirmGroup = null));
+  });
+
   /** Goes to item `id`'s folder (no search, no sorting) and selects it there. */
   async function revealInLibrary(id: number) {
     const b = (await api.mediaBrief([id]).catch(() => []))[0];
@@ -302,6 +345,7 @@
     showPeople = false;
     revealAfterSearch = id;
     const same = selected === b.source_id && folder === b.folder && !query && !sort;
+    group = null;
     selected = b.source_id;
     lastSource = b.source_id;
     folder = b.folder;
@@ -340,6 +384,7 @@
     selected;
     folder;
     ui().recursive;
+    group;
     if (!restored) return;
     if (seeded) return void (seeded = false);
     const timer = setTimeout(() => runSearch(true), ui().search_debounce_ms);
@@ -583,6 +628,7 @@
     { label: t("sel.move"), icon: "folder", action: () => startMove([...selection.set]) },
     ...(hasShard ? [{ label: t("sel.copyTo"), icon: "copy" as const, action: () => startCopy([...selection.set], []) }] : []),
     { label: t("sel.export"), icon: "download", action: () => exportSelected([...selection.set]) },
+    { label: t("sel.makeGroup"), icon: "copy", action: makeGroup },
     { label: t("sel.all"), icon: "checkSquare", action: () => selection.selectAll(ids) },
     { label: t("sel.clear"), icon: "x", action: () => selection.clear() },
     { label: t("sel.delete"), icon: "trash", danger: true, action: () => (confirmDelete = [...selection.set]) },
@@ -972,8 +1018,13 @@
         onselect={(id) => {
           // "All media" starts over: no query left from before.
           if (id === null) query = "";
+          group = null;
           selectSource(id);
         }}
+        groups={groups.list}
+        activeGroup={group}
+        onshowgroup={showGroup}
+        ondeletegroup={(g) => (confirmGroup = g)}
         onaddfolder={addFolder}
         onaddnetwork={() => (sourceDialog = { source: null })}
         onaddshard={() => (shardDialog = true)}
@@ -982,7 +1033,7 @@
         onremove={removeSource}
       oncopy={hasShard ? (s) => startCopy([], [{ sourceId: s.id, path: "" }]) : undefined}
       onmirror={embedded ? undefined : (s) => (mirroring = s)}
-        onrunsaved={(q) => (query = q.text)}
+        onrunsaved={(q) => ((group = null), (query = q.text))}
         oneditsaved={(q) => (modal = { editing: q })}
         ondeletesaved={deleteSaved}
         onsettings={() => (showSettings = true)}
@@ -1224,6 +1275,27 @@
         <button class="btn danger" disabled={deleting} onclick={deleteConfirmed}>
           {#if deleting}<span class="spinner"></span>{:else}<Icon name="trash" size={14} />{/if}{t("del.confirm")}
         </button>
+      </footer>
+    </div>
+  </div>
+{/if}
+
+{#if confirmGroup}
+  {@const g = confirmGroup}
+  <div out:fade class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && (confirmGroup = null)}>
+    <div out:pop class="dialog confirm" role="alertdialog" aria-modal="true" aria-labelledby="group-del-title">
+      <header><h2 id="group-del-title">{t("group.deleteTitle")}</h2></header>
+      <div class="body"><p class="text">{t("group.deleteBody", { name: g.name, n: g.ids.length.toLocaleString() })}</p></div>
+      <footer>
+        <span class="grow"></span>
+        <button class="btn ghost" onclick={() => (confirmGroup = null)}>{t("common.cancel")}</button>
+        <button
+          class="btn danger"
+          onclick={() => {
+            groups.remove(g.id);
+            confirmGroup = null;
+          }}><Icon name="trash" size={14} />{t("common.remove")}</button
+        >
       </footer>
     </div>
   </div>

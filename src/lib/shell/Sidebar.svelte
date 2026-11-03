@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { TempGroup } from "../groups.svelte";
   import { dismiss } from "../ui/dismiss";
   import { expand } from "../ui/motion";
   import { fraction, tasks } from "../tasks.svelte";
@@ -15,6 +16,10 @@
     shards = {},
     saved,
     activeQuery,
+    groups = [],
+    activeGroup = null,
+    onshowgroup,
+    ondeletegroup,
     offline = [],
     replicas = {},
     cansavecurrent = false,
@@ -48,6 +53,12 @@
     shards?: Record<number, ShardStatus>;
     saved: SavedQuery[];
     activeQuery: string;
+    /** Temporary groups, under the saved searches. */
+    groups?: TempGroup[];
+    activeGroup?: string | null;
+    onshowgroup?: (g: TempGroup) => void;
+    /** A long press (right click) on a group: asks to delete it. */
+    ondeletegroup?: (g: TempGroup) => void;
     /** Sources whose storage is not connected: struck through. */
     offline?: number[];
     /** Sources holding a replica mirror (target id → name of the source it copies): greyed. */
@@ -189,7 +200,7 @@
 
   <div class="scroll">
     <div class="group">
-      <button class="item" class:on={selected === null} onclick={() => onselect(null)}>
+      <button class="item" class:on={selected === null && !activeGroup} onclick={() => onselect(null)}>
         <Icon name="home" size={15} /><span class="label">{t("side.all")}</span>
       </button>
       {#if onpeople}
@@ -351,6 +362,26 @@
         {#if !cansavecurrent}<p class="empty">{t("side.noSaved")}</p>{/if}
       {/each}
     </div>
+
+    {#if groups.length && onshowgroup}
+      <div class="group">
+        <div class="ghead"><span class="eyebrow">{t("side.groups")}</span></div>
+        {#each groups as g (g.id)}
+          <button
+            class="item"
+            class:on={activeGroup === g.id}
+            title={t("side.groupHint")}
+            onclick={() => onshowgroup(g)}
+            oncontextmenu={(e) => {
+              e.preventDefault();
+              ondeletegroup?.(g);
+            }}
+          >
+            <Icon name="copy" size={15} /><span class="label">{g.name}</span><span class="gcount tabular">{g.ids.length}</span>
+          </button>
+        {/each}
+      </div>
+    {/if}
   </div>
 
   <div class="foot">
@@ -433,6 +464,11 @@
   }
   .manual span {
     flex: 1;
+  }
+  .gcount {
+    margin-left: auto;
+    color: var(--faint);
+    font-size: 11px;
   }
   .scroll {
     flex: 1;
