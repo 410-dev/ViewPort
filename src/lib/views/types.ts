@@ -42,6 +42,8 @@ export interface ViewProps {
   /** Opens the viewer at `id` within `list` (the order the view shows). */
   onopen: (id: number, list: number[]) => void;
   onfolder: (path: string) => void;
+  /** A temporary group: holding an item `holdMs` and dragging it moves it (`to`: its new position). */
+  reorder?: { holdMs: number; onmove: (id: number, to: number) => void };
   /** Opens `id` in a new viewer window (middle click); absent on mobile. */
   onopenwindow?: (id: number, list: number[]) => void;
 }

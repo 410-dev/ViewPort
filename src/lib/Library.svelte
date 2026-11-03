@@ -77,7 +77,7 @@
     /** The listing `initial` shows, when the opener has it: used instead of searching again. */
     seed?: Listing | null;
     /** An explorer inside a viewer split pane: opening items hands them to the pane. */
-    embedded?: { active: boolean; onopen: (ids: number[], index: number, state: BrowseState) => void } | null;
+    embedded?: { active: boolean; onopen: (ids: number[], index: number, state: BrowseState, group: string | null) => void } | null;
   } = $props();
 
   /** Only the main window's library is restored on the next start. */
@@ -115,7 +115,7 @@
   let sections = $state<Sections>({ kind: "none", marks: [] });
   const sectionMarks = $derived<SectionMark[]>(sections.marks.map((m) => ({ index: m.index, label: sectionLabel(sections.kind, m.key) })));
 
-  let viewing = $state<{ list: number[]; index: number } | null>(null);
+  let viewing = $state<{ list: number[]; index: number; group: string | null } | null>(null);
   let modal = $state<{ editing: SavedQuery | null } | null>(null);
   let showSettings = $state(false);
   let showPeople = $state(false);
@@ -333,6 +333,28 @@
     groups.add(list, (n) => t("group.name", { n }));
     selection.clear();
   }
+  /** Items being added to a temporary group (the dialog choosing which). */
+  let addingToGroup = $state<number[] | null>(null);
+  $effect(() => {
+    if (addingToGroup) return onBack(() => (addingToGroup = null));
+  });
+  // The group's own changes (items added, taken out, moved; here or in another window).
+  $effect(() => {
+    const g = groups.get(group);
+    if (!g) return;
+    g.ids;
+    untrack(() => {
+      if (scrollKey === listingKey()) runSearch(false);
+    });
+  });
+  /** A drag in the view moved item `id` to position `to` of the group as shown. */
+  function reorderGroup(id: number, to: number) {
+    if (!group) return;
+    const next = ids.filter((x) => x !== id);
+    next.splice(Math.max(0, Math.min(to, next.length)), 0, id);
+    ids = next;
+    groups.reorder(group, next);
+  }
   let confirmGroup = $state<TempGroup | null>(null);
   $effect(() => {
     if (confirmGroup) return onBack(() => (confirmGroup = null));
@@ -513,8 +535,8 @@
     const list = viewable(id, all);
     const index = list ? list.indexOf(id) : -1;
     if (!list || index < 0) return;
-    if (embedded) embedded.onopen(list, index, browseState());
-    else viewing = { list, index };
+    if (embedded) embedded.onopen(list, index, browseState(), group);
+    else viewing = { list, index, group };
   }
 
   /** Desktop: the item in its own viewer window (falls back to the in-window viewer on mobile). */
@@ -629,6 +651,7 @@
     ...(hasShard ? [{ label: t("sel.copyTo"), icon: "copy" as const, action: () => startCopy([...selection.set], []) }] : []),
     { label: t("sel.export"), icon: "download", action: () => exportSelected([...selection.set]) },
     { label: t("sel.makeGroup"), icon: "copy", action: makeGroup },
+    ...(groups.list.length ? [{ label: t("sel.addToGroup"), icon: "plus" as const, action: () => (addingToGroup = [...selection.set]) }] : []),
     { label: t("sel.all"), icon: "checkSquare", action: () => selection.selectAll(ids) },
     { label: t("sel.clear"), icon: "x", action: () => selection.clear() },
     { label: t("sel.delete"), icon: "trash", danger: true, action: () => (confirmDelete = [...selection.set]) },
@@ -1126,6 +1149,7 @@
               onopen={openViewer}
               onopenwindow={openViewerWindow}
               onfolder={(p) => (folder = p)}
+              reorder={group ? { holdMs: settings.grid.reorder_hold_ms ?? 400, onmove: reorderGroup } : undefined}
             />
             {/key}
             {#if researching}
@@ -1272,9 +1296,48 @@
       <footer>
         <span class="grow"></span>
         <button class="btn ghost" disabled={deleting} onclick={() => (confirmDelete = null)}>{t("common.cancel")}</button>
+        {#if group}
+          <button
+            class="btn"
+            disabled={deleting}
+            onclick={() => {
+              if (group && confirmDelete) groups.removeItems(group, confirmDelete);
+              confirmDelete = null;
+              selection.clear();
+            }}><Icon name="minus" size={14} />{t("group.removeFrom")}</button
+          >
+        {/if}
         <button class="btn danger" disabled={deleting} onclick={deleteConfirmed}>
           {#if deleting}<span class="spinner"></span>{:else}<Icon name="trash" size={14} />{/if}{t("del.confirm")}
         </button>
+      </footer>
+    </div>
+  </div>
+{/if}
+
+{#if addingToGroup}
+  {@const list = addingToGroup}
+  <div out:fade class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && (addingToGroup = null)}>
+    <div out:pop class="dialog confirm" role="dialog" aria-modal="true" aria-labelledby="group-add-title">
+      <header><h2 id="group-add-title">{t("group.addTitle")}</h2></header>
+      <div class="body">
+        <p class="text">{t("group.addBody", { n: list.length.toLocaleString() })}</p>
+        <div class="group-pick">
+          {#each groups.list as g (g.id)}
+            <button
+              class="btn ghost"
+              onclick={() => {
+                groups.addItems(g.id, list);
+                addingToGroup = null;
+                selection.clear();
+              }}><Icon name="copy" size={14} /><span class="grow">{g.name}</span><span class="tabular faint">{g.ids.length}</span></button
+            >
+          {/each}
+        </div>
+      </div>
+      <footer>
+        <span class="grow"></span>
+        <button class="btn ghost" onclick={() => (addingToGroup = null)}>{t("common.cancel")}</button>
       </footer>
     </div>
   </div>
@@ -1442,7 +1505,7 @@
 
 {#if viewing && settings}
   <ViewerShell
-    panes={[{ ids: viewing.list, index: viewing.index }]}
+    panes={[{ ids: viewing.list, index: viewing.index, group: viewing.group }]}
     {settings}
     {bundle}
     browseFrom={browseState()}
@@ -1584,6 +1647,21 @@
     font-size: 12px;
     color: var(--muted);
     overflow-wrap: anywhere;
+  }
+  .group-pick {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-top: 10px;
+    max-height: 50vh;
+    overflow-y: auto;
+  }
+  .group-pick .btn {
+    justify-content: flex-start;
+  }
+  .group-pick .faint {
+    color: var(--faint);
+    font-size: 12px;
   }
   .confirm .text {
     margin: 0;

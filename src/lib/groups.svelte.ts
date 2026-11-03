@@ -32,6 +32,30 @@ class Groups {
     return g;
   }
 
+  /** Appends `ids` (in this order) to group `id`, leaving out those already in it. */
+  addItems(id: string, ids: number[]) {
+    this.#update(id, (list) => [...list, ...ids.filter((x) => !list.includes(x))]);
+  }
+
+  /** Takes `ids` out of group `id` (the media stays in the library). */
+  removeItems(id: string, ids: number[]) {
+    const gone = new Set(ids);
+    this.#update(id, (list) => list.filter((x) => !gone.has(x)));
+  }
+
+  /** Group `id` in a new order: `shown` first, then the rest (items no longer found) as they were. */
+  reorder(id: string, shown: number[]) {
+    this.#update(id, (list) => {
+      const set = new Set(shown);
+      return [...shown, ...list.filter((x) => !set.has(x))];
+    });
+  }
+
+  #update(id: string, f: (ids: number[]) => number[]) {
+    this.list = this.list.map((g) => (g.id === id ? { ...g, ids: f(g.ids) } : g));
+    this.#write();
+  }
+
   remove(id: string) {
     this.list = this.list.filter((g) => g.id !== id);
     this.#write();

@@ -11,11 +11,161 @@
   import { arrowStep } from "./selection.svelte";
   import type { ViewProps } from "./types";
 
-  let { ids, folders, selection, resetKey, scrollKey, sections, tile, showNames, folderPreview, overscan, onopenwindow, onopen, onfolder }: ViewProps = $props();
+  let { ids: listed, folders, selection, resetKey, scrollKey, sections, tile, showNames, folderPreview, overscan, onopenwindow, onopen, onfolder, reorder }: ViewProps = $props();
 
   const GAP = 10;
   const LABEL = 22;
   const PAD = 16;
+  /** Movement (px) that makes a press a scroll or a drag rather than a hold. */
+  const SLOP = 8;
+  /** Within this distance (px) of the top or bottom, a dragged item scrolls the grid. */
+  const EDGE = 56;
+
+  // ---- reordering (temporary groups): hold an item, then drag it to its new place
+  /** A press that may turn into a drag. */
+  let press: {
+    id: number;
+    from: number;
+    x: number;
+    y: number;
+    pointerId: number;
+    armed: boolean;
+    timer: ReturnType<typeof setTimeout>;
+    /** The selection before the press (a touch hold selects and opens the menu: undone if it drags). */
+    before: number[];
+  } | null = null;
+  /** The item being dragged: where the pointer is (grid content coordinates) and where it would land. */
+  let dragging = $state<{ id: number; from: number; to: number; x: number; y: number; grabX: number; grabY: number } | null>(null);
+  /** Swallows the click that ends a drag. */
+  let dropped = false;
+  let edgeFrame = 0;
+  let pointerY = 0;
+
+  /** The order shown: while dragging, the dragged item sits where it would land. */
+  const ids = $derived.by(() => {
+    if (!dragging) return listed;
+    const next = listed.filter((x) => x !== dragging!.id);
+    next.splice(dragging.to, 0, dragging.id);
+    return next;
+  });
+
+  function startPress(e: PointerEvent, id: number, index: number) {
+    selection.pointer(e);
+    if (!reorder || !e.isPrimary || (e.pointerType === "mouse" && e.button !== 0)) return;
+    endPress();
+    press = {
+      id,
+      from: index,
+      x: e.clientX,
+      y: e.clientY,
+      pointerId: e.pointerId,
+      armed: false,
+      before: [...selection.set],
+      timer: setTimeout(() => press && (press.armed = true), reorder.holdMs),
+    };
+    window.addEventListener("pointermove", onPressMove);
+    window.addEventListener("pointerup", onPressUp);
+    window.addEventListener("pointercancel", onPressCancel);
+  }
+
+  /** Content coordinates of a pointer position. */
+  function contentPoint(x: number, y: number) {
+    const r = el.getBoundingClientRect();
+    return { x: x - r.left, y: y - r.top + el.scrollTop };
+  }
+
+  /** The position in the list for a point in content coordinates. */
+  function slotAt(x: number, y: number) {
+    const col = Math.min(cols - 1, Math.max(0, Math.floor((x - PAD + GAP / 2) / (tileW + GAP))));
+    const row = Math.max(0, Math.floor((y - PAD + GAP / 2) / rowH));
+    return Math.min(listed.length - 1, Math.max(0, row * cols + col - folders.length));
+  }
+
+  function onPressMove(e: PointerEvent) {
+    if (!press || e.pointerId !== press.pointerId) return;
+    pointerY = e.clientY;
+    if (!dragging) {
+      const moved = Math.hypot(e.clientX - press.x, e.clientY - press.y) > SLOP;
+      if (!moved) return;
+      if (!press.armed) return endPress();
+      // A drag: whatever the hold did (selected the item, opened the menu) is undone.
+      selection.menu = null;
+      selection.set.clear();
+      for (const x of press.before) selection.set.add(x);
+      const p = contentPoint(press.x, press.y);
+      const slot = press.from + folders.length;
+      dragging = {
+        id: press.id,
+        from: press.from,
+        to: press.from,
+        x: p.x,
+        y: p.y,
+        grabX: p.x - (PAD + (slot % cols) * (tileW + GAP)),
+        grabY: p.y - (PAD + Math.floor(slot / cols) * rowH),
+      };
+      edgeFrame = requestAnimationFrame(edgeScroll);
+    }
+    const p = contentPoint(e.clientX, e.clientY);
+    dragging.x = p.x;
+    dragging.y = p.y;
+    dragging.to = slotAt(p.x - dragging.grabX + tileW / 2, p.y - dragging.grabY + tileW / 2);
+  }
+
+  /** Near the top or bottom while dragging, the grid scrolls (faster the closer). */
+  function edgeScroll() {
+    if (!dragging) return;
+    const r = el.getBoundingClientRect();
+    const up = pointerY - r.top;
+    const down = r.bottom - pointerY;
+    const step = up < EDGE ? -(EDGE - up) / 4 : down < EDGE ? (EDGE - down) / 4 : 0;
+    if (step) {
+      const before = el.scrollTop;
+      el.scrollTop += step;
+      const d = el.scrollTop - before;
+      if (d) {
+        dragging.y += d;
+        dragging.to = slotAt(dragging.x - dragging.grabX + tileW / 2, dragging.y - dragging.grabY + tileW / 2);
+      }
+    }
+    edgeFrame = requestAnimationFrame(edgeScroll);
+  }
+
+  function onPressUp(e: PointerEvent) {
+    if (!press || e.pointerId !== press.pointerId) return;
+    const d = dragging;
+    endPress();
+    if (!d) return;
+    dropped = true;
+    setTimeout(() => (dropped = false));
+    if (d.to !== d.from) reorder?.onmove(d.id, d.to);
+  }
+
+  function onPressCancel(e: PointerEvent) {
+    if (press && e.pointerId === press.pointerId) endPress();
+  }
+
+  function endPress() {
+    if (press) clearTimeout(press.timer);
+    press = null;
+    dragging = null;
+    cancelAnimationFrame(edgeFrame);
+    window.removeEventListener("pointermove", onPressMove);
+    window.removeEventListener("pointerup", onPressUp);
+    window.removeEventListener("pointercancel", onPressCancel);
+  }
+
+  // A held item keeps the finger from scrolling the grid (the move becomes the drag).
+  $effect(() => {
+    if (!el) return;
+    const block = (e: TouchEvent) => {
+      if (press?.armed) e.preventDefault();
+    };
+    el.addEventListener("touchmove", block, { passive: false });
+    return () => {
+      el.removeEventListener("touchmove", block);
+      endPress();
+    };
+  });
 
   let el = $state<HTMLDivElement>() as HTMLDivElement;
   let width = $state(0);
@@ -130,6 +280,7 @@
   bind:clientHeight={height}
   onscroll={onScroll}
   onkeydown={onKey}
+  class:reordering={!!dragging}
   role="listbox"
   aria-multiselectable="true"
   tabindex="0"
@@ -180,16 +331,20 @@
         {@const id = v.id}
         {@const b = briefs.get(id)}
         {@const noThumb = b?.thumb === "unsupported" || b?.thumb === "failed" || broken.has(id)}
+        {@const lifted = dragging?.id === id}
         <button
           class="tile"
           class:selected={selection.set.has(id)}
           class:focus={selection.focus === id}
+          class:lifted
           style:width="{tileW}px"
-          style:transform="translate({PAD + col * (tileW + GAP)}px, {PAD + row * rowH}px)"
+          style:transform={lifted && dragging
+            ? `translate(${dragging.x - dragging.grabX}px, ${dragging.y - dragging.grabY}px) scale(1.06)`
+            : `translate(${PAD + col * (tileW + GAP)}px, ${PAD + row * rowH}px)`}
           title={b?.name}
-          onpointerdown={(e) => selection.pointer(e)}
-          onclick={(e) => selection.activate(e, v.index, ids, onopen)}
-          oncontextmenu={(e) => selection.hold(e, v.index, ids)}
+          onpointerdown={(e) => startPress(e, id, v.index)}
+          onclick={(e) => !dropped && selection.activate(e, v.index, ids, onopen)}
+          oncontextmenu={(e) => (dragging ? e.preventDefault() : selection.hold(e, v.index, ids))}
           ondblclick={() => onopen(id, ids)}
           onauxclick={(e) => e.button === 1 && onopenwindow?.(id, ids)}
           onmousedown={(e) => e.button === 1 && e.preventDefault()}
@@ -260,6 +415,21 @@
     text-align: left;
     will-change: transform;
     contain: layout style;
+  }
+  /* Reordering: the other tiles slide to their new places; the dragged one follows the pointer. */
+  .reordering {
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .reordering .tile:not(.lifted) {
+    transition: transform var(--t-fast) var(--ease);
+  }
+  .tile.lifted {
+    z-index: 5;
+    pointer-events: none;
+  }
+  .tile.lifted .frame {
+    box-shadow: var(--shadow);
   }
   .frame {
     position: relative;

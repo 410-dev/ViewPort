@@ -432,6 +432,8 @@ pub struct GridSettings {
     pub default_sort: String,
     /// Folder tiles show an N x N grid of thumbnails from inside the folder (0 = icon only).
     pub folder_preview: u32,
+    /// In a temporary group, holding an item this long (ms) and then dragging it moves it.
+    pub reorder_hold_ms: u32,
 }
 
 impl Default for GridSettings {
@@ -444,6 +446,7 @@ impl Default for GridSettings {
             show_names: true,
             default_sort: "sort(name) AND sort(folder) AND sort(source)".into(),
             folder_preview: 2,
+            reorder_hold_ms: 400,
         }
     }
 }

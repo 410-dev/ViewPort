@@ -211,6 +211,7 @@ export const SECTIONS: Section[] = [
           { kind: "number", ...bundle({ path: "grid.folder_preview", label: "set.folderPreview", help: "set.folderPreview.help" }), min: 0, max: 4, step: 1 },
           { kind: "number", ...bundle({ path: "grid.min_tile_px", label: "set.minTile" }), min: 48, max: 400, step: 8, unit: "px" },
           { kind: "number", ...bundle({ path: "grid.max_tile_px", label: "set.maxTile" }), min: 96, max: 1024, step: 8, unit: "px" },
+          { kind: "number", ...bundle({ path: "grid.reorder_hold_ms", label: "set.reorderHold", help: "set.reorderHold.help" }), min: 100, max: 2000, step: 50, unit: "ms" },
           { kind: "number", ...bundle({ path: "grid.overscan_rows", label: "set.overscan", help: "set.overscan.help" }), min: 0, max: 20, step: 1 },
         ],
       },

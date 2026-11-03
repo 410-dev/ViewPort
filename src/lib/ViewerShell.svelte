@@ -12,6 +12,7 @@
   import { dismiss } from "./ui/dismiss";
   import { onBack } from "./back.svelte";
   import Icon from "./ui/Icon.svelte";
+  import { groups } from "./groups.svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { fullscreenChanged, resetImmersive } from "./immersive.svelte";
 
@@ -34,6 +35,8 @@
     index: number;
     /** Showing an explorer (with this state) instead of the viewer. */
     browse: BrowseState | null;
+    /** The temporary group the list is (by id), if any. */
+    group?: string | null;
   };
 
   let {
@@ -45,7 +48,7 @@
     onclose,
     onchanged,
   }: {
-    panes: { ids: number[]; index: number }[];
+    panes: { ids: number[]; index: number; group?: string | null }[];
     settings: Settings;
     /** The open workspace; looked up when absent (viewer windows). */
     bundle?: BundleSummary;
@@ -212,7 +215,7 @@
     const p = panes[active];
     // The new pane starts as an explorer; until something is opened there it keeps the
     // active pane's list.
-    panes.push({ key: nextKey++, ids: p.ids, index: p.index, browse: start() });
+    panes.push({ key: nextKey++, ids: p.ids, index: p.index, group: p.group, browse: start() });
     slots.push(panes.length - 1);
     active = panes.length - 1;
     menuAt = null;
@@ -238,11 +241,13 @@
     onclose(p.browse ? undefined : p.ids[p.index]);
   }
 
-  /** Item `id` was deleted: every pane drops it and shows the item after it (or the one
-   * before, at the end). A pane left with nothing closes. */
-  function dropItem(id: number) {
+  /** Item `id` was deleted (or, with `only`, taken out of that temporary group): every pane
+   * (of that group) drops it and shows the item after it (or the one before, at the end).
+   * A pane left with nothing closes. */
+  function dropItem(id: number, only?: string) {
     for (let i = panes.length - 1; i >= 0; i--) {
       const p = panes[i];
+      if (only !== undefined && p.group !== only) continue;
       const at = p.ids.indexOf(id);
       if (at < 0) continue;
       const ids = p.ids.filter((x) => x !== id);
@@ -257,10 +262,11 @@
   }
 
   /** Opened from a pane's explorer: the pane views that list. */
-  function openIn(i: number, ids: number[], index: number) {
+  function openIn(i: number, ids: number[], index: number, group: string | null) {
     const p = panes[i];
     p.ids = ids;
     p.index = index;
+    p.group = group;
     p.browse = null;
   }
 
@@ -356,7 +362,7 @@
               seed={browseSeed}
               onclose={() => remove(i)}
               onbundle={() => {}}
-              embedded={{ active: i === active, onopen: (ids, index) => openIn(i, ids, index) }}
+              embedded={{ active: i === active, onopen: (ids, index, _, group) => openIn(i, ids, index, group) }}
             />
           {/if}
         {:else}
@@ -373,6 +379,15 @@
             onpop={isMobile ? undefined : () => pop(i)}
             onpull={(v) => (pulled = v)}
             onremoved={dropItem}
+            group={p.group && groups.get(p.group)
+              ? {
+                  name: groups.get(p.group)!.name,
+                  onremove: (id) => {
+                    groups.removeItems(p.group!, [id]);
+                    dropItem(id, p.group!);
+                  },
+                }
+              : null}
           />
         {/if}
       </div>

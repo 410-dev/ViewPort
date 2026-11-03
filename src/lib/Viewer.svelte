@@ -61,6 +61,7 @@
     onpop,
     onpull,
     onremoved,
+    group = null,
   }: {
     ids: number[];
     index: number;
@@ -79,6 +80,8 @@
     onpull?: (progress: number) => void;
     /** The item `id` was deleted: the shell drops it from every pane. */
     onremoved?: (id: number) => void;
+    /** Viewing a temporary group: the delete dialog can also take an item out of it. */
+    group?: { name: string; onremove: (id: number) => void } | null;
   } = $props();
 
   let showInfo = $state(false);
@@ -1486,6 +1489,18 @@
         <footer>
           <span class="grow"></span>
           <button class="btn ghost" disabled={deleting} onclick={() => (confirmDelete = null)}>{t("common.cancel")}</button>
+          {#if group}
+            <button
+              class="btn"
+              disabled={deleting}
+              title={group.name}
+              onclick={() => {
+                const target = confirmDelete;
+                confirmDelete = null;
+                if (target !== null) group?.onremove(target);
+              }}><Icon name="minus" size={14} />{t("group.removeFrom")}</button
+            >
+          {/if}
           <button class="btn danger" disabled={deleting} onclick={deleteConfirmed}>
             {#if deleting}<span class="spinner"></span>{:else}<Icon name="trash" size={14} />{/if}{t("del.confirm")}
           </button>

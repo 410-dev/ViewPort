@@ -237,6 +237,7 @@ export interface GridSettings {
   show_names: boolean;
   /** Folder tiles show an N x N grid of thumbnails (0 = icon only). */
   folder_preview: number;
+  reorder_hold_ms: number;
 }
 
 export interface CacheSettings {
