@@ -1275,6 +1275,31 @@ impl Db {
         Ok(())
     }
 
+    /// Temporary groups in their order: `(id, name, media ids in order)`.
+    pub fn temp_groups(&self) -> Result<Vec<(String, String, Vec<i64>)>> {
+        let mut stmt = self.conn.prepare("SELECT id, name, ids FROM temp_group ORDER BY sort_index, id")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, String>(2)?)))?;
+        rows.map(|row| {
+            let (id, name, json) = row?;
+            Ok((id, name, serde_json::from_str(&json).unwrap_or_default()))
+        })
+        .collect()
+    }
+
+    /// Replaces every temporary group with `groups` (in this order).
+    pub fn set_temp_groups(&self, groups: &[(String, String, Vec<i64>)]) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM temp_group", [])?;
+        {
+            let mut stmt = tx.prepare("INSERT INTO temp_group (id, name, sort_index, ids) VALUES (?1, ?2, ?3, ?4)")?;
+            for (i, (id, name, ids)) in groups.iter().enumerate() {
+                stmt.execute(rusqlite::params![id, name, i as i64, serde_json::to_string(ids)?])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Videos that have not been probed yet.
     /// Items of sources in `skip` (e.g. locked shards) are left out.
     pub fn unprobed_videos(&self, limit: usize, skip: &[i64]) -> Result<Vec<i64>> {

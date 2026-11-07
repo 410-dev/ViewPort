@@ -1521,9 +1521,14 @@
         refreshed = scanRefresh().catch(() => {});
       }
       if (id !== undefined) {
-        selection.set.clear();
-        // On touch a selection means selection mode; just remember where the viewer was.
-        if (!selection.touch) selection.set.add(id);
+        // A multiple selection (or, on touch, selection mode) made before the viewer opened
+        // stays as it was; otherwise the last viewed item becomes the selection.
+        const keep = selection.set.size > 1 || (selection.touch && selection.set.size > 0);
+        if (!keep) {
+          selection.set.clear();
+          // On touch a selection means selection mode; just remember where the viewer was.
+          if (!selection.touch) selection.set.add(id);
+        }
         selection.focus = id;
         // Back to where the last viewed item is in the listing, not where the viewer opened.
         // Only once the listing is current, and only if it lists the item: otherwise the

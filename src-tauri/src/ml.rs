@@ -442,6 +442,7 @@ fn run(app: &AppHandle, ws: &Arc<Workspace>, task: &tasks::Task, cancel: &Atomic
                     loop {
                         let job = job_rx.lock().unwrap_or_else(|e| e.into_inner()).recv();
                         let Ok((id, mode)) = job else { return };
+                        crate::sched::viewer_pause(|| stop.load(Ordering::Relaxed) || ws.closed.load(Ordering::Relaxed));
                         if stop.load(Ordering::Relaxed) || ws.closed.load(Ordering::Relaxed) {
                             return;
                         }

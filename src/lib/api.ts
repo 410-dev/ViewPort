@@ -355,6 +355,7 @@ export interface AppSettings {
     thumb_share: number;
     sched_idle_ms: number;
     pause_background: boolean;
+    pause_in_viewer: boolean;
     predict_decay: number;
     predict_min_side: number;
     prefetch_max_items: number;
@@ -381,7 +382,8 @@ export interface AppSettings {
     show_name: boolean;
     pin_controls: boolean;
     tap_to_advance: boolean;
-    swipe_favorite: boolean;
+    swipe_favorite_up: boolean;
+    swipe_favorite_down: boolean;
     brief_window: number;
     display_copy_workers: number;
     pull_close: boolean;
@@ -589,6 +591,13 @@ export interface Vocabulary {
   no: string;
 }
 
+/** A temporary group: media picked by hand, in order (kept in the library). */
+export interface TempGroup {
+  id: string;
+  name: string;
+  ids: number[];
+}
+
 export interface SavedQuery {
   id: number;
   label: string;
@@ -674,6 +683,10 @@ export const api = {
   listSavedQueries: (locale: string) => invoke<SavedQuery[]>("list_saved_queries", { locale }),
   saveQuery: (id: number | null, label: string, text: string) => invoke<number>("save_query", { id, label, text }),
   deleteSavedQuery: (id: number) => invoke<void>("delete_saved_query", { id }),
+  /** This window's page (re)loaded: drops viewer panes it had (they pause background work). */
+  viewerReset: () => invoke<void>("viewer_reset"),
+  listTempGroups: () => invoke<TempGroup[]>("list_temp_groups"),
+  saveTempGroups: (groups: TempGroup[]) => invoke<void>("save_temp_groups", { groups }),
   checkQuery: (src: string, locale: string) => invoke<QueryCheck>("check_query", { src, locale }),
   ffmpegStatus: () => invoke<FfmpegStatus>("ffmpeg_status"),
   heifStatus: () => invoke<HeifStatus>("heif_status"),

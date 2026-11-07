@@ -19,6 +19,8 @@
 
   $effect(() => {
     (async () => {
+      // Viewers this window had before a reload no longer hold background work back.
+      api.viewerReset().catch(() => {});
       await loadPrefs().catch(() => {});
       await initMediaUrls();
       startTaskTracking();

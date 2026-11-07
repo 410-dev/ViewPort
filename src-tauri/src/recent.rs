@@ -29,10 +29,25 @@ pub fn app_settings<R: Runtime>(app: &AppHandle<R>) -> AppSettings {
     let s: AppSettings = config_file(app, APP_SETTINGS)
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|t| serde_json::from_str(&t).ok())
+        .map(upgrade_app_settings)
+        .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_default();
     crate::sched::configure(&s.hardware);
     *APP_SETTINGS_CACHE.write().unwrap() = Some(s.clone());
     s
+}
+
+/// Carries settings that were renamed or split over to their new names.
+fn upgrade_app_settings(mut v: serde_json::Value) -> serde_json::Value {
+    if let Some(viewer) = v.get_mut("viewer").and_then(|x| x.as_object_mut()) {
+        // `swipe_favorite` (both directions) became `swipe_favorite_up` / `_down`.
+        if let Some(old) = viewer.remove("swipe_favorite") {
+            for key in ["swipe_favorite_up", "swipe_favorite_down"] {
+                viewer.entry(key).or_insert(old.clone());
+            }
+        }
+    }
+    v
 }
 
 /// The device settings last loaded or saved, for code without an `AppHandle`.

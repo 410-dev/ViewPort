@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use vp_core::settings::Settings;
 use vp_db::{Db, MediaBrief, NewSource, SourceRow};
@@ -607,6 +607,12 @@ impl Drop for PrefetchDone {
     }
 }
 
+/// The page of `window` (re)loaded: viewers it had before are gone without saying so.
+#[tauri::command]
+pub fn viewer_reset(window: tauri::Window) {
+    crate::sched::forget_window(window.label());
+}
+
 /// Numbers each look-ahead.
 static LOOKAHEAD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// The look-ahead running for each viewer pane; a newer one for the same pane stops it.
@@ -975,6 +981,37 @@ pub async fn save_query(app: AppHandle, id: Option<i64>, label: String, text: St
 pub async fn delete_saved_query(app: AppHandle, id: i64) -> CmdResult<()> {
     let ws = workspace(&app.state::<AppState>())?;
     blocking(move || Ok(ws.write_db.lock().unwrap().delete_saved_query(id)?)).await
+}
+
+// ---------------------------------------------------------------- temporary groups
+
+#[derive(Serialize, Deserialize)]
+pub struct TempGroup {
+    pub id: String,
+    pub name: String,
+    pub ids: Vec<i64>,
+}
+
+/// Temporary groups kept in the library, so every device that opens it sees them.
+#[tauri::command]
+pub async fn list_temp_groups(app: AppHandle) -> CmdResult<Vec<TempGroup>> {
+    let ws = workspace(&app.state::<AppState>())?;
+    blocking(move || {
+        let db = ws.read_db.lock().unwrap();
+        Ok(db.temp_groups()?.into_iter().map(|(id, name, ids)| TempGroup { id, name, ids }).collect())
+    })
+    .await
+}
+
+/// Replaces the library's temporary groups with `groups` (in this order).
+#[tauri::command]
+pub async fn save_temp_groups(app: AppHandle, groups: Vec<TempGroup>) -> CmdResult<()> {
+    let ws = workspace(&app.state::<AppState>())?;
+    blocking(move || {
+        let rows: Vec<_> = groups.into_iter().map(|g| (g.id, g.name, g.ids)).collect();
+        Ok(ws.write_db.lock().unwrap().set_temp_groups(&rows)?)
+    })
+    .await
 }
 
 // ---------------------------------------------------------------- video pipeline

@@ -111,6 +111,7 @@ fn spawn_sync(app: &AppHandle, ws: Arc<Workspace>, id: i64) {
     }
     let app = app.clone();
     std::thread::spawn(move || {
+        crate::sched::viewer_pause(|| ws.closed.load(Ordering::Relaxed));
         let result = ws.read_db.lock().unwrap().mirror(id).map_err(CmdError::from).and_then(|m| m.ok_or_else(|| CmdError::new("not_found", "mirror")));
         let result = result.and_then(|m| sync(&app, &ws, &m));
         let (at, text) = match &result {
@@ -276,6 +277,7 @@ fn sync_with(
     // Deletions: only copies the mirror made and nobody changed since.
     let mut deleted = 0;
     for (rel, item) in tracked.iter().filter(|(rel, _)| !present.contains_key(*rel)) {
+        crate::sched::viewer_pause(|| cancel.load(Ordering::Relaxed) || ws.closed.load(Ordering::Relaxed));
         if cancel.load(Ordering::Relaxed) || ws.closed.load(Ordering::Relaxed) {
             return Err(CmdError::new("cancelled", "cancelled"));
         }
@@ -303,6 +305,7 @@ fn sync_with(
     let mut paths: Vec<&String> = present.keys().collect();
     paths.sort();
     for rel in paths {
+        crate::sched::viewer_pause(|| cancel.load(Ordering::Relaxed) || ws.closed.load(Ordering::Relaxed));
         if cancel.load(Ordering::Relaxed) || ws.closed.load(Ordering::Relaxed) {
             return Err(CmdError::new("cancelled", "cancelled"));
         }

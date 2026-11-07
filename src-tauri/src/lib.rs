@@ -115,6 +115,9 @@ pub fn run() {
             commands::list_saved_queries,
             commands::save_query,
             commands::delete_saved_query,
+            commands::list_temp_groups,
+            commands::viewer_reset,
+            commands::save_temp_groups,
             commands::ffmpeg_status,
             heif::heif_status,
             heif::heif_install,
@@ -218,6 +221,10 @@ pub fn run() {
             media_base_url,
         ])
         .on_window_event(|window, event| {
+            // A closed window's viewers no longer hold background work back.
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                sched::forget_window(window.label());
+            }
             // Mobile: the OS may end a backgrounded app without notice; write what a locked
             // bundle holds in memory while that is still possible.
             #[cfg(mobile)]

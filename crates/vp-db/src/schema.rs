@@ -499,6 +499,16 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE mirror ADD COLUMN on_scan       INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE mirror ADD COLUMN interval_mins INTEGER;
     "#,
+    // v12: temporary groups (items picked by hand, in order) travel with the library.
+    // `ids` is a JSON array of media ids.
+    r#"
+    CREATE TABLE temp_group (
+        id         TEXT PRIMARY KEY,
+        name       TEXT NOT NULL,
+        sort_index INTEGER NOT NULL,
+        ids        TEXT NOT NULL DEFAULT '[]'
+    );
+    "#,
 ];
 
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;

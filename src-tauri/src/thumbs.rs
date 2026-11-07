@@ -106,6 +106,7 @@ pub fn spawn_backfill(app: AppHandle, ws: Arc<Workspace>) {
                 if ws.closed.load(Ordering::Relaxed) {
                     break 'outer;
                 }
+                crate::sched::viewer_pause_async(|| ws.closed.load(Ordering::Relaxed) || cancel.load(Ordering::Relaxed)).await;
                 let Ok(permit) = ws.thumb_permits.clone().acquire_owned().await else { break 'outer };
                 let (ws, drivers) = (ws.clone(), drivers.clone());
                 tasks.push(tauri::async_runtime::spawn_blocking(move || {

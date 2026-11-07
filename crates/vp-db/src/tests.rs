@@ -892,3 +892,14 @@ fn duplicate_candidates_hashes_and_reports() {
     db.delete_dup_report(report).unwrap();
     assert!(db.dup_reports().unwrap().is_empty());
 }
+
+#[test]
+fn temp_groups_round_trip_in_order() {
+    let db = Db::open_in_memory().unwrap();
+    assert!(db.temp_groups().unwrap().is_empty());
+    let groups = vec![("b".to_string(), "Group 2".to_string(), vec![3, 1, 2]), ("a".to_string(), "Group 1".to_string(), vec![])];
+    db.set_temp_groups(&groups).unwrap();
+    assert_eq!(db.temp_groups().unwrap(), groups);
+    db.set_temp_groups(&groups[1..]).unwrap();
+    assert_eq!(db.temp_groups().unwrap(), groups[1..].to_vec());
+}

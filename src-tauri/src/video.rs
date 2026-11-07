@@ -449,6 +449,7 @@ pub fn spawn_probe_backfill<R: Runtime>(app: &AppHandle<R>, ws: Arc<Workspace>) 
                 break;
             }
             for id in batch {
+                crate::sched::viewer_pause(|| ws.closed.load(Ordering::Relaxed));
                 if ws.closed.load(Ordering::Relaxed) {
                     break;
                 }

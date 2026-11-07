@@ -853,7 +853,12 @@
   let gesture: { x: number; y: number; t: number; type: string; moved: boolean; pinched: boolean; swipe: boolean } | null = null;
   /** Vertical drag offset while swiping for favorite (touch). */
   let pull = $state(0);
-  const favSwipe = (g: { type: string } | null) => g?.type === "touch" && (prefs.app?.viewer.swipe_favorite ?? true);
+  /** Swiping up marks a favorite, down unmarks it; each direction has its own setting. */
+  const favUp = (g: { type: string } | null) => g?.type === "touch" && (prefs.app?.viewer.swipe_favorite_up ?? true);
+  const favDown = (g: { type: string } | null) => g?.type === "touch" && (prefs.app?.viewer.swipe_favorite_down ?? true);
+  const favSwipe = (g: { type: string } | null) => favUp(g) || favDown(g);
+  /** Whether a vertical swipe by `dy` would change the favorite mark. */
+  const favDir = (g: { type: string } | null, dy: number) => (dy < 0 ? favUp(g) : dy > 0 ? favDown(g) : false);
   // ---- pull to close (phones): past the favorite swipe's distance, the item shrinks as it
   // follows the finger down, and letting go past `pull_close_threshold` closes the viewer.
   const pullClose = (g: { type: string } | null) =>
@@ -864,7 +869,7 @@
   const closeDistance = () => Math.max((prefs.app?.viewer.pull_close_threshold ?? 0.4) * stageH, favDistance() + 40);
   const minShrink = () => Math.min(0.95, Math.max(0.05, prefs.app?.viewer.pull_close_min_scale ?? 0.4));
   /** Where the pull-to-close shrinking starts: the favorite swipe's distance, if it is on. */
-  const shrinkFrom = (g: { type: string } | null) => (favSwipe(g) ? favDistance() : 0);
+  const shrinkFrom = (g: { type: string } | null) => (favDown(g) ? favDistance() : 0);
   $effect(() => onpull?.((1 - shrink) / (1 - minShrink())));
   let pinch: { dist: number; scale: number } | null = null;
   const distance = () => {
@@ -1047,7 +1052,7 @@
         } else {
           // The item follows a vertical drag at a third of the distance.
           shrink = 1;
-          pull = favSwipe(gesture) ? snap(dy / 3) : 0;
+          pull = favDir(gesture, dy) ? snap(dy / 3) : 0;
         }
       }
     }
@@ -1076,7 +1081,7 @@
         close();
         return;
       }
-      if (!favSwipe(g)) return;
+      if (!favDir(g, dy)) return;
       // Far enough (the same fraction as sideways swipes), or flicked.
       const far = Math.abs(dy) > (prefs.app?.viewer.swipe_threshold ?? 0.2) * stageH;
       const flick = Math.abs(dy) > 30 && Math.abs(dy) / dt > 0.5;

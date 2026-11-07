@@ -1,20 +1,33 @@
 /**
  * Temporary groups: items picked by hand, in the order they were selected, listed in the
- * sidebar under the saved searches. Kept on this device per library (WebView storage)
- * until deleted; every window of the app sees the same list (`storage` events).
+ * sidebar under the saved searches. Kept in the library (`temp_group` table) until deleted,
+ * so every device that opens the library sees them; other windows hear of changes through
+ * `sync` ("groups").
  */
-export type TempGroup = { id: string; name: string; ids: number[] };
+import { api, type TempGroup } from "./api";
+import { broadcast, onSync } from "./sync";
 
-const KEY = (bundle: string) => `vp.groups:${bundle}`;
+export type { TempGroup };
+
+/** Where groups lived before they moved into the library (this device's WebView storage). */
+const LEGACY_KEY = (bundle: string) => `vp.groups:${bundle}`;
 
 class Groups {
   list = $state<TempGroup[]>([]);
   #bundle = "";
+  #listening = false;
+  /** Serializes saves so an older list never lands after a newer one. */
+  #saving: Promise<unknown> = Promise.resolve();
 
   /** Reads the groups of the library at `bundle` (its path). */
   open(bundle: string) {
     this.#bundle = bundle;
-    this.#read();
+    this.list = [];
+    if (!this.#listening && typeof window !== "undefined") {
+      this.#listening = true;
+      onSync("groups", () => this.#read()).catch(() => {});
+    }
+    this.#read().then(() => this.#importLegacy(bundle));
   }
 
   get(id: string | null): TempGroup | undefined {
@@ -61,28 +74,49 @@ class Groups {
     this.#write();
   }
 
-  #read() {
+  async #read() {
+    const bundle = this.#bundle;
     try {
-      const v = JSON.parse(localStorage.getItem(KEY(this.#bundle)) ?? "[]");
-      this.list = Array.isArray(v) ? v.filter((g) => g && typeof g.id === "string" && Array.isArray(g.ids)) : [];
+      const list = await api.listTempGroups();
+      if (bundle === this.#bundle) this.list = list;
     } catch {
-      this.list = [];
+      // No library open (yet): keep what we have.
     }
   }
 
   #write() {
-    try {
-      localStorage.setItem(KEY(this.#bundle), JSON.stringify(this.list));
-    } catch {
-      // Storage unavailable: the groups last as long as the window.
-    }
+    // A window that never loaded the list (a detached viewer) must not overwrite it.
+    if (!this.#bundle) return;
+    const snapshot = $state.snapshot(this.list) as TempGroup[];
+    this.#saving = this.#saving
+      .then(() => api.saveTempGroups(snapshot))
+      .then(() => broadcast("groups"))
+      .catch(() => {});
   }
 
-  constructor() {
-    if (typeof window !== "undefined")
-      window.addEventListener("storage", (e) => {
-        if (this.#bundle && e.key === KEY(this.#bundle)) this.#read();
+  /** Moves groups made before they were kept in the library into it, once. */
+  #importLegacy(bundle: string) {
+    if (bundle !== this.#bundle) return;
+    try {
+      const raw = localStorage.getItem(LEGACY_KEY(bundle));
+      if (raw == null) return;
+      const v = JSON.parse(raw);
+      const old: TempGroup[] = Array.isArray(v)
+        ? v.filter((g) => g && typeof g.id === "string" && Array.isArray(g.ids)).map((g) => ({ id: g.id, name: String(g.name ?? ""), ids: g.ids }))
+        : [];
+      const have = new Set(this.list.map((g) => g.id));
+      const add = old.filter((g) => !have.has(g.id));
+      if (add.length) {
+        this.list = [...this.list, ...add];
+        this.#write();
+      }
+      // Forget the old copy only once the library has it.
+      this.#saving = this.#saving.then(() => {
+        if (add.every((g) => this.list.some((x) => x.id === g.id))) localStorage.removeItem(LEGACY_KEY(bundle));
       });
+    } catch {
+      // Storage unavailable: nothing to import.
+    }
   }
 }
 

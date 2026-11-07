@@ -20,11 +20,14 @@
 //! to wait may hold the database (or another lock) the request needs.
 //!
 //! Performance mode can pause thumbnails and background work outright while the viewer
-//! is busy (`pause_background`).
+//! is busy (`pause_background`). In every mode, background work can also wait for as long
+//! as a viewer is open at all (`pause_in_viewer`): its reads hold off (a little at a time,
+//! so a lock it holds is never kept from the viewer for long) and its loops stop at
+//! [`viewer_pause`], where they hold no lock.
 
 use std::cell::Cell;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
@@ -90,6 +93,41 @@ fn now_ms() -> u64 {
 /// Takes the shares from the device settings (called whenever they are loaded or saved).
 pub fn configure(h: &HardwareSettings) {
     GLOBAL.configure(h);
+    PAUSE_IN_VIEWER.store(h.pause_in_viewer, Ordering::Relaxed);
+}
+
+/// `HardwareSettings::pause_in_viewer`.
+static PAUSE_IN_VIEWER: AtomicBool = AtomicBool::new(true);
+
+/// Longest one background read holds off while a viewer is open: the thread may hold the
+/// database (or another lock) something the viewer does needs.
+const VIEWER_READ_PAUSE: Duration = Duration::from_secs(2);
+
+/// Whether background work should wait now: a viewer is open and `pause_in_viewer` is on.
+pub fn viewer_paused() -> bool {
+    PAUSE_IN_VIEWER.load(Ordering::Relaxed) && !SHOWN.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+}
+
+/// Called by background loops between items, where they hold no lock: waits while a viewer
+/// is open (`pause_in_viewer`), or until `stop` (cancelled, workspace closed).
+pub fn viewer_pause(stop: impl Fn() -> bool) {
+    while viewer_paused() && !stop() {
+        std::thread::sleep(POLL * 5);
+    }
+}
+
+/// Async [`viewer_pause`], for loops on the async runtime.
+pub async fn viewer_pause_async(stop: impl Fn() -> bool) {
+    while viewer_paused() && !stop() {
+        let _ = tauri::async_runtime::spawn_blocking(|| std::thread::sleep(POLL * 5)).await;
+    }
+}
+
+/// Forgets the viewer panes of window `label` (the window is gone or its page reloaded,
+/// so they will not say so themselves).
+pub fn forget_window(label: &str) {
+    let prefix = format!("{label}:");
+    SHOWN.lock().unwrap_or_else(|e| e.into_inner()).retain(|(p, _)| !p.starts_with(&prefix));
 }
 
 /// Runs `f` as work of class `c`: waits for its turn, counts it as busy meanwhile, and
@@ -148,9 +186,14 @@ impl Sched {
     /// Waits while `c` owes time to busier classes (or, paused, while the viewer is busy);
     /// returns early once they go idle, and at once while a viewer request is waiting.
     fn wait(&self, c: Class) {
+        let start = Instant::now();
         loop {
             if urgent_waiting() {
                 return;
+            }
+            if c == Class::Background && viewer_paused() && start.elapsed() < VIEWER_READ_PAUSE {
+                std::thread::sleep(POLL);
+                continue;
             }
             let cfg = self.config();
             if c != Class::Viewer && cfg.pause && self.busy(Class::Viewer, &cfg) {
@@ -310,6 +353,7 @@ const MAX_PAUSE: Duration = Duration::from_secs(60);
 /// for the viewer to go idle. Holds no lock itself.
 pub fn write_gate() {
     wait_urgent(Duration::from_secs(2));
+    viewer_pause(|| false);
     let start = Instant::now();
     loop {
         let cfg = GLOBAL.config();

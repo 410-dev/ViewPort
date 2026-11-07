@@ -670,8 +670,10 @@ pub struct ViewerSettings {
     pub pin_controls: bool,
     /// Touch screens: tapping the image goes to the next item.
     pub tap_to_advance: bool,
-    /// Touch screens: swiping an item up marks it as a favorite, down unmarks it.
-    pub swipe_favorite: bool,
+    /// Touch screens: swiping an item up marks it as a favorite.
+    pub swipe_favorite_up: bool,
+    /// Touch screens: swiping an item down unmarks it as a favorite.
+    pub swipe_favorite_down: bool,
     /// Phones: dragging an item down past `pull_close_threshold` closes the viewer, back to
     /// the grid or list. Past the favorite swipe's distance the item shrinks as it follows.
     pub pull_close: bool,
@@ -737,7 +739,8 @@ impl Default for ViewerSettings {
             show_name: false,
             pin_controls: false,
             tap_to_advance: true,
-            swipe_favorite: true,
+            swipe_favorite_up: true,
+            swipe_favorite_down: true,
             pull_close: true,
             pull_close_threshold: 0.4,
             pull_close_min_scale: 0.4,
@@ -1015,6 +1018,9 @@ pub struct HardwareSettings {
     /// Performance mode: thumbnails and background work stop while the viewer is busy
     /// (they go on once it has been idle for `sched_idle_ms`).
     pub pause_background: bool,
+    /// Every mode: while a viewer is open, scans, mirrors, thumbnail and probe backfills,
+    /// analysis and other background work wait (they go on once every viewer is closed).
+    pub pause_in_viewer: bool,
     /// Predictive mode: weight of the earlier moves in the direction estimate (0..1;
     /// higher follows a change of direction more slowly).
     pub predict_decay: f32,
@@ -1088,6 +1094,7 @@ impl Default for HardwareSettings {
             thumb_share: 0.7,
             sched_idle_ms: 500,
             pause_background: false,
+            pause_in_viewer: true,
             predict_decay: 0.6,
             predict_min_side: 0.15,
             prefetch_max_items: 400,
