@@ -85,6 +85,10 @@ pub struct KnownFile {
     /// Width and height are recorded (images scanned by older versions may lack them).
     pub has_size: bool,
     pub added_ms: i64,
+    /// Marked missing (by the last scan, or found gone since).
+    pub missing: bool,
+    /// Version of the pixel size reader that last failed on this file (0: none failed).
+    pub dims_probe: u32,
 }
 
 /// An extension field as shown in the UI.
@@ -561,7 +565,7 @@ impl Db {
             None => ("", m.rel_path.as_str()),
         };
         let ext = name.rsplit_once('.').map(|(_, e)| e.to_lowercase()).unwrap_or_default();
-        let id = self.conn.query_row(
+        let id = self.conn.prepare_cached(
             "INSERT INTO media (source_id, rel_path, parent_path, name, ext, kind, size,
                                 created_ms, modified_ms, added_ms, duration_ms, width, height, seen_gen)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
@@ -569,8 +573,10 @@ impl Db {
                 kind = excluded.kind, size = excluded.size, created_ms = excluded.created_ms,
                 modified_ms = excluded.modified_ms, duration_ms = excluded.duration_ms,
                 width = excluded.width, height = excluded.height, seen_gen = excluded.seen_gen,
-                added_ms = MIN(added_ms, excluded.added_ms), missing = 0
+                added_ms = MIN(added_ms, excluded.added_ms), missing = 0, dims_probe = 0
              RETURNING id",
+        )?
+        .query_row(
             params![
                 m.source_id,
                 m.rel_path,
@@ -787,20 +793,107 @@ impl Db {
     }
 
     pub fn known_files(&self, source_id: i64) -> Result<std::collections::HashMap<String, KnownFile>> {
-        let mut stmt = self.conn.prepare("SELECT rel_path, id, size, modified_ms, width IS NOT NULL, added_ms FROM media WHERE source_id = ?1")?;
-        let rows = stmt.query_map([source_id], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
+        let mut out = std::collections::HashMap::new();
+        self.for_each_known(source_id, |path, k| {
+            out.insert(path.to_string(), k);
+        })?;
+        Ok(out)
+    }
+
+    /// Calls `f` with every item of `source_id` (in no particular order), without
+    /// collecting them first.
+    pub fn for_each_known(&self, source_id: i64, f: impl FnMut(&str, KnownFile)) -> Result<()> {
+        self.known_where(source_id, "", &[], f)
+    }
+
+    /// [`Db::for_each_known`] for the items in some folders only: `(folder, below)` takes
+    /// the files directly in `folder`, and with `below` everything under it too.
+    pub fn for_each_known_in(&self, source_id: i64, folders: &[(&str, bool)], mut f: impl FnMut(&str, KnownFile)) -> Result<()> {
+        for (dir, below) in folders {
+            let dir = dir.trim_matches('/');
+            if dir.is_empty() && *below {
+                self.known_where(source_id, "", &[], &mut f)?;
+            } else if *below {
+                // Everything under `dir/`, as a range the folder index can use ('0' follows '/').
+                let (lo, hi) = (format!("{dir}/"), format!("{dir}0"));
+                self.known_where(
+                    source_id,
+                    " AND (parent_path = ?2 OR (parent_path >= ?3 AND parent_path < ?4))",
+                    &[dir, &lo, &hi],
+                    &mut f,
+                )?;
+            } else {
+                self.known_where(source_id, " AND parent_path = ?2", &[dir], &mut f)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether the library knows items in folder `dir` of a source or anywhere below it.
+    pub fn has_folder(&self, source_id: i64, dir: &str) -> Result<bool> {
+        let dir = dir.trim_matches('/');
+        let (lo, hi) = (format!("{dir}/"), format!("{dir}0"));
+        Ok(self.conn.prepare_cached(
+            "SELECT EXISTS (SELECT 1 FROM media WHERE source_id = ?1
+                            AND (parent_path = ?2 OR (parent_path >= ?3 AND parent_path < ?4)))",
+        )?
+        .query_row(params![source_id, dir, lo, hi], |r| r.get(0))?)
+    }
+
+    fn known_where(&self, source_id: i64, filter: &str, args: &[&str], mut f: impl FnMut(&str, KnownFile)) -> Result<()> {
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT rel_path, id, size, modified_ms, width IS NOT NULL, added_ms, missing, dims_probe
+             FROM media WHERE source_id = ?1{filter}"
+        ))?;
+        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&source_id];
+        params.extend(args.iter().map(|a| a as &dyn rusqlite::ToSql));
+        let mut rows = stmt.query(params.as_slice())?;
+        while let Some(r) = rows.next()? {
+            let path = r.get_ref(0)?.as_str().map_err(rusqlite::Error::from)?;
+            f(
+                path,
                 KnownFile {
                     id: r.get(1)?,
                     size: r.get::<_, i64>(2)? as u64,
                     modified_ms: r.get(3)?,
                     has_size: r.get(4)?,
                     added_ms: r.get(5)?,
+                    missing: r.get(6)?,
+                    dims_probe: r.get(7)?,
                 },
-            ))
-        })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+            );
+        }
+        Ok(())
+    }
+
+    /// Clears the missing mark of items found again.
+    pub fn mark_found(&self, ids: &[i64]) -> Result<()> {
+        let mut stmt = self.conn.prepare_cached("UPDATE media SET missing = 0 WHERE id = ?1")?;
+        for id in ids {
+            stmt.execute([id])?;
+        }
+        Ok(())
+    }
+
+    /// Records that pixel size reader `version` could not read item `id`'s size, so later
+    /// scans of the unchanged file do not try again.
+    pub fn set_dims_probe(&self, id: i64, version: u32) -> Result<()> {
+        self.conn.prepare_cached("UPDATE media SET dims_probe = ?2 WHERE id = ?1")?.execute(params![id, version])?;
+        Ok(())
+    }
+
+    /// Item `id`'s file was moved or renamed to `m.rel_path` (found by a scan): the item keeps
+    /// its id, and with it its values, stats, faces and thumbnail.
+    pub fn media_moved(&self, id: i64, m: &NewMedia) -> Result<()> {
+        let (parent, name) = m.rel_path.rsplit_once('/').unwrap_or(("", m.rel_path.as_str()));
+        let ext = name.rsplit_once('.').map(|(_, e)| e.to_lowercase()).unwrap_or_default();
+        self.conn.prepare_cached(
+            "UPDATE media SET rel_path = ?2, parent_path = ?3, name = ?4, ext = ?5, kind = ?6, size = ?7,
+                              modified_ms = ?8, added_ms = MIN(added_ms, ?9), seen_gen = ?10, missing = 0
+             WHERE id = ?1",
+        )?
+        .execute(params![id, m.rel_path, parent, name, ext, m.kind.as_str(), m.size as i64, m.modified_ms, m.added_ms, m.seen_gen])?;
+        Ok(())
     }
 
     /// Gives copies (in source `to`, by path) the added time of the items they were copied

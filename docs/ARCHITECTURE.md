@@ -29,7 +29,7 @@ crates/
   vp-db/                SQLite 스키마/마이그레이션, 미디어·확장 필드 저장소
   vp-driver/            스토리지 드라이버 추상화(MediaDriver) + 로컬 드라이버. SMB/WebDAV/FTP/VeraCrypt/샤드가 같은 trait 구현
   vp-bundle/            .vpbun 번들: info.json, 버전 호환 검사, 레이아웃
-  vp-scan/              드라이버로 소스를 순회해 DB에 기록. 크기·수정 시각이 같으면 seen 표시만, 사라진 파일은 missing
+  vp-scan/              드라이버로 소스(또는 일부 폴더)를 순회해 바뀐 것만 DB에 기록. 사라진 파일은 missing, 옮긴 파일은 같은 항목
   vp-thumb/             썸네일 생성(EXIF 회전 적용, 불투명=JPEG/투명=PNG)과 팩 파일 저장소
   vp-cache/             청크 풀 기반 메모리 캐시(선점, LRU, 읽는 중인 항목은 축출하지 않음)
   vp-media/             외부 FFmpeg로 영상 분석·프레임 추출·고호환 변환
@@ -296,6 +296,36 @@ name.vpshard/
   ONNX Runtime 폴더를 `SetDllDirectoryW`로 DLL 검색에 넣는다 → cuDNN DLL을 `onnxruntime.dll` 옆에 두면 PATH 수정 없이 된다.
 - 선택적 실제 환경 테스트: `VP_TEST_ORT=<ONNX Runtime 라이브러리> VP_TEST_MODELS=<모델 팩 폴더> [VP_TEST_IMAGE=<사진>] cargo test -p vp-ml --features onnx`.
 
+## 스캔
+
+- **알고 있는 것**: 스캔은 소스의 항목을 한 번에 읽어 폴더별 이름 정렬 목록으로 둔다(`vp_scan::Known`). 폴더 목록도
+  이름순으로 정렬해 한 번 훑으면 짝이 맞는다(경로 하나를 키로 하는 맵보다 찾기는 약 10배 빠르고 메모리는 절반, 100만 경로 측정).
+- **나란히 읽기**: 폴더 목록과 새·바뀐 이미지의 픽셀 크기 읽기는 `scan.list_workers`개 작업자가 기록 중인 폴더보다
+  `scan.list_lookahead`개 앞서 한다. 기록은 한 스레드가 순회 순서(폴더 안 파일 이름순 → 하위 폴더 이름순)대로 하므로 새 항목의
+  id 순서는 작업자 수와 상관없다. SMB 드라이버는 요청을 세션 풀(`connections`, 기본 4)에 나눠 보낸다.
+- **로컬 폴더 목록**: macOS는 `getattrlistbulk`로 크기·시각·'추가된 날짜'를 폴더 단위로 한 번에 받는다. 다른 OS는
+  `DirEntry::metadata`(Windows는 목록에 이미 들어 있음, Unix는 열린 폴더 기준 조회). 링크는 따라간다.
+- **바뀐 것만 쓰기**: 크기·수정 시각이 같은 파일은 아무것도 쓰지 않는다(빠져 있던 항목이 돌아오면 `missing`만 끈다).
+  새·바뀐 파일은 upsert, 픽셀 크기는 앞부분 `scan.header_probe_bytes`를 한 번 읽어 구하고(JPEG 프레임 헤더가 더 뒤면 그
+  자리만 한 번 더), 형식을 몰라 못 읽은 이미지는 `media.dims_probe`에 읽기 버전(`DIMS_PROBE_VERSION`)을 남겨 파일이 바뀌거나
+  버전이 오를 때까지 다시 읽지 않는다.
+- **사라진 파일**: 범위 안에서 다시 보이지 않은 항목만 `missing`. 목록을 읽지 못한 폴더(권한·입출력 오류) 아래 항목은 그대로 둔다.
+- **옮긴 파일**: 새 경로의 파일이 사라진(또는 이미 빠져 있던) 항목과 크기·수정 시각이 같으면 옮긴 것으로 보고 그 항목의 경로를
+  바꾼다(`Db::media_moved`, id·태그·통계·얼굴·썸네일 유지). 같은 이름인 후보가 하나뿐이면 그것, 아니면 후보가 하나뿐일 때만.
+  애매하면 새 항목 + missing으로 남긴다.
+- **결과**: `ScanProgress`가 added·updated·moved·back·gone과 바뀐 항목 id(`changed`, `scan.report_ids_max` 넘으면 `changed_all`)를
+  알린다. UI는 바뀐 것이 없으면 아무것도 다시 불러오지 않고, 있으면 그 항목만 캐시에서 지운다.
+- **후속 작업**: 영상 정보·썸네일·이미지 분석 백필은 새·바뀐 파일이 있었거나, 마지막 변화(`Workspace::change_gen`) 이후 끝까지
+  돌지 못했을 때만 시작한다. 바뀐 것이 있을 때만 미러(`on_scan`)를 깨운다.
+- **열 때 다시 스캔**(`scan.rescan_on_open`): 저장 장치(로컬 폴더의 장치, SMB 서버)가 다른 소스는 나란히, 같은 장치의 소스는 차례로.
+- **Android 추가 시각**: MediaStore `DATE_ADDED`는 세션의 첫 스캔에서 전부, 이후에는 마지막 완전한 스캔 이후 추가분만
+  묻는다(스캔 대상을 정하는 설정이 바뀌면 다시 전부).
+- **폴더 감시**(`scan.watch`, `src-tauri/src/watch.rs`): 켜진 로컬·번들 소스의 루트를 재귀 감시(`notify`, iOS 제외)하고,
+  `scan.watch_debounce_ms` 동안 조용해지면(길어도 `scan.watch_max_delay_ms`) 바뀐 폴더만 본다(`Scanner::run_scoped`):
+  미디어 파일의 변화는 그 폴더(`Scope::Folder`), 생기거나 이름이 바뀐 폴더와 항목이 있던 폴더의 삭제는 그 아래 전체
+  (`Scope::Tree`). 이벤트가 넘쳐 놓쳤으면 소스 전체. 범위 스캔은 그 범위 안 항목만 불러오고, 진행 작업 없이 끝날 때 이벤트 하나만
+  보낸다. 같은 소스의 전체 스캔이 돌면 끝난 뒤 다시 시도하고, 전체 스캔은 돌고 있는 범위 스캔을 기다린다.
+
 ## 썸네일
 
 - 번들 `thumbs/NNNNNN.pack`에 append-only로 저장하고, 위치(pack, offset, len)는 DB `thumbnail` 테이블에 둔다.
@@ -357,7 +387,7 @@ UI에 전달되며 작업별로 `progress.emit_interval_ms` 간격으로 제한�
   나가는 데 쓰인다.
 - **프레임 저장·삭제**: 영상 뷰어의 좋아요 오른쪽 카메라 버튼(`C`)이 지금 화면의 프레임을 원본 해상도 JPEG
   (`viewer.frame_quality`)로 영상과 같은 폴더에 `<이름>_HH-MM-SS.mmm.jpg`로 저장하고 바로 라이브러리에 넣는다
-  (`save_video_frame`, 같은 스캔 세대로 기록해 다음 스캔에서도 유지). 데스크톱은 FFmpeg, Android는 OS 디코더의 정확한
+  (`save_video_frame`, 다음 스캔에서도 유지). 데스크톱은 FFmpeg, Android는 OS 디코더의 정확한
   프레임(`OPTION_CLOSEST`). 쓰기를 지원하지 않는 소스(읽기 전용 SMB 등)에서는 오류를 알린다. 휴지통 버튼(`Delete`)은
   확인 후 `delete_media`로 파일을 지우고, 뷰어 셸이 모든 패널의 목록에서 그 항목을 빼 다음 항목을 보여 준다.
 - **확대·패닝**: 이미지는 항상 화면에 맞춰 표시(긴 이미지 포함)하고, 확대는 그 위의 transform이다(`ZoomPan`).

@@ -33,6 +33,9 @@ struct SmbConfig {
     domain: String,
     #[serde(default = "default_timeout")]
     timeout_secs: u64,
+    /// Sessions opened at most, so listings and reads can run side by side.
+    #[serde(default = "default_connections")]
+    connections: u32,
 }
 
 fn default_port() -> u16 {
@@ -41,6 +44,10 @@ fn default_port() -> u16 {
 
 fn default_timeout() -> u64 {
     10
+}
+
+fn default_connections() -> u32 {
+    4
 }
 
 pub struct SmbFactory;
@@ -61,6 +68,8 @@ impl DriverFactory for SmbFactory {
             ConfigField::new("domain", ConfigKind::Text, false),
             ConfigField::new("timeout_secs", ConfigKind::Integer { min: Some(1), max: Some(300) }, false)
                 .default_value(serde_json::json!(10)),
+            ConfigField::new("connections", ConfigKind::Integer { min: Some(1), max: Some(16) }, false)
+                .default_value(serde_json::json!(4)),
         ]
     }
 
@@ -82,7 +91,14 @@ impl DriverFactory for SmbFactory {
             let cfg = cfg.clone();
             async move { Session::open(&cfg).await }
         })??;
-        Ok(Arc::new(SmbDriver { rt, root, session: Arc::new(Mutex::new(session)) }))
+        let pool = Pool {
+            max: std::sync::atomic::AtomicUsize::new(cfg.connections.clamp(1, 16) as usize),
+            sessions: std::sync::Mutex::new(vec![Arc::new(Mutex::new(session))]),
+            opening: std::sync::atomic::AtomicUsize::new(0),
+            next: std::sync::atomic::AtomicUsize::new(0),
+            cfg,
+        };
+        Ok(Arc::new(SmbDriver { rt, root, pool: Arc::new(pool) }))
     }
 }
 
@@ -131,10 +147,60 @@ fn to_ms(t: smb2::pack::FileTime) -> Option<i64> {
     st.duration_since(UNIX_EPOCH).ok().map(|d| d.as_millis() as i64)
 }
 
+/// Sessions to one share. A request takes a free one, opens another while there are fewer
+/// than `max`, or else waits its turn on one of them.
+struct Pool {
+    cfg: SmbConfig,
+    max: std::sync::atomic::AtomicUsize,
+    sessions: std::sync::Mutex<Vec<Arc<Mutex<Session>>>>,
+    /// Sessions being opened now (counted against `max`).
+    opening: std::sync::atomic::AtomicUsize,
+    /// Which session a request waits on when all are busy.
+    next: std::sync::atomic::AtomicUsize,
+}
+
+impl Pool {
+    async fn get(self: Arc<Self>) -> tokio::sync::OwnedMutexGuard<Session> {
+        use std::sync::atomic::Ordering;
+        let list = self.sessions.lock().unwrap().clone();
+        for s in &list {
+            if let Ok(g) = s.clone().try_lock_owned() {
+                return g;
+            }
+        }
+        let grow = {
+            let n = self.sessions.lock().unwrap().len();
+            let opening = self.opening.fetch_add(1, Ordering::AcqRel);
+            let ok = n + opening < self.max.load(Ordering::Acquire);
+            if !ok {
+                self.opening.fetch_sub(1, Ordering::AcqRel);
+            }
+            ok
+        };
+        if grow {
+            let opened = Session::open(&self.cfg).await;
+            self.opening.fetch_sub(1, Ordering::AcqRel);
+            match opened {
+                Ok(session) => {
+                    let s = Arc::new(Mutex::new(session));
+                    let g = s.clone().try_lock_owned().expect("a new session is free");
+                    self.sessions.lock().unwrap().push(s);
+                    return g;
+                }
+                // The server may allow fewer sessions: stay with the ones there are.
+                Err(_) => self.max.store(self.sessions.lock().unwrap().len().max(1), Ordering::Release),
+            }
+        }
+        let list = self.sessions.lock().unwrap().clone();
+        let i = self.next.fetch_add(1, Ordering::Relaxed) % list.len();
+        list[i].clone().lock_owned().await
+    }
+}
+
 pub struct SmbDriver {
     rt: Arc<tokio::runtime::Runtime>,
     root: Vec<String>,
-    session: Arc<Mutex<Session>>,
+    pool: Arc<Pool>,
 }
 
 impl SmbDriver {
@@ -161,9 +227,9 @@ impl MediaDriver for SmbDriver {
 
     fn list(&self, dir: &str) -> Result<Vec<Entry>> {
         let remote = self.remote(dir)?;
-        let session = self.session.clone();
+        let pool = self.pool.clone();
         let entries = run(&self.rt, async move {
-            let mut s = session.lock().await;
+            let mut s = pool.get().await;
             let Session { client, tree } = &mut *s;
             client.list_directory(tree, &remote).await.map_err(map_err)
         })??;
@@ -183,9 +249,9 @@ impl MediaDriver for SmbDriver {
 
     fn stat(&self, path: &str) -> Result<Entry> {
         let remote = self.remote(path)?;
-        let session = self.session.clone();
+        let pool = self.pool.clone();
         let info = run(&self.rt, async move {
-            let mut s = session.lock().await;
+            let mut s = pool.get().await;
             let Session { client, tree } = &mut *s;
             client.stat(tree, &remote).await.map_err(map_err)
         })??;
@@ -201,9 +267,9 @@ impl MediaDriver for SmbDriver {
 
     fn open(&self, path: &str) -> Result<Box<dyn MediaReader>> {
         let remote = self.remote(path)?;
-        let session = self.session.clone();
+        let pool = self.pool.clone();
         let reader = run(&self.rt, async move {
-            let mut s = session.lock().await;
+            let mut s = pool.get().await;
             let Session { client, tree } = &mut *s;
             client.open_file_reader(tree, &remote).await.map_err(map_err)
         })??;
@@ -213,10 +279,10 @@ impl MediaDriver for SmbDriver {
 
     fn write(&self, path: &str, data: &[u8]) -> Result<()> {
         let remote = self.remote(path)?;
-        let session = self.session.clone();
+        let pool = self.pool.clone();
         let data = data.to_vec();
         run(&self.rt, async move {
-            let mut s = session.lock().await;
+            let mut s = pool.get().await;
             let Session { client, tree } = &mut *s;
             client.write_file(tree, &remote, &data).await.map(|_| ()).map_err(map_err)
         })?
@@ -224,9 +290,9 @@ impl MediaDriver for SmbDriver {
 
     fn rename(&self, from: &str, to: &str) -> Result<()> {
         let (from, to) = (self.remote(from)?, self.remote(to)?);
-        let session = self.session.clone();
+        let pool = self.pool.clone();
         run(&self.rt, async move {
-            let mut s = session.lock().await;
+            let mut s = pool.get().await;
             let Session { client, tree } = &mut *s;
             client.rename(tree, &from, &to).await.map_err(map_err)
         })?
@@ -234,9 +300,9 @@ impl MediaDriver for SmbDriver {
 
     fn delete(&self, path: &str) -> Result<()> {
         let remote = self.remote(path)?;
-        let session = self.session.clone();
+        let pool = self.pool.clone();
         run(&self.rt, async move {
-            let mut s = session.lock().await;
+            let mut s = pool.get().await;
             let Session { client, tree } = &mut *s;
             client.delete_file(tree, &remote).await.map_err(map_err)
         })?

@@ -440,12 +440,14 @@ pub fn spawn_probe_backfill<R: Runtime>(app: &AppHandle<R>, ws: Arc<Workspace>) 
         let skip = ws.locked_sources();
         let total = ws.read_db.lock().unwrap().count_unprobed_videos(&skip).ok();
         let task = (total != Some(0)).then(|| crate::tasks::begin("probe", "", crate::tasks::Unit::Items, total));
+        let change_gen = ws.change_gen.load(Ordering::Acquire);
         loop {
             if ws.closed.load(Ordering::Relaxed) {
                 break;
             }
             let batch = ws.read_db.lock().unwrap().unprobed_videos(32, &skip).unwrap_or_default();
             if batch.is_empty() {
+                ws.probe_settled.store(change_gen, Ordering::Release);
                 break;
             }
             for id in batch {

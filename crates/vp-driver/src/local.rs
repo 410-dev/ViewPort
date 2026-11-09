@@ -118,6 +118,172 @@ fn added_ms(_full: &Path) -> Option<i64> {
     None
 }
 
+/// macOS: a folder's entries with their size, times and "Date Added" in a few calls
+/// (`getattrlistbulk`) instead of two lookups per file.
+#[cfg(target_os = "macos")]
+mod bulk {
+    use std::ffi::c_void;
+    use std::fs::{self, File};
+    use std::os::fd::AsRawFd;
+    use std::path::Path;
+
+    use super::{Entry, LocalDriver, join};
+
+    #[repr(C)]
+    struct AttrList {
+        bitmapcount: u16,
+        reserved: u16,
+        commonattr: u32,
+        volattr: u32,
+        dirattr: u32,
+        fileattr: u32,
+        forkattr: u32,
+    }
+    const ATTR_BIT_MAP_COUNT: u16 = 5;
+    const ATTR_CMN_NAME: u32 = 0x0000_0001;
+    const ATTR_CMN_OBJTYPE: u32 = 0x0000_0008;
+    const ATTR_CMN_CRTIME: u32 = 0x0000_0200;
+    const ATTR_CMN_MODTIME: u32 = 0x0000_0400;
+    const ATTR_CMN_ADDEDTIME: u32 = 0x1000_0000;
+    const ATTR_CMN_ERROR: u32 = 0x2000_0000;
+    const ATTR_CMN_RETURNED_ATTRS: u32 = 0x8000_0000;
+    const ATTR_FILE_DATALENGTH: u32 = 0x0000_0200;
+    const VREG: u32 = 1;
+    const VDIR: u32 = 2;
+
+    unsafe extern "C" {
+        fn getattrlistbulk(dirfd: i32, list: *mut c_void, buf: *mut c_void, size: usize, options: u64) -> i32;
+    }
+
+    /// Reads a value of type `T` at `*pos` (attributes are packed, 4-byte aligned) and
+    /// moves past it; `None` past the end of the record.
+    fn take<T: Copy>(rec: &[u8], pos: &mut usize) -> Option<T> {
+        let end = pos.checked_add(size_of::<T>())?;
+        let bytes = rec.get(*pos..end)?;
+        *pos = end;
+        // SAFETY: `bytes` holds exactly size_of::<T>() bytes; T is plain data.
+        Some(unsafe { std::ptr::read_unaligned(bytes.as_ptr().cast::<T>()) })
+    }
+
+    fn ms(sec: i64, nsec: i64) -> i64 {
+        sec * 1000 + nsec / 1_000_000
+    }
+
+    /// `None` when the bulk call is not available here (the caller lists the usual way).
+    pub(super) fn list(full_dir: &Path, dir: &str) -> Option<std::io::Result<Vec<Entry>>> {
+        let file = match File::open(full_dir) {
+            Ok(f) => f,
+            Err(e) => return Some(Err(e)),
+        };
+        let mut attrs = AttrList {
+            bitmapcount: ATTR_BIT_MAP_COUNT,
+            reserved: 0,
+            commonattr: ATTR_CMN_RETURNED_ATTRS
+                | ATTR_CMN_ERROR
+                | ATTR_CMN_NAME
+                | ATTR_CMN_OBJTYPE
+                | ATTR_CMN_CRTIME
+                | ATTR_CMN_MODTIME
+                | ATTR_CMN_ADDEDTIME,
+            volattr: 0,
+            dirattr: 0,
+            fileattr: ATTR_FILE_DATALENGTH,
+            forkattr: 0,
+        };
+        // u64 words keep the buffer 8-byte aligned.
+        let mut buf = vec![0u64; 32 * 1024];
+        let mut out = Vec::new();
+        let mut first = true;
+        loop {
+            let n = unsafe {
+                getattrlistbulk(
+                    file.as_raw_fd(),
+                    (&mut attrs as *mut AttrList).cast(),
+                    buf.as_mut_ptr().cast(),
+                    buf.len() * 8,
+                    0,
+                )
+            };
+            if n < 0 {
+                let e = std::io::Error::last_os_error();
+                return if first { None } else { Some(Err(e)) };
+            }
+            first = false;
+            if n == 0 {
+                return Some(Ok(out));
+            }
+            // SAFETY: the buffer is plain bytes, as long as the u64 words.
+            let bytes = unsafe { std::slice::from_raw_parts(buf.as_ptr().cast::<u8>(), buf.len() * 8) };
+            let mut at = 0usize;
+            for _ in 0..n {
+                let Some(len) = bytes.get(at..at + 4).map(|b| u32::from_ne_bytes(b.try_into().unwrap()) as usize) else { break };
+                let Some(rec) = bytes.get(at..at + len) else { break };
+                if let Some(e) = parse(rec, full_dir, dir) {
+                    out.push(e);
+                }
+                at += len.max(4);
+            }
+        }
+    }
+
+    fn parse(rec: &[u8], full_dir: &Path, dir: &str) -> Option<Entry> {
+        let mut pos = 4;
+        let common: u32 = take(rec, &mut pos)?;
+        let _vol: u32 = take(rec, &mut pos)?;
+        let _dir: u32 = take(rec, &mut pos)?;
+        let file_attrs: u32 = take(rec, &mut pos)?;
+        let _fork: u32 = take(rec, &mut pos)?;
+        if common & ATTR_CMN_ERROR != 0 {
+            let _err: u32 = take(rec, &mut pos)?;
+        }
+        let name = if common & ATTR_CMN_NAME != 0 {
+            let start = pos;
+            let off: i32 = take(rec, &mut pos)?;
+            let len: u32 = take(rec, &mut pos)?;
+            let from = (start as i64 + off as i64) as usize;
+            let raw = rec.get(from..from + len as usize)?;
+            let raw = raw.split(|&b| b == 0).next().unwrap_or(raw);
+            std::str::from_utf8(raw).ok()?.to_string() // skip non-UTF-8 names
+        } else {
+            return None;
+        };
+        if name == "." || name == ".." {
+            return None;
+        }
+        let kind: Option<u32> = if common & ATTR_CMN_OBJTYPE != 0 { Some(take(rec, &mut pos)?) } else { None };
+        let mut time = |bit: u32| -> Option<Option<i64>> {
+            if common & bit == 0 {
+                return Some(None);
+            }
+            let sec: i64 = take(rec, &mut pos)?;
+            let nsec: i64 = take(rec, &mut pos)?;
+            Some(Some(ms(sec, nsec)))
+        };
+        let created_ms = time(ATTR_CMN_CRTIME)?;
+        let modified_ms = time(ATTR_CMN_MODTIME)?;
+        let added = time(ATTR_CMN_ADDEDTIME)?.filter(|&t| t > 0);
+        let size: Option<i64> = if file_attrs & ATTR_FILE_DATALENGTH != 0 { Some(take(rec, &mut pos)?) } else { None };
+        let path = join(dir, &name);
+        match kind {
+            Some(VDIR) => Some(Entry { path, is_dir: true, size: 0, created_ms, modified_ms, added_ms: None }),
+            Some(VREG) => Some(Entry {
+                path,
+                is_dir: false,
+                size: size.unwrap_or(0).max(0) as u64,
+                created_ms,
+                modified_ms,
+                added_ms: added.or(created_ms),
+            }),
+            // Links (followed, as `fs::metadata` does) and anything unexpected: look it up.
+            _ => {
+                let full = full_dir.join(&name);
+                let meta = fs::metadata(&full).ok()?;
+                Some(LocalDriver::entry(path, &full, &meta))
+            }
+        }
+    }
+}
+
 fn to_ms(t: SystemTime) -> Option<i64> {
     match t.duration_since(SystemTime::UNIX_EPOCH) {
         Ok(d) => i64::try_from(d.as_millis()).ok(),
@@ -144,13 +310,26 @@ impl MediaDriver for LocalDriver {
     }
 
     fn list(&self, dir: &str) -> Result<Vec<Entry>> {
+        let full_dir = self.resolve(dir)?;
+        #[cfg(target_os = "macos")]
+        if let Some(out) = bulk::list(&full_dir, dir) {
+            return out.map_err(|e| not_found(e, dir));
+        }
         let mut out = Vec::new();
-        for item in fs::read_dir(self.resolve(dir)?).map_err(|e| not_found(e, dir))? {
+        for item in fs::read_dir(&full_dir).map_err(|e| not_found(e, dir))? {
             let item = item?;
             let Ok(name) = item.file_name().into_string() else { continue }; // skip non-UTF-8 names
-            // Follow symlinks so linked folders and files behave like real ones.
             let full = item.path();
-            let Ok(meta) = fs::metadata(&full) else { continue };
+            // The entry's own metadata comes with the listing (Windows) or from a lookup
+            // relative to the open folder (Unix): cheaper than resolving the path again.
+            // A link is followed, as before.
+            let meta = match item.metadata() {
+                Ok(m) if !m.file_type().is_symlink() => m,
+                _ => match fs::metadata(&full) {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                },
+            };
             out.push(Self::entry(join(dir, &name), &full, &meta));
         }
         Ok(out)
@@ -274,5 +453,45 @@ mod tests {
 
         d.write("new/b.txt", b"hi").unwrap();
         assert_eq!(fs::read(dir.path().join("new/b.txt")).unwrap(), b"hi");
+    }
+
+    /// The listing gives each entry what a lookup of its path would (links followed).
+    #[test]
+    fn list_matches_stat() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir(root.join("folder")).unwrap();
+        fs::write(root.join("a.jpg"), vec![7u8; 12345]).unwrap();
+        fs::write(root.join("한글 이름.png"), b"x").unwrap();
+        fs::write(root.join("folder/inner.jpg"), b"yy").unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join("a.jpg"), root.join("link.jpg")).unwrap();
+            std::os::unix::fs::symlink(root.join("folder"), root.join("linked")).unwrap();
+        }
+        for i in 0..3000 {
+            fs::write(root.join(format!("many_{i:05}_with_a_rather_long_name_to_fill_buffers.jpg")), b"").unwrap();
+        }
+        let d = LocalDriver::new(root);
+        let mut listed = d.list("").unwrap();
+        listed.sort_by(|a, b| a.path.cmp(&b.path));
+        let mut names: Vec<String> = fs::read_dir(root).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        names.sort();
+        assert_eq!(listed.iter().map(|e| e.path.clone()).collect::<Vec<_>>(), names);
+        for e in &listed {
+            assert_eq!(e, &d.stat(&e.path).unwrap(), "{}", e.path);
+        }
+        assert_eq!(listed.iter().find(|e| e.path == "a.jpg").unwrap().size, 12345);
+        #[cfg(unix)]
+        {
+            let link = listed.iter().find(|e| e.path == "link.jpg").unwrap();
+            assert!(!link.is_dir);
+            assert_eq!(link.size, 12345);
+            assert!(listed.iter().find(|e| e.path == "linked").unwrap().is_dir);
+        }
+        assert_eq!(d.list("folder").unwrap()[0].path, "folder/inner.jpg");
+        #[cfg(target_os = "macos")]
+        assert_eq!(bulk::list(root, "").expect("bulk listing works here").unwrap().len(), listed.len());
+        assert!(matches!(d.list("nope"), Err(DriverError::NotFound(_))));
     }
 }

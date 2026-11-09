@@ -426,6 +426,8 @@
   let lastRefresh = 0;
   let scanSearching = false;
   let refreshAfterViewer = false;
+  /** Files each running scan has recorded as new or changed (refreshes wait for more). */
+  const scanRecorded = new Map<number, number>();
   async function scanRefresh() {
     scanSearching = true;
     const started = performance.now();
@@ -441,11 +443,20 @@
   const unlisten = [
     onScan((e) => {
       scans[e.source_id] = e;
+      // Only what the scan changed is looked up again: a scan that found everything as
+      // it was leaves the view (and its cached details) alone.
+      const recorded = e.added + e.updated;
+      const before = scanRecorded.get(e.source_id) ?? 0;
+      scanRecorded.set(e.source_id, recorded);
       if (e.done) {
-        invalidate();
-        if (selected === e.source_id) api.childFolders(e.source_id, folder).then((l) => (subfolders = l)).catch(() => {});
+        scanRecorded.delete(e.source_id);
+        const changed = e.added + e.updated + e.moved + e.back + e.gone > 0 || e.changed_all || e.changed.length > 0;
         if (shards[e.source_id]) refreshShards();
-      }
+        if (!changed) return;
+        invalidate(e.changed_all ? undefined : e.changed);
+        if (selected === e.source_id && e.added + e.moved + e.back + e.gone > 0)
+          api.childFolders(e.source_id, folder).then((l) => (subfolders = l)).catch(() => {});
+      } else if (recorded === before) return;
       if (viewing) {
         refreshAfterViewer = true;
         return;

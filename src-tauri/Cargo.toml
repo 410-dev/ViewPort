@@ -57,6 +57,10 @@ ureq = { version = "3.5", default-features = false, features = ["rustls"] }
 # Optional HEIF decoder (libheif), loaded at run time and checked against its manifest.
 libloading = "0.9"
 
+# Following changes in local source folders (`watch.rs`).
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
+
 # Lowering background threads' OS priority (`sched`).
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -38,7 +38,7 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
 | `vp-db` | 스키마 마이그레이션(`schema.rs`, `PRAGMA user_version`), 미디어·확장 필드·저장 쿼리·통계, 검색 실행. 통합 테스트는 `tests.rs` |
 | `vp-driver` | `MediaDriver` trait + `DriverRegistry`. `local`, `smb`(feature `smb`, 순수 Rust `smb2`), `shard`(feature `shard`) |
 | `vp-bundle` | `.vpbun` 레이아웃, `info.json`, 버전 호환 검사(`BUNDLE_FORMAT_VERSION`) |
-| `vp-scan` | 드라이버로 소스 순회 → DB 기록. 크기·수정 시각 같으면 seen만, 사라지면 missing |
+| `vp-scan` | 드라이버로 소스(또는 `Scope` 폴더들) 순회 → 바뀐 것만 DB 기록. 목록·크기 읽기는 작업자가 앞서 나란히, 기록은 순회 순서. 사라지면 missing, 옮기면 같은 항목(ARCHITECTURE '스캔') |
 | `vp-thumb` | 썸네일 생성, append-only 팩 파일(`thumbs/NNNNNN.pack`) |
 | `vp-cache` | 선점형 청크 풀 메모리 캐시(LRU, 읽는 중 항목은 축출 안 함) |
 | `vp-media` | 외부 FFmpeg/ffprobe: 분석, 프레임 추출, 고호환 변환(HW 인코더 → libx264) |
@@ -68,6 +68,7 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
   `shard_props.rs`(샤드 안 항목 속성: DB 트리거의 `meta_rev`로 바뀐 것만 샤드의 `.viewport/props/`에 쓰고, 스캔·잠금 해제 때 가져옴.
   얼굴·인물 그룹도 `vp-db::face_sync`로 uid·변경 시각 기준 양방향 병합, 임베딩은 `embeddings_in_shard`일 때만),
   `mirror.rs`(소스 미러: 미러가 복사한 파일만 추적·교체·삭제, 원본·대상이 둘 다 있을 때만 동기화),
+  `watch.rs`(로컬 소스 폴더 감시 → 바뀐 폴더만 `commands::scan_scoped`),
   `ml.rs`(이미지 분석 작업·묶기·인물 커맨드. 결과는 `vp-db::faces`, 자동 값은 `x.people`/`x.characters`/`x.auto_tags`에 `auto:*` 출처로).
   모델·ONNX Runtime은 번들하지 않는다(`models/README.md`).
 - `edit.rs`: 사진·영상 편집(`edit_media`, 사본 저장/원본 덮어쓰기). 영상은 FFmpeg, Android는 Media3(`platform::edit_video`).

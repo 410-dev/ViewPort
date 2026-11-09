@@ -56,6 +56,7 @@ fn install(app: &AppHandle, state: &AppState, ws: Workspace) -> CmdResult<Bundle
         crate::video::spawn_probe_backfill(app, ws.clone());
         crate::shard_props::start(ws.clone());
         crate::mirror::start(app, ws.clone());
+        crate::watch::sync(app, &ws);
     }
     let old = state.workspace.write().unwrap().replace(ws);
     // Extra windows belong to the previous bundle.
@@ -73,19 +74,72 @@ fn install(app: &AppHandle, state: &AppState, ws: Workspace) -> CmdResult<Bundle
     Ok(summary)
 }
 
-/// Scans every enabled, connected source one after another (`scan.rescan_on_open`).
+/// Scans every enabled, connected source (`scan.rescan_on_open`): sources on different
+/// storage devices side by side, those sharing one (a disk, a server) one after another so
+/// they do not compete for it.
 fn rescan_all(app: &AppHandle, ws: Arc<Workspace>) {
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let offline = ws.offline_sources();
         let sources = ws.read_db.lock().unwrap().sources().unwrap_or_default();
+        let mut groups: Vec<(String, Vec<SourceRow>)> = Vec::new();
         for source in sources.into_iter().filter(|s| s.enabled && !offline.contains(&s.id)) {
-            if ws.closed.load(Ordering::Relaxed) {
-                return;
+            let key = storage_key(&ws, &source);
+            match groups.iter_mut().find(|(k, _)| *k == key) {
+                Some((_, list)) => list.push(source),
+                None => groups.push((key, vec![source])),
             }
-            let _ = scan_now(&app, ws.clone(), source);
         }
+        std::thread::scope(|sc| {
+            for (_, list) in groups {
+                let (app, ws) = (&app, &ws);
+                sc.spawn(move || {
+                    for source in list {
+                        if ws.closed.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        let _ = scan_now(app, ws.clone(), source);
+                    }
+                });
+            }
+        });
     });
+}
+
+/// Which storage a source lives on: the device of a local folder, the server of a share.
+fn storage_key(ws: &Workspace, source: &SourceRow) -> String {
+    if source.driver == "smb" {
+        let host = source.config.get("host").and_then(|h| h.as_str()).unwrap_or_default();
+        return format!("smb:{}", host.trim().to_lowercase());
+    }
+    let path = if source.driver == crate::workspace::BUNDLE_DRIVER {
+        Some(ws.bundle.root.clone())
+    } else if source.driver == crate::shards::DRIVER {
+        ws.shard_root(source).ok()
+    } else if source.driver == "local" {
+        Some(PathBuf::from(&source.root))
+    } else {
+        None
+    };
+    match path {
+        Some(p) => device_of(&p).unwrap_or_else(|| format!("path:{}", p.display())),
+        None => format!("source:{}", source.id),
+    }
+}
+
+#[cfg(unix)]
+fn device_of(path: &Path) -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path).ok().map(|m| format!("dev:{}", m.dev()))
+}
+
+#[cfg(windows)]
+fn device_of(path: &Path) -> Option<String> {
+    // The drive or share the path is on.
+    match path.components().next()? {
+        std::path::Component::Prefix(p) => Some(format!("dev:{}", p.as_os_str().to_string_lossy().to_lowercase())),
+        _ => None,
+    }
 }
 
 #[tauri::command]
@@ -255,8 +309,12 @@ pub fn get_settings(state: State<'_, AppState>) -> CmdResult<Settings> {
 }
 
 #[tauri::command]
-pub fn save_settings(state: State<'_, AppState>, settings: Settings) -> CmdResult<()> {
-    workspace(&state)?.save_settings(settings)
+pub fn save_settings(app: AppHandle, state: State<'_, AppState>, settings: Settings) -> CmdResult<()> {
+    let ws = workspace(&state)?;
+    ws.save_settings(settings)?;
+    // Watching may have been switched on or off.
+    crate::watch::sync(&app, &ws);
+    Ok(())
 }
 
 #[tauri::command]
@@ -308,6 +366,7 @@ pub async fn add_local_source(app: AppHandle, path: String) -> CmdResult<SourceR
 #[tauri::command]
 pub async fn remove_source(app: AppHandle, id: i64, delete_data: Option<bool>) -> CmdResult<()> {
     let ws = workspace(&app.state::<AppState>())?;
+    let (app2, ws2) = (app.clone(), ws.clone());
     blocking(move || {
         if let Some(cancel) = ws.scans.lock().unwrap().get(&id) {
             cancel.store(true, Ordering::Relaxed);
@@ -322,6 +381,7 @@ pub async fn remove_source(app: AppHandle, id: i64, delete_data: Option<bool>) -
         {
             std::fs::remove_dir_all(&root)?;
         }
+        crate::watch::sync(&app2, &ws2);
         Ok(())
     })
     .await
@@ -360,38 +420,90 @@ pub(crate) fn start_scan(app: &AppHandle, ws: Arc<Workspace>, source: SourceRow)
 }
 
 /// Scans a source on this thread and returns when done (or at once if a scan of it is
-/// already running).
+/// already running; a watched change being looked at is waited for instead).
 pub(crate) fn scan_now(app: &AppHandle, ws: Arc<Workspace>, source: SourceRow) -> Result<vp_scan::ScanProgress, String> {
+    scan_with(app, ws, source, None)
+}
+
+/// Looks at only `scopes` of a source (a watched change): no progress task, one event
+/// when done. Fails with "busy" while a scan of the source runs (try again later).
+pub(crate) fn scan_scoped(
+    app: &AppHandle,
+    ws: Arc<Workspace>,
+    source: SourceRow,
+    scopes: Vec<vp_scan::Scope>,
+) -> Result<vp_scan::ScanProgress, String> {
+    scan_with(app, ws, source, Some(scopes))
+}
+
+/// The scan settings that decide which files a scan records.
+fn scan_kinds(s: &vp_core::settings::ScanSettings) -> String {
+    format!("{:?}|{:?}|{}|{}", s.image_extensions, s.video_extensions, s.skip_hidden, s.include_nonmedia)
+}
+
+fn scan_with(
+    app: &AppHandle,
+    ws: Arc<Workspace>,
+    source: SourceRow,
+    scopes: Option<Vec<vp_scan::Scope>>,
+) -> Result<vp_scan::ScanProgress, String> {
+    let partial = scopes.is_some();
     let cancel = Arc::new(AtomicBool::new(false));
-    {
+    let waited = std::time::Instant::now();
+    loop {
         let mut scans = ws.scans.lock().unwrap();
-        if scans.contains_key(&source.id) {
-            return Err("already scanning".into());
+        if !scans.contains_key(&source.id) {
+            scans.insert(source.id, cancel.clone());
+            if partial {
+                ws.partial_scans.lock().unwrap().insert(source.id);
+            }
+            break;
         }
-        scans.insert(source.id, cancel.clone());
+        // A watched change takes moments: a full scan waits for it.
+        let behind_partial = ws.partial_scans.lock().unwrap().contains(&source.id);
+        if partial || !behind_partial || waited.elapsed() > std::time::Duration::from_secs(60) {
+            return Err(if partial { "busy".into() } else { "already scanning".into() });
+        }
+        drop(scans);
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
     let registry = app.state::<AppState>().drivers.clone();
     let settings = ws.settings.read().unwrap().scan.clone();
-    let task = crate::tasks::begin_with_cancel("scan", &source.name, crate::tasks::Unit::Items, None, Some(cancel.clone()));
+    let task = (!partial).then(|| {
+        crate::tasks::begin_with_cancel("scan", &source.name, crate::tasks::Unit::Items, None, Some(cancel.clone()))
+    });
     let interval = std::time::Duration::from_millis(crate::recent::cached_app_settings().progress.emit_interval_ms);
     let mut last = std::time::Instant::now() - interval;
     let mut emit = |progress: &vp_scan::ScanProgress, done: bool, error: Option<String>| {
-        task.set(progress.files, None);
-        task.detail(if progress.current.is_empty() { "/".to_string() } else { progress.current.clone() });
-        // Scans report every folder; the UI only needs a few updates per second.
-        if done || last.elapsed() >= interval {
+        if let Some(task) = &task {
+            task.set(progress.files, None);
+            task.detail(if progress.current.is_empty() { "/".to_string() } else { progress.current.clone() });
+        }
+        // Scans report every folder; the UI only needs a few updates per second. A watched
+        // change says only when it is done.
+        if done || (!partial && last.elapsed() >= interval) {
             last = std::time::Instant::now();
             let _ = app.emit("scan-progress", ScanEvent { progress: progress.clone(), done, error });
         }
     };
+    let started_s = now_ms() / 1000;
+    let mut asked_media_store = false;
     let result = ws.driver(&registry, &source).map_err(|e| e.message).and_then(|driver| {
         // A shard another instance writes to is open read-only here: catch up first.
         let shard = ws.shards.lock().unwrap().get(&source.id).cloned();
         if let Some(s) = shard {
             s.refresh().map_err(|e| e.to_string())?;
         }
-        // Android keeps no birth times; the media store knows when files arrived.
-        let added_times = if source.driver == "local" { driver.local_path("").and_then(|root| crate::platform::media_added(&root)) } else { None };
+        // Android keeps no birth times; the media store knows when files arrived. Only
+        // files added since the last complete scan asked can be new to the library.
+        let added_times = if source.driver == "local" {
+            let since = ws.media_added_since.lock().unwrap().get(&source.id).filter(|(_, k)| *k == scan_kinds(&settings)).map(|(t, _)| *t);
+            let root = driver.local_path("");
+            asked_media_store = root.is_some();
+            root.and_then(|root| crate::platform::media_added(&root, since))
+        } else {
+            None
+        };
         let scanner = vp_scan::Scanner {
             db: &ws.write_db,
             driver: driver.as_ref(),
@@ -403,20 +515,38 @@ pub(crate) fn scan_now(app: &AppHandle, ws: Arc<Workspace>, source: SourceRow) -
             cancel: &cancel,
             added_times: added_times.as_ref(),
         };
-        scanner.run(&mut |p| emit(p, false, None)).map_err(|e| e.to_string())
+        let run = |p: &mut dyn FnMut(&vp_scan::ScanProgress)| match &scopes {
+            Some(s) => scanner.run_scoped(s, p),
+            None => scanner.run(p),
+        };
+        run(&mut |p| emit(p, false, None)).map_err(|e| e.to_string())
     });
-    let empty = vp_scan::ScanProgress { source_id: source.id, ..Default::default() };
+    let empty = vp_scan::ScanProgress { source_id: source.id, partial, ..Default::default() };
     match &result {
         Ok(p) => emit(p, true, None),
         Err(e) => emit(&empty, true, Some(e.clone())),
     }
-    match &result {
-        Ok(_) => task.finish(),
-        Err(_) if cancel.load(Ordering::Relaxed) => task.cancelled(),
-        Err(e) => task.fail(e.clone()),
+    if let Some(task) = task {
+        match &result {
+            Ok(_) => task.finish(),
+            Err(_) if cancel.load(Ordering::Relaxed) => task.cancelled(),
+            Err(e) => task.fail(e.clone()),
+        }
     }
     ws.scans.lock().unwrap().remove(&source.id);
-    if result.is_ok() && ws.autosave() {
+    ws.partial_scans.lock().unwrap().remove(&source.id);
+    let Ok(p) = &result else { return result };
+    if asked_media_store && !partial && p.errors.is_empty() {
+        // A minute of overlap: the media store counts in seconds and may lag the file.
+        ws.media_added_since.lock().unwrap().insert(source.id, (started_s - 60, scan_kinds(&settings)));
+    }
+    if p.any_new_content() {
+        ws.content_changed();
+    }
+    if !ws.autosave() {
+        return result;
+    }
+    if !partial {
         match crate::shard_props::import(&ws, &source) {
             Ok(0) => {}
             // Faces and people may have come along.
@@ -424,20 +554,22 @@ pub(crate) fn scan_now(app: &AppHandle, ws: Arc<Workspace>, source: SourceRow) -
             Err(e) => crate::applog::warn("props", format!("could not take in properties of '{}': {}", source.name, e.message)),
         }
     }
-    if let Ok(p) = &result
-        && ws.autosave()
-        && p.added + p.updated + p.missing.unwrap_or(0) > 0
-    {
+    if p.any_change() {
         crate::mirror::scanned(app, &ws, source.id);
     }
-    if result.is_ok() && ws.autosave() {
+    // Backfills only when something is new to them or they have not caught up yet: after
+    // a scan that changed nothing they would only look and find nothing.
+    if !ws.settled(&ws.probe_settled) {
         crate::video::spawn_probe_backfill(app, ws.clone());
     }
-    if result.is_ok() && settings.thumbnails_after_scan && ws.autosave() {
+    if settings.thumbnails_after_scan && !ws.settled(&ws.thumbs_settled) {
         crate::thumbs::spawn_backfill(app.clone(), ws.clone());
     }
-    if result.is_ok() && ws.autosave() && crate::recent::cached_app_settings().ml.auto_analyze {
+    if crate::recent::cached_app_settings().ml.auto_analyze && !ws.settled(&ws.ml_settled) {
         crate::ml::start(app, ws.clone());
+    }
+    if !partial {
+        crate::watch::sync(app, &ws);
     }
     result
 }
@@ -1181,6 +1313,7 @@ pub async fn update_source(
     let state = app.state::<AppState>();
     let ws = workspace(&state)?;
     let drivers = state.drivers.clone();
+    let app = app.clone();
     blocking(move || {
         let old = ws.read_db.lock().unwrap().source(id)?.ok_or_else(|| CmdError::new("not_found", "source"))?;
         let mut config = match (&config, old.driver.as_str()) {
@@ -1209,6 +1342,7 @@ pub async fn update_source(
         }
         ws.write_db.lock().unwrap().update_source(id, &name, &root, &config, enabled)?;
         ws.close_shard(id)?;
+        crate::watch::sync(&app, &ws);
         ws.read_db.lock().unwrap().source(id)?.ok_or_else(|| CmdError::new("not_found", "source"))
     })
     .await

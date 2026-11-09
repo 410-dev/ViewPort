@@ -645,6 +645,8 @@ pub async fn unlock_shard(app: AppHandle, source_id: i64, password: String, keyf
     if changed {
         crate::ml::notify(&app);
     }
+    // Its items were skipped while it was locked: every backfill has work again.
+    ws.content_changed();
     if ws.autosave() {
         crate::thumbs::spawn_backfill(app.clone(), ws.clone());
         crate::video::spawn_probe_backfill(&app, ws);

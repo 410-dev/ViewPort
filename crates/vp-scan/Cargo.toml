@@ -12,6 +12,7 @@ vp-driver.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 imagesize = "0.15.0"
+foldhash = "0.2"
 
 [dev-dependencies]
 serde_json.workspace = true

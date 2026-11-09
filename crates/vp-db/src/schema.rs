@@ -509,6 +509,11 @@ const MIGRATIONS: &[&str] = &[
         ids        TEXT NOT NULL DEFAULT '[]'
     );
     "#,
+    // v13: a scan remembers that it could not read an image's pixel size (the version of
+    // the reader that failed), so unchanged files are not read again on every rescan.
+    r#"
+    ALTER TABLE media ADD COLUMN dims_probe INTEGER NOT NULL DEFAULT 0;
+    "#,
 ];
 
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;

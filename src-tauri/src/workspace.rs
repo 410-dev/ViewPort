@@ -67,6 +67,23 @@ pub struct Workspace {
     pub converts: Mutex<HashMap<i64, Arc<AtomicBool>>>,
     /// A video probe backfill is running.
     pub probing: AtomicBool,
+    /// Sources a watched change is being looked at in (also in `scans`): a full scan of
+    /// the same source waits for it instead of being refused.
+    pub partial_scans: Mutex<std::collections::HashSet<i64>>,
+    /// Goes up whenever a scan records new or changed files ([`Workspace::content_changed`]).
+    pub change_gen: AtomicU64,
+    /// `change_gen` when the thumbnail, video probe and analysis backfills last ran to the
+    /// end (`u64::MAX`: not yet in this session). A scan that changed nothing starts a
+    /// backfill only if it has not caught up since the last change.
+    pub thumbs_settled: AtomicU64,
+    pub probe_settled: AtomicU64,
+    pub ml_settled: AtomicU64,
+    /// Android: when the media store was last asked about a source (s, from a complete
+    /// scan), with the scan settings that decided which files that scan recorded; later
+    /// scans with the same settings ask only about files added since.
+    pub media_added_since: Mutex<HashMap<i64, (i64, String)>>,
+    /// Watches of local sources (`watch.rs`).
+    pub(crate) watches: Mutex<HashMap<i64, crate::watch::Watch>>,
     /// Open shards of shard sources (see `shards.rs`).
     pub(crate) shards: Mutex<HashMap<i64, Arc<vp_shard::Shard>>>,
     /// Master keys of encrypted shards unlocked in this session, by source.
@@ -187,6 +204,13 @@ impl Workspace {
             ffmpeg: RwLock::new(ffmpeg),
             converts: Mutex::default(),
             probing: AtomicBool::new(false),
+            partial_scans: Mutex::default(),
+            change_gen: AtomicU64::new(0),
+            thumbs_settled: AtomicU64::new(u64::MAX),
+            probe_settled: AtomicU64::new(u64::MAX),
+            ml_settled: AtomicU64::new(u64::MAX),
+            media_added_since: Mutex::default(),
+            watches: Mutex::default(),
             shards: Mutex::default(),
             shard_keys: Mutex::default(),
             settings: RwLock::new(settings),
@@ -521,6 +545,16 @@ impl Workspace {
             })
             .map(|s| s.id)
             .collect()
+    }
+
+    /// Records that items were added or changed: backfills have something to do again.
+    pub fn content_changed(&self) {
+        self.change_gen.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Whether a backfill whose `settled` mark is given has caught up with every change.
+    pub fn settled(&self, settled: &AtomicU64) -> bool {
+        settled.load(Ordering::Acquire) == self.change_gen.load(Ordering::Acquire)
     }
 
     /// The driver of a source already connected, if any (no database lookup).

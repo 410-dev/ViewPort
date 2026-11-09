@@ -203,7 +203,11 @@ pub fn start(app: &AppHandle, ws: Arc<Workspace>) {
     std::thread::spawn(move || {
         let cancel = Arc::new(AtomicBool::new(false));
         let task = tasks::begin_with_cancel("analyze", "", Unit::Items, None, Some(cancel.clone()));
+        let change_gen = ws.change_gen.load(Ordering::Acquire);
         let result = run(&app, &ws, &task, &cancel);
+        if result.is_ok() && !cancel.load(Ordering::Relaxed) {
+            ws.ml_settled.store(change_gen, Ordering::Release);
+        }
         match &result {
             Ok(_) => task.finish(),
             Err(e) if e.code == "cancelled" => task.cancelled(),

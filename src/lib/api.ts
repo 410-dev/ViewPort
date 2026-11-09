@@ -217,9 +217,20 @@ export interface ScanEvent {
   added: number;
   updated: number;
   unchanged: number;
+  /** Files found under a new path; their items kept their ids. */
+  moved: number;
+  /** Missing items whose file is back. */
+  back: number;
+  /** Items not found any more (once done). */
+  gone: number;
   missing: number | null;
   current: string;
   errors: string[];
+  /** Items whose details changed (once done), unless `changed_all`. */
+  changed: number[];
+  changed_all: boolean;
+  /** Only some folders were looked at (a watched change). */
+  partial: boolean;
   done: boolean;
   error: string | null;
 }

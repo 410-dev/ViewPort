@@ -127,8 +127,8 @@ mod imp {
         times: Vec<i64>,
     }
 
-    pub fn media_added(root: &Path) -> Option<Vec<(String, i64)>> {
-        let out: Added = HANDLE.get()?.run_mobile_plugin("mediaAdded", json!({ "path": root })).ok()?;
+    pub fn media_added(root: &Path, since_s: Option<i64>) -> Option<Vec<(String, i64)>> {
+        let out: Added = HANDLE.get()?.run_mobile_plugin("mediaAdded", json!({ "path": root, "since": since_s })).ok()?;
         Some(out.paths.into_iter().zip(out.times).collect())
     }
 
@@ -240,7 +240,7 @@ mod imp {
         None
     }
 
-    pub fn media_added(_root: &Path) -> Option<Vec<(String, i64)>> {
+    pub fn media_added(_root: &Path, _since_s: Option<i64>) -> Option<Vec<(String, i64)>> {
         None
     }
 
@@ -266,12 +266,13 @@ mod imp {
 pub use imp::{edit_video, frame, media_available, probe, scaled_image};
 
 /// Android: when the media store first saw each file under folder `root`, by path relative
-/// to it (ms). The file system there keeps no usable birth time. `None` elsewhere.
-pub fn media_added(root: &Path) -> Option<std::collections::HashMap<String, i64>> {
+/// to it (ms) — only files it saw at or after `since_s` (s), if given. The file system there
+/// keeps no usable birth time. `None` elsewhere.
+pub fn media_added(root: &Path, since_s: Option<i64>) -> Option<std::collections::HashMap<String, i64>> {
     // The media store names files by their canonical path (/storage/emulated/0/...).
     let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let prefix = format!("{}/", root.display().to_string().trim_end_matches('/'));
-    let list = imp::media_added(&root)?;
+    let list = imp::media_added(&root, since_s)?;
     Some(list.into_iter().filter_map(|(p, secs)| Some((p.strip_prefix(&prefix)?.to_string(), secs * 1000))).collect())
 }
 

@@ -61,6 +61,13 @@ class PathArgs {
 }
 
 @InvokeArg
+class AddedArgs {
+  lateinit var path: String
+  /** Only files the media store added at or after this time (s). */
+  var since: Long? = null
+}
+
+@InvokeArg
 class FrameArgs {
   lateinit var path: String
   var atMs: Long = 0
@@ -330,18 +337,22 @@ class ViewPortPlugin(private val activity: Activity) : Plugin(activity) {
    */
   @Command
   fun mediaAdded(invoke: Invoke) {
-    val args = invoke.parseArgs(PathArgs::class.java)
+    val args = invoke.parseArgs(AddedArgs::class.java)
     pool.execute {
       try {
         val root = args.path.trimEnd('/')
         val like = root.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "/%"
         val paths = JSArray()
         val times = JSArray()
+        val since = args.since
+        val where = "${MediaStore.MediaColumns.DATA} LIKE ? ESCAPE '\\'" +
+          (if (since != null) " AND ${MediaStore.MediaColumns.DATE_ADDED} >= ?" else "")
+        val whereArgs = if (since != null) arrayOf(like, since.toString()) else arrayOf(like)
         activity.contentResolver.query(
           MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL),
           arrayOf(MediaStore.MediaColumns.DATA, MediaStore.MediaColumns.DATE_ADDED),
-          "${MediaStore.MediaColumns.DATA} LIKE ? ESCAPE '\\'",
-          arrayOf(like),
+          where,
+          whereArgs,
           null,
         )?.use { c ->
           while (c.moveToNext()) {

@@ -21,6 +21,7 @@ mod shards;
 mod tasks;
 mod thumbs;
 mod video;
+mod watch;
 mod windows;
 mod workspace;
 

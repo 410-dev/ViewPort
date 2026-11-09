@@ -85,6 +85,8 @@ pub fn spawn_backfill(app: AppHandle, ws: Arc<Workspace>) {
     let drivers = state.drivers.clone();
     tauri::async_runtime::spawn(async move {
         let mut done = 0u64;
+        let change_gen = ws.change_gen.load(Ordering::Acquire);
+        let mut caught_up = false;
         // Items of locked shards are left for when they are unlocked.
         let skip = ws.locked_sources();
         let total = ws.read_db.lock().unwrap().count_missing_thumbnails(&skip).ok();
@@ -99,6 +101,7 @@ pub fn spawn_backfill(app: AppHandle, ws: Arc<Workspace>) {
                 db.missing_thumbnails(64, &skip).unwrap_or_default()
             };
             if batch.is_empty() {
+                caught_up = true;
                 break;
             }
             let mut tasks = Vec::with_capacity(batch.len());
@@ -128,6 +131,9 @@ pub fn spawn_backfill(app: AppHandle, ws: Arc<Workspace>) {
             let _ = app.emit("thumbs-progress", BackfillEvent { done, finished: false });
         }
         drop(task);
+        if caught_up {
+            ws.thumbs_settled.store(change_gen, Ordering::Release);
+        }
         let _ = ws.thumbs.sync();
         let _ = app.emit("thumbs-progress", BackfillEvent { done, finished: true });
         app.state::<AppState>().backfill_running.store(false, Ordering::Release);

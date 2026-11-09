@@ -398,6 +398,18 @@ pub struct ScanSettings {
     pub thumbnails_after_scan: bool,
     /// Rescan every connected source when the bundle is opened.
     pub rescan_on_open: bool,
+    /// Folders listed (and their new images measured) side by side during a scan.
+    pub list_workers: u32,
+    /// Folders a scan lists ahead of the one it is recording.
+    pub list_lookahead: u32,
+    /// Ids of changed items a finished scan reports at most (more: views reload everything).
+    pub report_ids_max: u32,
+    /// Follow changes in local folders as they happen, instead of only on a scan.
+    pub watch: bool,
+    /// Quiet time after the last change before a watched folder is looked at.
+    pub watch_debounce_ms: u64,
+    /// Longest a watched change waits while changes keep coming.
+    pub watch_max_delay_ms: u64,
 }
 
 impl Default for ScanSettings {
@@ -412,6 +424,12 @@ impl Default for ScanSettings {
             batch_size: 500,
             thumbnails_after_scan: true,
             rescan_on_open: false,
+            list_workers: 4,
+            list_lookahead: 64,
+            report_ids_max: 5000,
+            watch: true,
+            watch_debounce_ms: 1500,
+            watch_max_delay_ms: 10_000,
         }
     }
 }
