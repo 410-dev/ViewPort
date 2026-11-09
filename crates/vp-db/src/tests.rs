@@ -903,3 +903,26 @@ fn temp_groups_round_trip_in_order() {
     db.set_temp_groups(&groups[1..]).unwrap();
     assert_eq!(db.temp_groups().unwrap(), groups[1..].to_vec());
 }
+
+/// Conditions on extension fields read the matching items once from the (field, value)
+/// index, not once per item: a correlated lookup there made a common tag on 100k items
+/// take minutes. Checked on the query plan, so it holds for any library size.
+#[test]
+fn extension_conditions_are_not_looked_up_per_item() {
+    let lib = library();
+    for src in ["태그(바다)", "점수(3:이상)", "아님 점수(3:이상)", "좋아요(아니오)", "태그(모두 포함:바다:가족)", "점수(없음)", "메모(abc)"] {
+        let q = vp_query::parse_query(src, &lib.reg).unwrap_or_else(|e| panic!("{src}: {e}"));
+        let c = vp_query::compile(&q, &lib.reg, &Db::compile_context(OCT18, 0)).unwrap();
+        let sql = format!(
+            "EXPLAIN QUERY PLAN SELECT m.id FROM media m JOIN source src ON src.id = m.source_id
+             LEFT JOIN media_stats s ON s.media_id = m.id WHERE src.enabled AND NOT m.missing AND ({}) ORDER BY {}",
+            c.where_sql, c.order_sql
+        );
+        let binds: Vec<Bind> = c.params.iter().map(Bind).collect();
+        let refs: Vec<&dyn ToSql> = binds.iter().map(|b| b as &dyn ToSql).collect();
+        let mut stmt = lib.db.conn().prepare(&sql).unwrap();
+        let plan: Vec<String> = stmt.query_map(refs.as_slice(), |r| r.get(3)).unwrap().map(|r| r.unwrap()).collect();
+        assert!(plan.iter().any(|l| l.contains("LIST SUBQUERY")), "{src}: {plan:?}");
+        assert!(!plan.iter().any(|l| l.contains("CORRELATED") || l.contains(" EXISTS ")), "{src}: {plan:?}");
+    }
+}

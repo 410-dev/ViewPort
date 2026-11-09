@@ -296,6 +296,14 @@ name.vpshard/
   ONNX Runtime 폴더를 `SetDllDirectoryW`로 DLL 검색에 넣는다 → cuDNN DLL을 `onnxruntime.dll` 옆에 두면 PATH 수정 없이 된다.
 - 선택적 실제 환경 테스트: `VP_TEST_ORT=<ONNX Runtime 라이브러리> VP_TEST_MODELS=<모델 팩 폴더> [VP_TEST_IMAGE=<사진>] cargo test -p vp-ml --features onnx`.
 
+## 검색 실행
+
+- 검색은 미디어 파일이 아니라 라이브러리 DB(`media` + 확장 값 `ext_value` + 통계)를 SQL로 질의한다. 결과 id 목록은 캐시하지
+  않고 매번 실행하며, 화면은 보이는 항목의 요약(brief)만 묶어서 가져와 프론트엔드에서 캐시한다.
+- 확장 필드 조건은 `m.id IN (SELECT media_id FROM ext_value WHERE field_id = ? AND …)`로 컴파일한다(부정은 `NOT IN`).
+  상관 서브쿼리 `EXISTS (… media_id = m.id …)`는 통계 없는 SQLite가 (필드, 값) 인덱스를 항목마다 처음부터 훑게 만들어
+  흔한 태그 하나에 10만 항목이 몇 분 걸렸다(지금은 수십 ms). `vp-db` 테스트가 실행 계획으로 확인한다.
+
 ## 스캔
 
 - **알고 있는 것**: 스캔은 소스의 항목을 한 번에 읽어 폴더별 이름 정렬 목록으로 둔다(`vp_scan::Known`). 폴더 목록도

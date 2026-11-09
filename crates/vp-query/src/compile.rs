@@ -172,15 +172,19 @@ impl<'a> Compiler<'a> {
                 let cond = self.cond(def.ty, expr, op, values);
                 format!("COALESCE({cond}, 0)")
             }
+            // The items having a matching value, as a set: SQLite builds it once from the
+            // (field, value) index. A correlated `EXISTS (... media_id = m.id ...)` let the
+            // planner (without statistics) probe that same index once per item, walking
+            // every matching value each time: 100k items with a common tag took minutes.
             FieldSource::Ext { field_id } => {
                 let ctx = self.ctx;
                 let s = &ctx.schema;
                 let col = format!("ev.{}", self.ext_col(def.ty));
                 let head = format!(
-                    "EXISTS (SELECT 1 FROM {} ev WHERE ev.{} = {} AND ev.{} = {}",
-                    s.ext_table,
-                    s.ext_media_id,
+                    "{} IN (SELECT ev.{} FROM {} ev WHERE ev.{} = {}",
                     s.media_id,
+                    s.ext_media_id,
+                    s.ext_table,
                     s.ext_field_id,
                     self.bind(SqlValue::Int(*field_id))
                 );
@@ -400,7 +404,7 @@ mod tests {
     #[test]
     fn negation_wraps_positive() {
         let c = compile_src("점수(3:다름)");
-        assert!(c.where_sql.starts_with("NOT (EXISTS"), "{}", c.where_sql);
+        assert!(c.where_sql.starts_with("NOT (m.id IN (SELECT"), "{}", c.where_sql);
         assert_eq!(c.params, [SqlValue::Int(2), SqlValue::Int(3)]);
     }
 
@@ -408,14 +412,14 @@ mod tests {
     fn toggles_store_only_on() {
         // "On" is a value of 1; "off" is its negation (items without a value).
         let on = compile_src("좋아요(예)");
-        assert!(on.where_sql.starts_with("EXISTS"), "{}", on.where_sql);
+        assert!(on.where_sql.starts_with("m.id IN (SELECT"), "{}", on.where_sql);
         assert_eq!(on.params, [SqlValue::Int(4), SqlValue::Int(1)]);
         for off in ["좋아요(아니오)", "favorite(no)", "좋아요(0)", "좋아요(예:다름)"] {
             let c = compile_src(off);
-            assert!(c.where_sql.starts_with("NOT (EXISTS"), "{off}: {}", c.where_sql);
+            assert!(c.where_sql.starts_with("NOT (m.id IN (SELECT"), "{off}: {}", c.where_sql);
         }
         assert_eq!(compile_src("좋아요(예:아니오)").where_sql, "1");
-        assert!(compile_src("좋아요(있음)").where_sql.starts_with("EXISTS"));
+        assert!(compile_src("좋아요(있음)").where_sql.starts_with("m.id IN (SELECT"));
         let reg = crate::analyze::tests::registry();
         assert!(crate::parse_query("좋아요(아마도)", &reg).is_err());
         assert!(crate::parse_query("좋아요(1:이상)", &reg).is_err(), "not numeric");
