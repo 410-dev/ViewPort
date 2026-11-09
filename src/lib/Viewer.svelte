@@ -92,6 +92,8 @@
    * must not drive the controls (a video's dock over a picture, saving a loop to it). */
   const cur = $derived(brief?.id === id ? brief : null);
   const curKind = $derived(cur?.kind);
+  /** Changes on every move, also between two items of the same kind (unlike `curKind`). */
+  const curId = $derived(cur?.id);
   let video = $state<HTMLVideoElement | null>(null);
   /** The current video is paused (the dock's play/pause button). */
   let paused = $state(false);
@@ -691,11 +693,14 @@
     go(1);
   }
 
-  // Images advance on a timer; videos advance from their playback events below.
+  // Images advance on a timer; videos advance from their playback events below. Runs again
+  // on every move: the next item's brief is often known already, so `curKind` alone stays
+  // the same from one picture to the next and the show stopped after the first step.
   $effect(() => {
     clearTimeout(ssTimer);
     plays = 0;
     lastTime = 0;
+    curId;
     const kind = curKind;
     if (!slideshow || ssPaused || !kind) return;
     if (kind === "image" || error) ssTimer = setTimeout(advance, ss.image_interval_secs * 1000);
