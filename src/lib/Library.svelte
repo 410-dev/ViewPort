@@ -277,15 +277,28 @@
     scrollKey = seedNow.key;
     elapsed = seedNow.elapsed;
     searched = true;
-    // Back from a viewer pane: no search runs, so select the item it showed now.
+    // Back from a viewer pane: no search runs, so go to the item it showed now.
     const reveal = revealAfterSearch;
     if (reveal != null && seedNow.ids.includes(reveal)) {
       revealAfterSearch = null;
-      selection.set.add(reveal);
-      selection.focus = reveal;
-      selection.revealing = reveal;
+      showClosed(reveal);
     }
   }
+
+  /**
+   * A split pane's viewer closed on item `id`: like the main viewer closing, the listing
+   * goes to it and focuses it. Only a mouse selects it: on touch a selection means
+   * selection mode. This explorer is new, so its own pointer history cannot tell.
+   */
+  function showClosed(id: number) {
+    selection.set.clear();
+    if (!isMobile && !matchMedia("(pointer: coarse)").matches) selection.set.add(id);
+    selection.focus = id;
+    selection.revealing = id;
+  }
+  /** The reveal asked for by `initial` (a split pane back from its viewer), not by "go to folder". */
+  // svelte-ignore state_referenced_locally
+  let revealIsClosed = initial?.reveal != null;
   async function runSearch(reset: boolean) {
     const seq = ++searchSeq;
     const key = listingKey();
@@ -304,10 +317,14 @@
       const reveal = revealAfterSearch;
       if (reveal != null && r.ids.includes(reveal)) {
         revealAfterSearch = null;
-        selection.set.clear();
-        selection.set.add(reveal);
-        selection.focus = reveal;
-        selection.revealing = reveal;
+        if (revealIsClosed) showClosed(reveal);
+        else {
+          selection.set.clear();
+          selection.set.add(reveal);
+          selection.focus = reveal;
+          selection.revealing = reveal;
+        }
+        revealIsClosed = false;
       }
     } catch (e) {
       if (seq === searchSeq) queryError = asCmdError(e).message;
@@ -385,6 +402,7 @@
     if (!b) return;
     showPeople = false;
     revealAfterSearch = id;
+    revealIsClosed = false;
     const same = selected === b.source_id && folder === b.folder && !query && !sort;
     group = null;
     selected = b.source_id;
