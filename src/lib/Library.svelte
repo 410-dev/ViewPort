@@ -1,7 +1,16 @@
 <script lang="ts" module>
   import type { SortSpec as Sort } from "./views/columns";
   /** What the library is browsing: restored on the next start, and used by split-view explorers. */
-  export type BrowseState = { sourceId: number | null; folder: string; query: string; sort?: Sort | null };
+  export type BrowseState = {
+    sourceId: number | null;
+    folder: string;
+    query: string;
+    sort?: Sort | null;
+    /** A split-view explorer only: the temporary group it shows (instead of the source). */
+    group?: string | null;
+    /** A split-view explorer only: the item to select and scroll to once it is listed. */
+    reveal?: number | null;
+  };
   /** A listing already searched, handed to a split-view explorer that starts on it. */
   export type Listing = { key: string; ids: number[]; sections: import("./api").Sections; elapsed: number };
 </script>
@@ -97,7 +106,8 @@
   // svelte-ignore state_referenced_locally
   let sort = $state<SortSpec | null>(initial?.sort ?? null);
   /** The temporary group being shown (instead of a source or search), by id. */
-  let group = $state<string | null>(null);
+  // svelte-ignore state_referenced_locally
+  let group = $state<string | null>(initial?.group ?? null);
   // svelte-ignore state_referenced_locally
   groups.open(bundle.path);
   /** False until the last browsing state is restored, so nothing is searched twice. */
@@ -253,7 +263,8 @@
   /** A search has finished at least once: before that an empty listing means "not yet". */
   let searched = $state(false);
   /** Selected and scrolled to once a search lists it (`revealInLibrary`). */
-  let revealAfterSearch: number | null = null;
+  // svelte-ignore state_referenced_locally
+  let revealAfterSearch: number | null = initial?.reveal ?? null;
   /** A new search (not a refresh) is running over results still shown: the view shows a spinner. */
   let researching = $state(false);
   const listingKey = () => (group ? `group:${group}` : `${selected}|${folder}|${ui().recursive}|${effectiveQuery}`);
@@ -266,6 +277,14 @@
     scrollKey = seedNow.key;
     elapsed = seedNow.elapsed;
     searched = true;
+    // Back from a viewer pane: no search runs, so select the item it showed now.
+    const reveal = revealAfterSearch;
+    if (reveal != null && seedNow.ids.includes(reveal)) {
+      revealAfterSearch = null;
+      selection.set.add(reveal);
+      selection.focus = reveal;
+      selection.revealing = reveal;
+    }
   }
   async function runSearch(reset: boolean) {
     const seq = ++searchSeq;

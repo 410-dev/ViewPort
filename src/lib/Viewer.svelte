@@ -865,9 +865,9 @@
   /** Whether a vertical swipe by `dy` would change the favorite mark. */
   const favDir = (g: { type: string } | null, dy: number) => (dy < 0 ? favUp(g) : dy > 0 ? favDown(g) : false);
   // ---- pull to close (phones): past the favorite swipe's distance, the item shrinks as it
-  // follows the finger down, and letting go past `pull_close_threshold` closes the viewer.
-  const pullClose = (g: { type: string } | null) =>
-    g?.type === "touch" && isMobile && panes <= 1 && (prefs.app?.viewer.pull_close ?? true);
+  // follows the finger down, and letting go past `pull_close_threshold` closes the viewer
+  // (in split view: this pane's viewer, back to its explorer).
+  const pullClose = (g: { type: string } | null) => g?.type === "touch" && isMobile && (prefs.app?.viewer.pull_close ?? true);
   /** Scale of the item while pulled down to close (1 = not shrinking). */
   let shrink = $state(1);
   const favDistance = () => (prefs.app?.viewer.swipe_threshold ?? 0.2) * stageH;

@@ -40,6 +40,8 @@
     browse: BrowseState | null;
     /** The temporary group the list is (by id), if any. */
     group?: string | null;
+    /** The explorer the viewer was opened from in this pane, to go back to when it closes. */
+    back?: BrowseState | null;
   };
 
   let {
@@ -314,12 +316,26 @@
   }
 
   /** Opened from a pane's explorer: the pane views that list. */
-  function openIn(i: number, ids: number[], index: number, group: string | null) {
+  function openIn(i: number, ids: number[], index: number, state: BrowseState, group: string | null) {
     const p = panes[i];
+    p.back = { ...state, group };
     p.ids = ids;
     p.index = index;
     p.group = group;
     p.browse = null;
+  }
+
+  /**
+   * A viewer pane closed (close button, back, pull down): with other panes open, the pane
+   * goes back to its explorer at the item it showed, and the split stays. The only pane
+   * closes the whole viewer.
+   */
+  function closeViewer(i: number) {
+    const p = panes[i];
+    if (panes.length === 1) return closeAll(i);
+    const back = p.back ?? { ...start(), group: p.group ?? null };
+    p.browse = { ...back, reveal: p.ids[p.index] ?? null };
+    pulled = 0;
   }
 
   async function pop(i: number) {
@@ -418,7 +434,7 @@
               seed={browseSeed}
               onclose={() => remove(i)}
               onbundle={() => {}}
-              embedded={{ active: i === active, onopen: (ids, index, _, group) => openIn(i, ids, index, group) }}
+              embedded={{ active: i === active, onopen: (ids, index, state, group) => openIn(i, ids, index, state, group) }}
             />
           {/if}
         {:else}
@@ -430,10 +446,10 @@
             active={i === active}
             panes={panes.length}
             onactivate={() => (active = i)}
-            onclose={() => closeAll(i)}
+            onclose={() => closeViewer(i)}
             onsplit={panes.length < max ? split : undefined}
             onpop={isMobile ? undefined : () => pop(i)}
-            onpull={(v) => (pulled = v)}
+            onpull={panes.length === 1 ? (v) => (pulled = v) : undefined}
             onremoved={dropItem}
             group={p.group && groups.get(p.group)
               ? {
