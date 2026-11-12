@@ -1,6 +1,7 @@
 mod applog;
 mod archive;
 mod audio;
+mod biometric;
 mod commands;
 mod dblock;
 mod dedup;
@@ -23,6 +24,7 @@ mod thumbs;
 mod video;
 mod watch;
 mod windows;
+mod vault;
 mod workspace;
 
 use std::sync::atomic::AtomicBool;
@@ -141,6 +143,11 @@ pub fn run() {
             commands::update_source,
             commands::source_config,
             commands::unlock_bundle,
+            vault::vault_status,
+            vault::vault_save,
+            vault::vault_change,
+            vault::vault_remove,
+            vault::vault_unlock,
             commands::set_lock,
             commands::remove_lock,
             commands::child_folders,

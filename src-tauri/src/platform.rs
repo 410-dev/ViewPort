@@ -69,6 +69,11 @@ mod imp {
         let _ = HANDLE.set(h);
     }
 
+    /// The native plugin, for other modules' calls (`biometric.rs`).
+    pub fn handle() -> Option<&'static PluginHandle<Wry>> {
+        HANDLE.get()
+    }
+
     #[derive(Deserialize)]
     struct Granted {
         granted: bool,
@@ -275,6 +280,9 @@ pub fn media_added(root: &Path, since_s: Option<i64>) -> Option<std::collections
     let list = imp::media_added(&root, since_s)?;
     Some(list.into_iter().filter_map(|(p, secs)| Some((p.strip_prefix(&prefix)?.to_string(), secs * 1000))).collect())
 }
+
+#[cfg(target_os = "android")]
+pub use imp::handle as android_handle;
 
 /// The Tauri plugin that connects to the native side.
 pub fn init() -> TauriPlugin<tauri::Wry> {

@@ -81,7 +81,7 @@ param     := 따옴표 없는 텍스트 | "따옴표 문자열"
 
 ```
 MyLibrary.vpbun/
-  info.json            평문, 공개 가능 정보 (bundle_version 필수, 잠금 여부, KDF 파라미터)
+  info.json            평문, 공개 가능 정보 (bundle_version 필수, id, 잠금 여부, KDF 파라미터)
   db/library.sqlite    잠금 시 db/library.sqlite.enc
   settings.json        잠금 시 settings.json.enc
   thumbs/*.pack        썸네일 팩 (잠금 시 항목별 암호화)
@@ -94,6 +94,20 @@ MyLibrary.vpbun/
 - 로드 시 `bundle_version > SUPPORTED`이면 거부 또는 사용자 인가 후 읽기 전용(자동 저장 끔).
 - 압축 번들(zip)은 루트 또는 한 단계 아래에서 `info.json`을 찾으면 압축 파일 옆에 `<이름>.vpbun`으로 해제 후 로드(zip slip 방지).
 - 상위 버전 번들을 인가 후 열면 DB를 임시 작업 사본으로 열고, "번들에 저장"을 눌러야만 번들에 쓴다.
+- `info.json`의 `id`(무작위 128비트 hex)는 번들을 옮기거나 복사해도 유지되는 식별자다. 이 기능 전의 번들은 처음 열 때(잠긴
+  번들은 비밀번호를 묻기 전에) 받는다. 읽기 전용으로 연 번들에는 쓰지 않으므로 id가 없을 수 있다. 앱이 모르는 `info.json`
+  필드는 다시 쓸 때 보존한다(`BundleInfo.extra`).
+
+### 저장된 번들 비밀번호 (기기별)
+
+- 앱 단위(번들이 아님)로 번들 id마다 비밀번호를 저장한다(`src-tauri/src/vault.rs`). 목록(id·이름·마지막 경로·키 파일 경로)은
+  설정 폴더의 `bundle_passwords.json`(비밀 없음), 비밀번호는 OS 자격 증명 저장소(`secrets.rs`, Android는 앱 전용 파일)에 둔다.
+  비밀번호는 UI로 돌려보내지 않는다. 추가·변경은 번들의 잠금 파라미터로 비밀번호를 확인한 뒤에만 저장한다.
+- 잠긴 번들을 열 때 저장된 비밀번호가 있으면: 생체 인증이 있는 플랫폼(macOS·iOS = LocalAuthentication, Android =
+  androidx BiometricPrompt, `biometric.rs`)에서는 `AppSettings.security.biometric_unlock`이 켜져 있을 때만 생체 인증 후 연다.
+  생체 인증이 없는 플랫폼(Windows·Linux)은 확인 없이 바로 연다.
+- 시작 화면의 기어 버튼 → 설정(테마, 생체 인증 토글, 비밀번호 관리). 비밀번호 입력 창에는 "Biometric으로 열기"만 보이고,
+  "비밀번호 기억하기"는 `security.offer_remember_password`를 켜야 보인다(기능은 들어 있음).
 
 ## 소스(다중 디렉터리)
 

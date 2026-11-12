@@ -98,10 +98,12 @@ impl Workspace {
 
     /// Opens an unlocked bundle. A locked one fails with `locked`; see [`Self::open_locked`].
     pub fn open(path: &Path, allow_newer: bool) -> CmdResult<Self> {
-        let bundle = Bundle::open(path, allow_newer)?;
-        if let Some(lock) = &bundle.info.lock {
+        let mut bundle = Bundle::open(path, allow_newer)?;
+        if let Some(lock) = bundle.info.lock.clone() {
+            // The id keys a password remembered on this device (`vault.rs`).
+            let id = bundle.ensure_id().map(str::to_string).unwrap_or_default();
             return Err(CmdError::new("locked", "the bundle is locked")
-                .with_detail(serde_json::json!({ "requires_keyfile": lock.requires_keyfile })));
+                .with_detail(serde_json::json!({ "requires_keyfile": lock.requires_keyfile, "id": id })));
         }
         Self::load(bundle, None)
     }
@@ -126,7 +128,9 @@ impl Workspace {
         }
     }
 
-    fn load(bundle: Bundle, key: Option<vp_crypto::BundleKey>) -> CmdResult<Self> {
+    fn load(mut bundle: Bundle, key: Option<vp_crypto::BundleKey>) -> CmdResult<Self> {
+        // Bundles from before ids existed get one now; a read-only bundle simply has none.
+        let _ = bundle.ensure_id();
         let settings_text = match &key {
             Some(k) => Self::read_sealed(&bundle, vp_bundle::SETTINGS_ENC_FILE, k, b"settings")?
                 .map(|b| String::from_utf8_lossy(&b).into_owned()),
@@ -988,7 +992,11 @@ mod lock_tests {
         ws.persist_locked(false).unwrap();
         drop(ws);
 
-        assert!(matches!(Workspace::open(&root, false), Err(CmdError { code: "locked", .. })));
+        let Err(locked) = Workspace::open(&root, false) else { panic!("opened a locked bundle") };
+        assert_eq!(locked.code, "locked");
+        let info_id = vp_bundle::Bundle::read_info(&root).unwrap().id;
+        assert_eq!(info_id.len(), 32);
+        assert_eq!(locked.detail["id"], info_id.as_str(), "the id keys remembered passwords");
         assert!(Workspace::open_locked(&root, false, "wrong", None).is_err());
         let ws = Workspace::open_locked(&root, false, "pw", None).unwrap();
         assert_eq!(ws.read_db.lock().unwrap().source(id).unwrap().unwrap().name, "renamed", "changes were saved");

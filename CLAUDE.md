@@ -64,7 +64,8 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
   프론트엔드는 `code`로 분기한다(예: `locked`).
 - `media.rs`(`vpmedia://`, HTTP Range 지원, 캐시 경유), `thumbs.rs`(`vpthumb://`, 없으면 즉시 생성),
   `video.rs`(probe 백필·변환), `archive.rs`(zip 번들 해제, zip slip 방지), `secrets.rs`(OS 자격 증명 저장소),
-  `recent.rs`(기기별 상태: 최근 번들, `AppSettings`), `shards.rs`(샤드 소스: 열기·키·만들기·연결·가져오기·풀기·최적화·재암호화),
+  `recent.rs`(기기별 상태: 최근 번들, `AppSettings`), `vault.rs`(번들 id별로 저장한 비밀번호, 생체 인증 후 열기) +
+  `biometric.rs`(macOS·iOS LocalAuthentication, Android `biometricAuth`), `shards.rs`(샤드 소스: 열기·키·만들기·연결·가져오기·풀기·최적화·재암호화),
   `shard_props.rs`(샤드 안 항목 속성: DB 트리거의 `meta_rev`로 바뀐 것만 샤드의 `.viewport/props/`에 쓰고, 스캔·잠금 해제 때 가져옴.
   얼굴·인물 그룹도 `vp-db::face_sync`로 uid·변경 시각 기준 양방향 병합, 임베딩은 `embeddings_in_shard`일 때만),
   `mirror.rs`(소스 미러: 미러가 복사한 파일만 추적·교체·삭제, 원본·대상이 둘 다 있을 때만 동기화),

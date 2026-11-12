@@ -34,6 +34,13 @@ mod store {
     pub fn get(account: &str) -> Option<String> {
         keyring::Entry::new(super::SERVICE, account).and_then(|e| e.get_password()).ok()
     }
+
+    pub fn delete(account: &str) -> bool {
+        match keyring::Entry::new(super::SERVICE, account).and_then(|e| e.delete_credential()) {
+            Ok(()) | Err(keyring::Error::NoEntry) => true,
+            Err(_) => false,
+        }
+    }
 }
 
 #[cfg(target_os = "android")]
@@ -66,6 +73,16 @@ mod store {
         let _guard = LOCK.lock().unwrap();
         load(FILE.get()?).remove(account)
     }
+
+    pub fn delete(account: &str) -> bool {
+        let Some(file) = FILE.get() else { return false };
+        let _guard = LOCK.lock().unwrap();
+        let mut all = load(file);
+        if all.remove(account).is_none() {
+            return true;
+        }
+        serde_json::to_vec(&all).is_ok_and(|json| std::fs::write(file, json).is_ok())
+    }
 }
 
 #[cfg(not(any(windows, target_os = "macos", target_os = "ios", target_os = "linux", target_os = "android")))]
@@ -77,12 +94,29 @@ mod store {
     pub fn get(_account: &str) -> Option<String> {
         None
     }
+
+    pub fn delete(_account: &str) -> bool {
+        false
+    }
 }
 
 /// Where the private secret store lives on platforms that need one (Android).
 pub fn init(_private_dir: std::path::PathBuf) {
     #[cfg(target_os = "android")]
     store::init(_private_dir);
+}
+
+/// Stores one app-level secret (not tied to a driver config) under `account`.
+pub fn put(account: &str, secret: &str) -> bool {
+    store::set(account, secret)
+}
+
+pub fn get(account: &str) -> Option<String> {
+    store::get(account)
+}
+
+pub fn delete(account: &str) -> bool {
+    store::delete(account)
 }
 
 /// Moves secrets out of `config` into the credential store where possible.
@@ -165,5 +199,20 @@ mod tests {
         let b = account("smb", &serde_json::json!({ "password": "y", "host": "nas" }), &schema(), "password");
         assert_eq!(a, b);
         assert!(!a.contains('x'));
+    }
+
+    /// Writes, reads and deletes one entry in the real OS credential store
+    /// (`cargo test -p viewport credential_store_roundtrip -- --ignored`).
+    #[test]
+    #[ignore]
+    fn credential_store_roundtrip() {
+        let acct = "bundle-password:test-roundtrip";
+        assert!(put(acct, "pw-1"));
+        assert_eq!(get(acct).as_deref(), Some("pw-1"));
+        assert!(put(acct, "pw-2"));
+        assert_eq!(get(acct).as_deref(), Some("pw-2"));
+        assert!(delete(acct));
+        assert_eq!(get(acct), None);
+        assert!(delete(acct), "deleting a missing entry is fine");
     }
 }

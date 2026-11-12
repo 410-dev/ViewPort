@@ -45,6 +45,7 @@ targets:
       path: viewport_iOS/Info.plist
       properties:
         LSRequiresIPhoneOS: true
+        NSFaceIDUsageDescription: Face ID opens locked libraries with passwords saved on this device.
         UILaunchStoryboardName: LaunchScreen
         UIRequiredDeviceCapabilities: [arm64, metal]
         UISupportedInterfaceOrientations:

@@ -8,8 +8,9 @@
   import { LOCALES, t } from "./i18n.svelte";
   import { prefs, savePrefs } from "./prefs.svelte";
   import Icon from "./ui/Icon.svelte";
-
-  const THEMES = ["dark", "light", "system"] as const;
+  import StartSettings from "./start/StartSettings.svelte";
+  import { biometricName, refreshVault, savedPasswordsUsable, setBiometricUnlock, vault, vaultError } from "./start/vault.svelte";
+  import { vaultApi } from "./api";
 
   let { onopened }: { onopened: (b: BundleSummary) => void } = $props();
 
@@ -18,7 +19,14 @@
   const shown = $derived(hideMissing ? recent.filter((r) => r.exists) : recent);
   let error = $state<CmdError | null>(null);
   let pendingNewer = $state<{ path: string; found: number; supported: number } | null>(null);
-  let pendingLock = $state<{ path: string; requiresKeyfile: boolean; allowNewer: boolean } | null>(null);
+  let pendingLock = $state<{ path: string; id: string; requiresKeyfile: boolean; allowNewer: boolean } | null>(null);
+  let settingsOpen = $state(false);
+  /** Save the typed password for opening with biometrics next time. */
+  let openWithBio = $state(false);
+  /** Save the typed password (no biometrics); offered only when `security.offer_remember_password`. */
+  let rememberPassword = $state(false);
+  /** The saved password no longer opens the bundle: offer saving the typed one instead. */
+  let savedWrong = $state(false);
   let password = $state("");
   let keyfile = $state("");
   let unlockError = $state("");
@@ -26,7 +34,14 @@
 
   $effect(() => {
     api.recentBundles().then((r) => (recent = r));
+    refreshVault();
   });
+
+  /** The bundle in the password dialog has a saved password usable now. */
+  const lockSaved = $derived(!!pendingLock?.id && vault.entries.some((e) => e.id === pendingLock!.id) && savedPasswordsUsable());
+  /** Offer "open with biometrics" in the password dialog. */
+  const offerBio = $derived(vault.biometric.supported && vault.biometric.available);
+  const offerRemember = $derived(!!prefs.app?.security?.offer_remember_password);
 
   // Android: media and bundles are read by path, which needs "all files access".
   let storageOk = $state(true);
@@ -93,7 +108,15 @@
         password = "";
         keyfile = "";
         unlockError = "";
-        pendingLock = { path: dir, requiresKeyfile: !!err.detail?.requires_keyfile, allowNewer };
+        openWithBio = false;
+        rememberPassword = false;
+        savedWrong = false;
+        const lock = { path: dir, id: String(err.detail?.id ?? ""), requiresKeyfile: !!err.detail?.requires_keyfile, allowNewer };
+        if (!vault.loaded) await refreshVault();
+        const saved = !!lock.id && vault.entries.some((e) => e.id === lock.id);
+        // A saved password opens it right away (after biometrics where the device has them).
+        if (saved && savedPasswordsUsable() && (await unlockSaved(lock))) return;
+        pendingLock = lock;
       } else error = err;
     } finally {
       busy = false;
@@ -110,12 +133,34 @@
     if (p) keyfile = p;
   }
 
+  /** Opens a bundle with its saved password; false (with the reason shown in the dialog) if it did not. */
+  async function unlockSaved(lock: NonNullable<typeof pendingLock>): Promise<boolean> {
+    busy = true;
+    unlockError = "";
+    try {
+      const b = await vaultApi.unlock(lock.path, lock.allowNewer, t("vault.reason"), t("common.cancel"));
+      pendingLock = null;
+      onopened(b);
+      return true;
+    } catch (e) {
+      const code = asCmdError(e).code;
+      if (code !== "biometric_cancelled") unlockError = vaultError(e);
+      if (code === "saved_password_wrong") savedWrong = true;
+      return false;
+    } finally {
+      busy = false;
+    }
+  }
+
   async function unlock() {
     if (!pendingLock) return;
     busy = true;
     unlockError = "";
+    const remember = (offerBio && openWithBio) || (offerRemember && rememberPassword);
     try {
-      const b = await api.unlockBundle(pendingLock.path, password, keyfile || null, pendingLock.allowNewer);
+      const b = await api.unlockBundle(pendingLock.path, password, keyfile || null, pendingLock.allowNewer, remember);
+      if (offerBio && openWithBio) setBiometricUnlock(true);
+      if (remember) refreshVault();
       pendingLock = null;
       password = "";
       onopened(b);
@@ -203,20 +248,16 @@
           savePrefs(0);
         }}
       />
-      <div class="seg sm">
-        {#each THEMES as th (th)}
-          <button
-            class:on={prefs.app.ui.theme === th}
-            onclick={() => {
-              prefs.app!.ui.theme = th;
-              savePrefs(0);
-            }}>{t(`set.theme.${th}`)}</button
-          >
-        {/each}
-      </div>
+      <button class="icon-btn gear" aria-label={t("start.settings")} title={t("start.settings")} onclick={() => (settingsOpen = true)}>
+        <Icon name="settings" size={16} />
+      </button>
     </div>
   {/if}
 </div>
+
+{#if settingsOpen}
+  <StartSettings {recent} onclose={() => (settingsOpen = false)} />
+{/if}
 
 {#if pendingLock}
   <div out:fade class="scrim" role="presentation">
@@ -239,6 +280,27 @@
             <input class="input" readonly placeholder={t("start.keyfile")} value={keyfile} />
             <button class="btn" type="button" onclick={pickKeyfile}>{t("common.browse")}</button>
           </div>
+        {/if}
+        {#if lockSaved && !savedWrong}
+          <button class="btn bio" type="button" disabled={busy} onclick={() => unlockSaved(pendingLock!)}>
+            <Icon name="fingerprint" size={16} />{t("vault.openWith")}
+          </button>
+        {/if}
+        {#if offerBio && (!lockSaved || savedWrong)}
+          <label class="check">
+            <input type="checkbox" bind:checked={openWithBio} />
+            <span class="grow">
+              <span>{t("vault.openWith")}</span>
+              <span class="hint">{t("vault.openWith.help", { kind: biometricName() })}</span>
+            </span>
+            <Icon name="fingerprint" size={16} />
+          </label>
+        {/if}
+        {#if offerRemember && (!lockSaved || savedWrong)}
+          <label class="check">
+            <input type="checkbox" bind:checked={rememberPassword} />
+            <span class="grow">{t("vault.remember")}</span>
+          </label>
         {/if}
         {#if unlockError}<p class="error">{unlockError}</p>{/if}
       </div>
@@ -456,6 +518,30 @@
     align-items: center;
     gap: 8px;
     color: var(--faint);
+  }
+  .btn.bio {
+    justify-content: center;
+  }
+  .gear {
+    color: var(--muted);
+  }
+  .check {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--fg-2);
+  }
+  .check .grow {
+    display: grid;
+  }
+  .check .hint {
+    font-size: 12px;
+    color: var(--faint);
+  }
+  .check :global(svg) {
+    color: var(--accent);
   }
   .prefs :global(.select) {
     height: var(--h-control-sm);

@@ -439,6 +439,12 @@ export interface AppSettings {
     slow_view_ms: number;
     slow_db_ms: number;
   };
+  /** Remembered bundle passwords (`vault.rs`). */
+  security: {
+    biometric_unlock: boolean;
+    /** Show "remember password" in the password dialog (hidden by default). */
+    offer_remember_password: boolean;
+  };
 }
 
 // ---- image analysis (`ml.rs`)
@@ -724,8 +730,8 @@ export const api = {
   updateSource: (id: number, name: string, root: string, config: Record<string, any> | null, enabled: boolean) =>
     invoke<SourceRow>("update_source", { id, name, root, config, enabled }),
   sourceConfig: (id: number) => invoke<Record<string, any>>("source_config", { id }),
-  unlockBundle: (path: string, password: string, keyfile: string | null, allowNewer = false) =>
-    invoke<BundleSummary>("unlock_bundle", { path, password, keyfile, allowNewer }),
+  unlockBundle: (path: string, password: string, keyfile: string | null, allowNewer = false, remember = false) =>
+    invoke<BundleSummary>("unlock_bundle", { path, password, keyfile, allowNewer, remember }),
   setLock: (password: string, keyfile: string | null) => invoke<BundleSummary>("set_lock", { password, keyfile }),
   removeLock: () => invoke<BundleSummary>("remove_lock"),
   getAppSettings: () => invoke<AppSettings>("get_app_settings"),
@@ -1031,6 +1037,10 @@ export interface RecentBundle {
   path: string;
   /** Whether the bundle is still there. */
   exists: boolean;
+  locked: boolean;
+  /** Bundle id (`info.json`), empty for bundles not yet given one. */
+  id: string;
+  requires_keyfile: boolean;
 }
 
 export interface DirListing {
@@ -1038,6 +1048,36 @@ export interface DirListing {
   parent: string | null;
   entries: { name: string; dir: boolean; size: number }[];
 }
+
+/** What biometrics this device has (`biometric.rs`). */
+export interface BiometricStatus {
+  /** Enrolled and usable now. */
+  available: boolean;
+  /** The platform can have biometrics at all (false on Windows and Linux). */
+  supported: boolean;
+  kind: "face" | "touch" | "optic" | "fingerprint" | "";
+}
+
+/** A bundle whose password is remembered on this device (never the password itself). */
+export interface VaultEntry {
+  id: string;
+  name: string;
+  path: string;
+  keyfile: string | null;
+  saved_ms: number;
+}
+
+/** Bundle passwords remembered on this device (`src-tauri/src/vault.rs`). */
+export const vaultApi = {
+  status: () => invoke<{ biometric: BiometricStatus; entries: VaultEntry[] }>("vault_status"),
+  save: (path: string, password: string, keyfile: string | null) => invoke<VaultEntry>("vault_save", { path, password, keyfile }),
+  change: (id: string, password: string, path: string | null = null, keyfile: string | null = null) =>
+    invoke<VaultEntry>("vault_change", { id, path, password, keyfile }),
+  remove: (id: string) => invoke<void>("vault_remove", { id }),
+  /** Errors: not_saved, biometric_off, biometric_cancelled, biometric_failed, saved_password_wrong. */
+  unlock: (path: string, allowNewer: boolean, reason: string, cancel: string) =>
+    invoke<BundleSummary>("vault_unlock", { path, allowNewer, reason, cancel }),
+};
 
 /** Platform services (`src-tauri/src/platform.rs`). */
 export const platformApi = {

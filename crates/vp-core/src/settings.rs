@@ -526,6 +526,26 @@ pub struct AppSettings {
     pub decoders: DecoderSettings,
     pub export: ExportSettings,
     pub log: LogSettings,
+    pub security: SecuritySettings,
+}
+
+/// Opening locked bundles with passwords remembered on this device (`vault.rs`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SecuritySettings {
+    /// Remembered passwords open their bundles after a biometric check (Face ID, Touch ID,
+    /// fingerprint). Off: they are not used on devices that have biometrics. Devices
+    /// without biometrics use remembered passwords directly.
+    pub biometric_unlock: bool,
+    /// The password dialog offers "remember password" (no biometric check). Hidden by
+    /// default for security; the feature works when this is turned on.
+    pub offer_remember_password: bool,
+}
+
+impl Default for SecuritySettings {
+    fn default() -> Self {
+        Self { biometric_unlock: false, offer_remember_password: false }
+    }
 }
 
 /// The app's log file (`viewport.log` in the config folder), for diagnosing problems.
@@ -602,6 +622,7 @@ impl Default for AppSettings {
             decoders: DecoderSettings::default(),
             export: ExportSettings::default(),
             log: LogSettings::default(),
+            security: SecuritySettings::default(),
         }
     }
 }

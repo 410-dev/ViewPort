@@ -15,7 +15,7 @@ const APP_SETTINGS: &str = "app_settings.json";
 /// stores it. Device state: source ids belong to the bundle, the path to this device.
 const LAST_VIEW: &str = "last_view.json";
 
-fn config_file<R: Runtime>(app: &AppHandle<R>, name: &str) -> Option<PathBuf> {
+pub(crate) fn config_file<R: Runtime>(app: &AppHandle<R>, name: &str) -> Option<PathBuf> {
     app.path().app_config_dir().ok().map(|d| d.join(name))
 }
 

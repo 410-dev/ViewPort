@@ -60,6 +60,14 @@ pub struct BundleInfo {
     /// Present when the workspace is encrypted.
     #[serde(default)]
     pub lock: Option<KdfParams>,
+    /// Stable identifier of this bundle wherever it is copied or moved; per-device data
+    /// (such as a remembered password) is keyed by it. Older bundles get one the first
+    /// time they are opened ([`Bundle::ensure_id`]).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
+    /// Fields this build does not know, kept so rewriting `info.json` does not drop them.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// How a bundle may be used once opened.
@@ -118,6 +126,8 @@ impl Bundle {
             name: name.into(),
             created_ms: now_ms,
             lock: None,
+            id: new_id()?,
+            extra: Default::default(),
         };
         let b = Bundle { root: root.into(), info, mode: OpenMode::Autosave };
         b.write_info()?;
@@ -149,6 +159,16 @@ impl Bundle {
         Ok(Bundle { root: root.into(), info, mode })
     }
 
+    /// Gives a bundle from before ids existed its id, written to `info.json` at once.
+    /// Bundles opened in manual-save mode are never written; they keep an empty id.
+    pub fn ensure_id(&mut self) -> Result<&str> {
+        if self.info.id.is_empty() && self.mode == OpenMode::Autosave {
+            self.info.id = new_id()?;
+            self.write_info()?;
+        }
+        Ok(&self.info.id)
+    }
+
     pub fn write_info(&self) -> Result<()> {
         let path = self.root.join(INFO_FILE);
         let tmp = self.root.join(format!("{INFO_FILE}.tmp"));
@@ -156,6 +176,10 @@ impl Bundle {
         fs::rename(tmp, path)?;
         Ok(())
     }
+}
+
+fn new_id() -> Result<String> {
+    vp_crypto::random_hex(16).map_err(|e| BundleError::Io(std::io::Error::other(e.to_string())))
 }
 
 #[cfg(test)]
@@ -172,6 +196,32 @@ mod tests {
         assert_eq!(b.mode, OpenMode::Autosave);
         assert_eq!(b.info.name, "Library");
         assert!(matches!(Bundle::create(&root, "x", "0.1.0", 1), Err(BundleError::AlreadyExists(_))));
+    }
+
+    #[test]
+    fn ids_are_given_once_and_unknown_fields_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("a");
+        let made = Bundle::create(&root, "A", "0.1.0", 1).unwrap();
+        assert_eq!(made.info.id.len(), 32);
+        assert_ne!(made.info.id, Bundle::create(&dir.path().join("b"), "B", "0.1.0", 1).unwrap().info.id);
+
+        let old = dir.path().join("old");
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join(INFO_FILE), format!(r#"{{"bundle_version": {BUNDLE_FORMAT_VERSION}, "future": [1]}}"#)).unwrap();
+        let mut b = Bundle::open(&old, false).unwrap();
+        assert!(b.info.id.is_empty());
+        let id = b.ensure_id().unwrap().to_string();
+        assert_eq!(id.len(), 32);
+        let again = Bundle::open(&old, false).unwrap();
+        assert_eq!(again.info.id, id);
+        assert_eq!(again.info.extra["future"], serde_json::json!([1]));
+
+        let newer = dir.path().join("newer");
+        fs::create_dir_all(&newer).unwrap();
+        fs::write(newer.join(INFO_FILE), format!(r#"{{"bundle_version": {}}}"#, BUNDLE_FORMAT_VERSION + 1)).unwrap();
+        let mut n = Bundle::open(&newer, true).unwrap();
+        assert_eq!(n.ensure_id().unwrap(), "");
     }
 
     #[test]

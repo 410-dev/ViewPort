@@ -98,6 +98,8 @@ dependencies {
     implementation("androidx.media3:media3-transformer:1.6.1")
     implementation("androidx.media3:media3-effect:1.6.1")
     implementation("androidx.media3:media3-common:1.6.1")
+    // Fingerprint / face check before a remembered bundle password is used.
+    implementation("androidx.biometric:biometric:1.1.0")
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.4")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.0")

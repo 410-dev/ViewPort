@@ -24,6 +24,9 @@ import android.provider.OpenableColumns
 import android.provider.Settings
 import android.view.View
 import androidx.activity.result.ActivityResult
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
+import androidx.fragment.app.FragmentActivity
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -98,6 +101,12 @@ class EditArgs {
 @InvokeArg
 class SystemPickArgs {
   var mode: String = "folder"
+}
+
+@InvokeArg
+class BiometricArgs {
+  var title: String = ""
+  var cancel: String = ""
 }
 
 @InvokeArg
@@ -657,6 +666,56 @@ class ViewPortPlugin(private val activity: Activity) : Plugin(activity) {
       }
       editing = null
       invoke.resolve()
+    }
+  }
+  // ------------------------------------------------------------ biometrics
+
+  private val biometricKinds = BiometricManager.Authenticators.BIOMETRIC_WEAK
+
+  /** Whether a fingerprint (or face) is enrolled and usable now. */
+  @Command
+  fun biometricStatus(invoke: Invoke) {
+    val can = BiometricManager.from(activity).canAuthenticate(biometricKinds)
+    invoke.resolve(JSObject().put("available", can == BiometricManager.BIOMETRIC_SUCCESS))
+  }
+
+  /**
+   * Shows the system biometric prompt. Resolves with result "passed", "cancelled" or
+   * "failed" (too many tries, no hardware, lockout).
+   */
+  @Command
+  fun biometricAuth(invoke: Invoke) {
+    val args = invoke.parseArgs(BiometricArgs::class.java)
+    val host = activity as? FragmentActivity
+      ?: return invoke.resolve(JSObject().put("result", "failed"))
+    activity.runOnUiThread {
+      var done = false
+      fun finish(result: String) {
+        if (done) return
+        done = true
+        invoke.resolve(JSObject().put("result", result))
+      }
+      val prompt = BiometricPrompt(host, ContextCompat.getMainExecutor(activity), object : BiometricPrompt.AuthenticationCallback() {
+        override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) = finish("passed")
+        override fun onAuthenticationError(code: Int, message: CharSequence) {
+          val cancelled = code == BiometricPrompt.ERROR_NEGATIVE_BUTTON ||
+            code == BiometricPrompt.ERROR_USER_CANCELED || code == BiometricPrompt.ERROR_CANCELED
+          finish(if (cancelled) "cancelled" else "failed")
+        }
+        // A finger that is not recognised: the prompt stays up for another try.
+        override fun onAuthenticationFailed() {}
+      })
+      val info = BiometricPrompt.PromptInfo.Builder()
+        .setTitle(args.title.ifEmpty { "ViewPort" })
+        .setNegativeButtonText(args.cancel.ifEmpty { "Cancel" })
+        .setAllowedAuthenticators(biometricKinds)
+        .setConfirmationRequired(false)
+        .build()
+      try {
+        prompt.authenticate(info)
+      } catch (e: Exception) {
+        finish("failed")
+      }
     }
   }
 }

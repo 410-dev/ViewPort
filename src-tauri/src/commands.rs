@@ -20,7 +20,7 @@ fn workspace(state: &AppState) -> CmdResult<Arc<Workspace>> {
     state.workspace.read().unwrap().clone().ok_or_else(|| CmdError::new("no_bundle", "no bundle is open"))
 }
 
-async fn blocking<T: Send + 'static>(f: impl FnOnce() -> CmdResult<T> + Send + 'static) -> CmdResult<T> {
+pub(crate) async fn blocking<T: Send + 'static>(f: impl FnOnce() -> CmdResult<T> + Send + 'static) -> CmdResult<T> {
     tauri::async_runtime::spawn_blocking(f).await.map_err(|e| CmdError::new("internal", e))?
 }
 
@@ -48,7 +48,7 @@ fn retire(ws: Arc<Workspace>) -> bool {
     false
 }
 
-fn install(app: &AppHandle, state: &AppState, ws: Workspace) -> CmdResult<BundleSummary> {
+pub(crate) fn install(app: &AppHandle, state: &AppState, ws: Workspace) -> CmdResult<BundleSummary> {
     let summary = ws.summary();
     let ws = Arc::new(ws);
     ws.start_background(state.drivers.clone());
@@ -172,6 +172,7 @@ pub async fn open_bundle(app: AppHandle, path: String, allow_newer: bool) -> Cmd
 }
 
 /// Opens a locked bundle with its password (and key file, if it was locked with one).
+/// With `remember`, the password is kept on this device for the next time (`vault.rs`).
 #[tauri::command]
 pub async fn unlock_bundle(
     app: AppHandle,
@@ -179,10 +180,20 @@ pub async fn unlock_bundle(
     password: String,
     keyfile: Option<String>,
     allow_newer: bool,
+    remember: Option<bool>,
 ) -> CmdResult<BundleSummary> {
+    let handle = app.clone();
     let ws = blocking(move || {
-        let kf = keyfile.filter(|k| !k.is_empty()).map(std::fs::read).transpose()?;
-        Workspace::open_locked(&PathBuf::from(path), allow_newer, &password, kf.as_deref())
+        let kf = keyfile.as_deref().filter(|k| !k.is_empty()).map(std::fs::read).transpose()?;
+        let dir = PathBuf::from(path);
+        let ws = Workspace::open_locked(&dir, allow_newer, &password, kf.as_deref())?;
+        if remember == Some(true) {
+            let name = ws.name.read().unwrap().clone();
+            if let Err(e) = crate::vault::remember(&handle, &ws.bundle.info.id, &name, &dir, &password, keyfile.as_deref()) {
+                crate::applog::warn("vault", format!("remembering the bundle password failed: {}", e.message));
+            }
+        }
+        Ok(ws)
     })
     .await?;
     install(&app, &app.state::<AppState>(), ws)
@@ -272,6 +283,10 @@ pub struct RecentBundle {
     pub path: String,
     /// Whether the bundle folder (or archive) is still there.
     pub exists: bool,
+    /// Locked bundles (folders only): its id, whether a key file is needed too.
+    pub locked: bool,
+    pub id: String,
+    pub requires_keyfile: bool,
 }
 
 /// Recently opened bundles, newest first. Existence is checked off the UI thread because
@@ -279,7 +294,20 @@ pub struct RecentBundle {
 #[tauri::command]
 pub async fn recent_bundles(app: AppHandle) -> Vec<RecentBundle> {
     tauri::async_runtime::spawn_blocking(move || {
-        recent::list(&app).into_iter().map(|path| RecentBundle { exists: Path::new(&path).exists(), path }).collect()
+        recent::list(&app)
+            .into_iter()
+            .map(|path| {
+                let info = vp_bundle::Bundle::read_info(Path::new(&path)).ok();
+                let lock = info.as_ref().and_then(|i| i.lock.as_ref());
+                RecentBundle {
+                    exists: Path::new(&path).exists(),
+                    locked: lock.is_some(),
+                    id: info.as_ref().map(|i| i.id.clone()).unwrap_or_default(),
+                    requires_keyfile: lock.is_some_and(|l| l.requires_keyfile),
+                    path,
+                }
+            })
+            .collect()
     })
     .await
     .unwrap_or_default()
