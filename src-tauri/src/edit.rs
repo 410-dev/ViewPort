@@ -46,6 +46,17 @@ pub async fn edit_support(app: AppHandle) -> EditSupport {
     EditSupport { image: true, video }
 }
 
+/// Frames per second of video `id` (probed now), for stepping one frame in the cut
+/// editor; None when unknown.
+#[tauri::command]
+pub async fn video_frame_rate(app: AppHandle, id: i64) -> CmdResult<Option<f64>> {
+    let ws = app.state::<AppState>().workspace.read().unwrap().clone().ok_or_else(|| CmdError::new("no_bundle", "no bundle is open"))?;
+    let registry = app.state::<AppState>().drivers.clone();
+    tauri::async_runtime::spawn_blocking(move || Ok(ws.probe_video(&registry, id)?.and_then(|p| p.frame_rate)))
+        .await
+        .map_err(|e| CmdError::new("internal", e))?
+}
+
 /// Applies `spec` to item `id` and saves it as `mode` says. Returns the id of the item
 /// holding the result (a new one for a copy, the same one when overwritten).
 #[tauri::command]
@@ -218,8 +229,27 @@ fn edit_video(
     if let Some(ff) = &ff {
         let hw = crate::recent::cached_app_settings().hardware;
         let encoders = if hw.video_encode { hw.encoders.clone() } else { Vec::new() };
-        let mut make_input = || ws.media_input(registry, loc).map_err(|e| vp_media::MediaError::Failed(e.message));
-        if let Some(shard) = ws.shard_for(loc.source_id)? {
+        let shard = ws.shard_for(loc.source_id)?;
+        // Moved blocks are read by seeking, once per block: a video that can only be
+        // streamed is copied to a temporary file first. Never one from a shard, which must
+        // not land on the disk unencrypted.
+        let local_copy = if spec.reordered() && driver.local_path(&loc.rel_path).is_none() {
+            if shard.is_some() {
+                return Err(CmdError::new("unsupported", "blocks of a video in a shard can be cut and deleted, not moved"));
+            }
+            let tmp = Temp(Some(std::env::temp_dir().join(format!("viewport-edit-src-{id}-{}.{ext}", now_ms()))));
+            let mut reader = vp_driver::ReaderStream::new(driver.open(&loc.rel_path)?);
+            let mut file = std::fs::File::create(tmp.0.as_ref().unwrap())?;
+            std::io::copy(&mut reader, &mut file)?;
+            Some(tmp)
+        } else {
+            None
+        };
+        let mut make_input = || match &local_copy {
+            Some(tmp) => Ok(vp_media::Input::File(tmp.0.clone().unwrap())),
+            None => ws.media_input(registry, loc).map_err(|e| vp_media::MediaError::Failed(e.message)),
+        };
+        if let Some(shard) = shard {
             // Streamed straight into the shard: never on disk unencrypted. A file replaced
             // there stays readable until the new one is finished.
             if !shard.is_writable() {
@@ -289,8 +319,7 @@ fn edit_video(
             let db = ws.write_db.lock().unwrap();
             db.media_replaced(id, entry.size, entry.modified_ms.unwrap_or_else(now_ms), None, None)?;
             let duration = probe.duration_ms.unwrap_or(i64::MAX);
-            let (a, b) = spec.trim.map_or((0, duration), |t| (t.start_ms, t.end_ms.min(duration)));
-            db.remap_loop_segments(id, a, b, spec.speed)?;
+            db.remap_loop_segments_with(id, |a, b| spec.map_span(a, b, duration))?;
             drop(db);
             crate::media::forget(ws, id);
             Ok(id)

@@ -36,6 +36,8 @@ pub struct OsProbe {
     pub audio_codec: Option<String>,
     /// Whether this device can decode every stream in a container the WebView reads.
     pub playable: bool,
+    #[serde(default)]
+    pub frame_rate: Option<f64>,
 }
 
 impl OsProbe {
@@ -47,6 +49,7 @@ impl OsProbe {
             height: self.height,
             video_codec: self.video_codec.clone(),
             audio_codec: self.audio_codec.clone(),
+            frame_rate: self.frame_rate,
         }
     }
 }
@@ -182,6 +185,9 @@ mod imp {
             "input": input, "output": output, "rotateDeg": spec.rotate_deg,
             "cropX": c.x, "cropY": c.y, "cropW": c.w, "cropH": c.h,
             "startMs": spec.trim.map_or(0, |t| t.start_ms), "endMs": spec.trim.map_or(-1, |t| t.end_ms),
+            // Blocks of the cut editor, joined in this order (empty: `startMs`/`endMs`).
+            "cutStarts": spec.cuts.iter().map(|t| t.start_ms).collect::<Vec<_>>(),
+            "cutEnds": spec.cuts.iter().map(|t| t.end_ms).collect::<Vec<_>>(),
             "speed": spec.speed,
         });
         let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));

@@ -764,6 +764,8 @@ pub struct ViewerSettings {
     /// The editor's video follows a dragged cut grip or playhead frame by frame (off: it
     /// shows the frame only when the drag ends, for slow devices).
     pub edit_live_scrub: bool,
+    /// Frames per second the cut editor steps by when a video does not say.
+    pub edit_fallback_fps: f64,
 }
 
 impl Default for ViewerSettings {
@@ -799,6 +801,7 @@ impl Default for ViewerSettings {
             edit_quality: 92,
             edit_speeds: vec![0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 4.0],
             edit_live_scrub: true,
+            edit_fallback_fps: 30.0,
         }
     }
 }

@@ -10,7 +10,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
-use vp_core::edit::EditSpec;
+use vp_core::edit::{EditSpec, Trim};
 
 #[derive(Debug, thiserror::Error)]
 pub enum MediaError {
@@ -52,6 +52,9 @@ pub struct Probe {
     pub height: Option<u32>,
     pub video_codec: Option<String>,
     pub audio_codec: Option<String>,
+    /// Frames per second of the video stream, when known.
+    #[serde(default)]
+    pub frame_rate: Option<f64>,
 }
 
 impl Probe {
@@ -551,13 +554,85 @@ pub fn edit_filters(spec: &EditSpec) -> (String, String) {
     (v.join(","), if a.is_empty() { "anull".into() } else { a.join(",") })
 }
 
+/// Inputs and filtergraph that join several spans of one video (`EditSpec::cuts`) and
+/// then apply `vf`/`af`. A file is opened once per span, seeking to it, so the spans may
+/// play in any order; a stream is read once and its spans cut out with `trim` (callers
+/// keep a stream's spans in order, or the moved ones would have to wait in memory).
+fn joined_spans(input: &Input, spans: &[Trim], has_audio: bool, vf: &str, af: &str) -> (Vec<String>, String) {
+    let n = spans.len();
+    let mut inputs = Vec::new();
+    let mut graph = Vec::new();
+    let mut pads = String::new();
+    match input {
+        Input::File(_) => {
+            for (i, t) in spans.iter().enumerate() {
+                inputs.extend(["-ss".into(), secs(t.start_ms), "-t".into(), secs(t.end_ms - t.start_ms), "-i".into(), input.arg()]);
+                graph.push(format!("[{i}:v:0]setpts=PTS-STARTPTS[v{i}]"));
+                if has_audio {
+                    graph.push(format!("[{i}:a:0]asetpts=PTS-STARTPTS[a{i}]"));
+                }
+            }
+        }
+        Input::Stream(_) => {
+            inputs.extend(["-i".into(), input.arg()]);
+            let outs: String = (0..n).map(|i| format!("[s{i}]")).collect();
+            graph.push(format!("[0:v:0]split={n}{outs}"));
+            if has_audio {
+                let outs: String = (0..n).map(|i| format!("[r{i}]")).collect();
+                graph.push(format!("[0:a:0]asplit={n}{outs}"));
+            }
+            for (i, t) in spans.iter().enumerate() {
+                let (a, b) = (secs(t.start_ms), secs(t.end_ms));
+                graph.push(format!("[s{i}]trim=start={a}:end={b},setpts=PTS-STARTPTS[v{i}]"));
+                if has_audio {
+                    graph.push(format!("[r{i}]atrim=start={a}:end={b},asetpts=PTS-STARTPTS[a{i}]"));
+                }
+            }
+        }
+    }
+    for i in 0..n {
+        pads.push_str(&format!("[v{i}]"));
+        if has_audio {
+            pads.push_str(&format!("[a{i}]"));
+        }
+    }
+    let a = if has_audio { 1 } else { 0 };
+    let (cv, ca) = if has_audio { ("[cv]", "[ca]") } else { ("[cv]", "") };
+    graph.push(format!("{pads}concat=n={n}:v=1:a={a}{cv}{ca}"));
+    graph.push(format!("[cv]{vf}[vo]"));
+    if has_audio {
+        graph.push(format!("[ca]{af}[ao]"));
+    }
+    (inputs, graph.join(";"))
+}
+
 impl Ffmpeg {
-    fn edit_args(input: &Input, spec: &EditSpec, has_audio: bool, encoder: &str, progress_to: &str) -> Vec<String> {
+    fn edit_args(input: &Input, spec: &EditSpec, probe: &Probe, encoder: &str, progress_to: &str) -> Vec<String> {
+        let has_audio = probe.audio_codec.is_some();
         let mut args: Vec<String> = ["-v", "error", "-y", "-nostats", "-progress", progress_to].map(String::from).to_vec();
-        if let Some(t) = spec.trim {
+        let (vf, af) = edit_filters(spec);
+        let spans = spec.spans(probe.duration_ms.unwrap_or(i64::MAX));
+        if spec.cuts.len() > 1 && spans.len() > 1 {
+            let (inputs, graph) = joined_spans(input, &spans, has_audio, &vf, &af);
+            args.extend(inputs);
+            args.extend(["-filter_complex".into(), graph, "-map".into(), "[vo]".into()]);
+            if has_audio {
+                args.extend(["-map".into(), "[ao]".into()]);
+            }
+            args.extend(["-c:v".into(), encoder.into()]);
+            match encoder {
+                "libx264" => args.extend(["-preset", "medium", "-crf", "18"].map(String::from)),
+                _ => args.extend(["-b:v", "12M"].map(String::from)),
+            }
+            if has_audio {
+                args.extend(["-c:a".into(), "aac".into(), "-b:a".into(), "192k".into()]);
+            }
+            args.extend(["-map_metadata", "0", "-metadata:s:v:0", "rotate=0"].map(String::from));
+            return args;
+        }
+        if let Some(t) = spec.single_span() {
             args.extend(["-ss".into(), secs(t.start_ms), "-t".into(), secs(t.end_ms - t.start_ms)]);
         }
-        let (vf, af) = edit_filters(spec);
         args.extend(["-i".into(), input.arg(), "-map".into(), "0:v:0".into(), "-map".into(), "0:a:0?".into()]);
         args.extend(["-vf".into(), vf, "-c:v".into(), encoder.into()]);
         match encoder {
@@ -591,7 +666,7 @@ impl Ffmpeg {
         let mut last_err = None;
         for enc in hw_encoders.iter().map(String::as_str).filter(|e| *e != "libx264").chain(["libx264"]) {
             let input = make_input()?;
-            let mut args = Self::edit_args(&input, spec, probe.audio_codec.is_some(), enc, "pipe:1");
+            let mut args = Self::edit_args(&input, spec, probe, enc, "pipe:1");
             if format != "matroska" {
                 args.extend(["-movflags", "+faststart"].map(String::from));
             }
@@ -629,7 +704,7 @@ impl Ffmpeg {
         let mut last_err = None;
         for enc in hw_encoders.iter().map(String::as_str).filter(|e| *e != "libx264").chain(["libx264"]) {
             let input = make_input()?;
-            let mut args = Self::edit_args(&input, spec, probe.audio_codec.is_some(), enc, "pipe:2");
+            let mut args = Self::edit_args(&input, spec, probe, enc, "pipe:2");
             if format != "matroska" {
                 args.extend(["-movflags", "frag_keyframe+empty_moov+default_base_moof"].map(String::from));
             }
@@ -674,6 +749,8 @@ pub fn parse_probe(json: &[u8]) -> Result<Probe> {
         width: Option<u32>,
         height: Option<u32>,
         duration: Option<String>,
+        avg_frame_rate: Option<String>,
+        r_frame_rate: Option<String>,
         #[serde(default)]
         disposition: Disposition,
         #[serde(default)]
@@ -702,7 +779,15 @@ pub fn parse_probe(json: &[u8]) -> Result<Probe> {
         height: if rotated { w } else { h },
         video_codec: video.and_then(|v| v.codec_name.clone()),
         audio_codec: audio.and_then(|a| a.codec_name.clone()),
+        frame_rate: video.and_then(|v| rate(&v.avg_frame_rate).or_else(|| rate(&v.r_frame_rate))),
     })
+}
+
+/// `30000/1001` → 29.97; None for `0/0` and other nonsense.
+fn rate(r: &Option<String>) -> Option<f64> {
+    let (n, d) = r.as_deref()?.split_once('/')?;
+    let v = n.trim().parse::<f64>().ok()? / d.trim().parse::<f64>().ok()?;
+    (v.is_finite() && (1.0..=1000.0).contains(&v)).then_some(v)
 }
 
 #[cfg(test)]
@@ -713,7 +798,7 @@ mod tests {
     fn parses_probe_json() {
         let json = br#"{"streams":[
             {"codec_type":"video","codec_name":"h264","width":1920,"height":1080,
-             "side_data_list":[{"rotation":-90}]},
+             "avg_frame_rate":"30000/1001","r_frame_rate":"0/0","side_data_list":[{"rotation":-90}]},
             {"codec_type":"audio","codec_name":"aac"},
             {"codec_type":"video","codec_name":"mjpeg","disposition":{"attached_pic":1}}],
             "format":{"format_name":"mov,mp4,m4a,3gp,3g2,mj2","duration":"12.345000"}}"#;
@@ -721,6 +806,7 @@ mod tests {
         assert_eq!(p.duration_ms, Some(12_345));
         assert_eq!((p.width, p.height), (Some(1080), Some(1920)), "rotation swaps dimensions");
         assert_eq!(p.video_codec.as_deref(), Some("h264"));
+        assert!(p.frame_rate.is_some_and(|r| (r - 29.97).abs() < 0.01));
         assert!(p.webview_compatible("mp4"));
         assert!(p.plan().is_remux());
     }
@@ -836,6 +922,42 @@ mod tests {
         let e = ff.probe(Input::File(edited)).unwrap();
         assert_eq!((e.width, e.height), (Some(240), Some(160)), "{e:?}");
         assert!(e.duration_ms.is_some_and(|d| (400..=700).contains(&d)), "{e:?}");
+        // Blocks joined out of order: 1.0-1.5 s, then 0.0-0.3 s.
+        let cuts = EditSpec { cuts: vec![Trim { start_ms: 1000, end_ms: 1500 }, Trim { start_ms: 0, end_ms: 300 }], ..Default::default() };
+        let joined = tmp.join("joined.mp4");
+        ff.edit(&mut || Ok(Input::File(src.clone())), &joined, "mp4", &cuts, &probe, &[], &mut |_| {}, &AtomicBool::new(false)).unwrap();
+        let j = ff.probe(Input::File(joined)).unwrap();
+        assert!(j.duration_ms.is_some_and(|d| (700..=950).contains(&d)), "{j:?}");
+        // The same from a stream, in order.
+        let ordered = EditSpec { cuts: vec![Trim { start_ms: 0, end_ms: 300 }, Trim { start_ms: 1000, end_ms: 1500 }], ..Default::default() };
+        let mut got = None;
+        ff.edit_to_writer(
+            &mut || Ok(Input::Stream(Box::new(std::fs::File::open(&src).unwrap()))),
+            &mut || Ok(Vec::<u8>::new()),
+            &mut |v| {
+                got = Some(v);
+                Ok(())
+            },
+            "matroska",
+            &ordered,
+            &probe,
+            &[],
+            &mut |_| {},
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let streamed_cuts = tmp.join("joined-stream.mkv");
+        std::fs::write(&streamed_cuts, got.expect("committed")).unwrap();
+        // Streamed Matroska carries no duration; count the frames instead (10 fps).
+        let j = ff.probe(Input::File(streamed_cuts.clone())).unwrap();
+        assert_eq!(j.video_codec.as_deref(), Some("h264"), "{j:?}");
+        let counted = command(&ff.ffprobe)
+            .args(["-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0"])
+            .arg(&streamed_cuts)
+            .output()
+            .unwrap();
+        let frames: i64 = String::from_utf8_lossy(&counted.stdout).trim().parse().unwrap();
+        assert!((7..=9).contains(&frames), "{frames} frames");
         let free = EditSpec { rotate_deg: 15.0, crop: Some(Crop { x: 0.2, y: 0.2, w: 0.6, h: 0.6 }), ..Default::default() };
         let mut got = None;
         ff.edit_to_writer(

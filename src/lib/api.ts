@@ -131,6 +131,8 @@ export interface EditSpec {
   /** Kept part, in fractions of the turned frame's bounding box. */
   crop: { x: number; y: number; w: number; h: number } | null;
   trim: { start_ms: number; end_ms: number } | null;
+  /** Kept spans of the original in playing order (the cut editor's blocks); non-empty, replaces `trim`. */
+  cuts: { start_ms: number; end_ms: number }[];
   speed: number;
 }
 export type SaveMode = "copy" | "overwrite";
@@ -414,6 +416,7 @@ export interface AppSettings {
     edit_quality: number;
     edit_speeds: number[];
     edit_live_scrub: boolean;
+    edit_fallback_fps: number;
   };
   ml: {
     runtime_path: string;
@@ -756,6 +759,8 @@ export const api = {
   saveVideoFrame: (id: number, atMs: number) => invoke<number>("save_video_frame", { id, atMs }),
   /** Edits item `id` and saves it as a copy beside it or over it; returns the id holding the result. */
   editMedia: (id: number, spec: EditSpec, mode: SaveMode) => invoke<number>("edit_media", { id, spec, mode }),
+  /** Frames per second of a video (null: unknown). */
+  videoFrameRate: (id: number) => invoke<number | null>("video_frame_rate", { id }),
   /** Which kinds can be edited here (videos need FFmpeg, or Android's media framework). */
   editSupport: () => invoke<{ image: boolean; video: boolean }>("edit_support"),
 

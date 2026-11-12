@@ -40,6 +40,7 @@ import androidx.media3.effect.ScaleAndRotateTransformation
 import androidx.media3.effect.SpeedChangeEffect
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.EditedMediaItem
+import androidx.media3.transformer.EditedMediaItemSequence
 import androidx.media3.transformer.Effects
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
@@ -95,6 +96,9 @@ class EditArgs {
   /** Kept span in ms; endMs < 0 keeps the rest. */
   var startMs: Long = 0
   var endMs: Long = -1
+  /** Blocks of the cut editor (ms of the original), joined in this order; empty: startMs/endMs. */
+  var cutStarts: LongArray = LongArray(0)
+  var cutEnds: LongArray = LongArray(0)
   var speed: Double = 1.0
 }
 
@@ -543,6 +547,14 @@ class ViewPortPlugin(private val activity: Activity) : Plugin(activity) {
     video?.getString(MediaFormat.KEY_MIME)?.let { o.put("videoCodec", codecName(it)) }
     audio?.getString(MediaFormat.KEY_MIME)?.let { o.put("audioCodec", codecName(it)) }
     o.put("playable", playable)
+    // Frames per second (the cut editor steps by one frame).
+    video?.let { f ->
+      val fps = try {
+        if (!f.containsKey(MediaFormat.KEY_FRAME_RATE)) null
+        else try { f.getInteger(MediaFormat.KEY_FRAME_RATE).toDouble() } catch (_: ClassCastException) { f.getFloat(MediaFormat.KEY_FRAME_RATE).toDouble() }
+      } catch (_: Exception) { null }
+      if (fps != null && fps >= 1 && fps <= 1000) o.put("frameRate", fps)
+    }
     return o
   }
 
@@ -593,15 +605,22 @@ class ViewPortPlugin(private val activity: Activity) : Plugin(activity) {
     activity.runOnUiThread {
       try {
         if (transformer != null) return@runOnUiThread invoke.reject("another edit is running")
-        val clip = MediaItem.ClippingConfiguration.Builder().setStartPositionMs(a.startMs)
-        if (a.endMs >= 0) clip.setEndPositionMs(a.endMs)
-        val item = MediaItem.Builder().setUri(Uri.fromFile(File(a.input))).setClippingConfiguration(clip.build()).build()
-        val video = mutableListOf<androidx.media3.common.Effect>()
-        val audio = mutableListOf<androidx.media3.common.audio.AudioProcessor>()
-        if (Math.abs(a.speed - 1.0) > 1e-6) {
-          video.add(SpeedChangeEffect(a.speed.toFloat()))
-          audio.add(SonicAudioProcessor().apply { setSpeed(a.speed.toFloat()) })
+        val spans = if (a.cutStarts.isNotEmpty() && a.cutStarts.size == a.cutEnds.size) {
+          a.cutStarts.indices.map { a.cutStarts[it] to a.cutEnds[it] }
+        } else {
+          listOf(a.startMs to a.endMs)
         }
+        val uri = Uri.fromFile(File(a.input))
+        val items = spans.map { (start, end) ->
+          val clip = MediaItem.ClippingConfiguration.Builder().setStartPositionMs(start)
+          if (end >= 0) clip.setEndPositionMs(end)
+          MediaItem.Builder().setUri(uri).setClippingConfiguration(clip.build()).build()
+        }
+        val video = mutableListOf<androidx.media3.common.Effect>()
+        if (Math.abs(a.speed - 1.0) > 1e-6) video.add(SpeedChangeEffect(a.speed.toFloat()))
+        // Audio processors keep state: one per block.
+        fun audio(): List<androidx.media3.common.audio.AudioProcessor> =
+          if (Math.abs(a.speed - 1.0) > 1e-6) listOf(SonicAudioProcessor().apply { setSpeed(a.speed.toFloat()) }) else emptyList()
         val turn = ((a.rotateDeg % 360) + 360) % 360
         if (turn > 1e-6) {
           // Media3 turns counter-clockwise and grows the frame to fit the turned picture.
@@ -615,7 +634,9 @@ class ViewPortPlugin(private val activity: Activity) : Plugin(activity) {
           val b = (1 - (a.cropY + a.cropH) * 2).toFloat()
           video.add(Crop(l, r, b, t))
         }
-        val edited = EditedMediaItem.Builder(item).setEffects(Effects(audio, video)).build()
+        // Every block gets the same effects; the sequence plays them one after another.
+        val edited = items.map { EditedMediaItem.Builder(it).setEffects(Effects(audio(), video.toList())).build() }
+        val composition = Composition.Builder(listOf(EditedMediaItemSequence(edited))).build()
         val t = Transformer.Builder(activity)
           .setVideoMimeType(MimeTypes.VIDEO_H264)
           .setAudioMimeType(MimeTypes.AUDIO_AAC)
@@ -636,7 +657,7 @@ class ViewPortPlugin(private val activity: Activity) : Plugin(activity) {
           .build()
         transformer = t
         editing = invoke to a.output
-        t.start(edited, a.output)
+        t.start(composition, a.output)
       } catch (e: Exception) {
         transformer = null
         editing = null

@@ -379,6 +379,7 @@ export const SECTIONS: Section[] = [
           { kind: "number", ...app({ path: "viewer.frame_quality", label: "set.frameQuality", help: "set.frameQuality.help" }), min: 1, max: 100, step: 1 },
           { kind: "number", ...app({ path: "viewer.edit_quality", label: "set.editQuality", help: "set.editQuality.help" }), min: 1, max: 100, step: 1 },
           { kind: "toggle", ...app({ path: "viewer.edit_live_scrub", label: "set.editLiveScrub", help: "set.editLiveScrub.help" }) },
+          { kind: "number", ...app({ path: "viewer.edit_fallback_fps", label: "set.editFallbackFps", help: "set.editFallbackFps.help" }), min: 1, max: 240, step: 1 },
         ],
       },
       {

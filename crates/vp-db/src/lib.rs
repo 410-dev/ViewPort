@@ -527,14 +527,20 @@ impl Db {
     /// Moves item `id`'s loop segments onto the timeline of its edited video, which keeps
     /// `start_ms..end_ms` of the old one played at `speed`. Segments cut away go.
     pub fn remap_loop_segments(&self, id: i64, start_ms: i64, end_ms: i64, speed: f64) -> Result<()> {
+        let to = |t: i64| ((t.clamp(start_ms, end_ms) - start_ms) as f64 / speed).round() as i64;
+        self.remap_loop_segments_with(id, |a, b| Some((to(a), to(b))))
+    }
+
+    /// Moves item `id`'s loop segments with `map` (old span → new span); a segment it maps
+    /// to nothing or to an empty span is deleted.
+    pub fn remap_loop_segments_with(&self, id: i64, map: impl Fn(i64, i64) -> Option<(i64, i64)>) -> Result<()> {
         let segs: Vec<(i64, i64, i64)> = {
             let mut stmt = self.conn.prepare("SELECT id, start_ms, end_ms FROM loop_segment WHERE media_id = ?1")?;
             stmt.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<rusqlite::Result<_>>()?
         };
-        let to = |t: i64| ((t.clamp(start_ms, end_ms) - start_ms) as f64 / speed).round() as i64;
         self.batch(|db| {
             for (seg, a, b) in segs {
-                let (a, b) = (to(a), to(b));
+                let (a, b) = map(a, b).unwrap_or((0, 0));
                 if b > a {
                     db.conn.execute("UPDATE loop_segment SET start_ms = ?2, end_ms = ?3 WHERE id = ?1", params![seg, a, b])?;
                 } else {

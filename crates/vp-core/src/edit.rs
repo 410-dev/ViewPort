@@ -22,13 +22,17 @@ pub struct EditSpec {
     pub crop: Option<Crop>,
     /// Kept span of a video, in milliseconds of the original.
     pub trim: Option<Trim>,
+    /// Kept spans of a video in the order they play, in milliseconds of the original
+    /// (the cut editor's blocks). Non-empty, it replaces `trim`; the spans are joined, so
+    /// the result is as long as their sum.
+    pub cuts: Vec<Trim>,
     /// Playback speed of a video (2 = twice as fast).
     pub speed: f64,
 }
 
 impl Default for EditSpec {
     fn default() -> Self {
-        Self { rotate_deg: 0.0, expand: false, crop: None, trim: None, speed: 1.0 }
+        Self { rotate_deg: 0.0, expand: false, crop: None, trim: None, cuts: Vec::new(), speed: 1.0 }
     }
 }
 
@@ -59,6 +63,9 @@ pub struct EditGeometry {
     pub h: u32,
 }
 
+/// Most cuts (blocks) one edit may join.
+pub const MAX_CUTS: usize = 500;
+
 /// Smallest and largest speed accepted.
 pub const SPEED_RANGE: (f64, f64) = (0.1, 16.0);
 
@@ -78,6 +85,7 @@ impl EditSpec {
         self.quarter_turns() == Some(0)
             && self.crop.is_none_or(|c| c.x <= 0.0 && c.y <= 0.0 && c.w >= 1.0 && c.h >= 1.0)
             && self.trim.is_none()
+            && self.cuts.is_empty()
             && (self.speed - 1.0).abs() < 1e-9
     }
 
@@ -98,17 +106,20 @@ impl EditSpec {
                 return Err("crop".into());
             }
         }
-        if duration_ms.is_none() && (self.trim.is_some() || (self.speed - 1.0).abs() > 1e-9) {
+        if duration_ms.is_none() && (self.trim.is_some() || !self.cuts.is_empty() || (self.speed - 1.0).abs() > 1e-9) {
             return Err("cut and speed are for videos".into());
         }
         if !(self.speed.is_finite() && self.speed >= SPEED_RANGE.0 && self.speed <= SPEED_RANGE.1) {
             return Err("speed".into());
         }
-        if let Some(t) = self.trim {
-            let end = duration_ms.unwrap_or(i64::MAX);
+        let end = duration_ms.unwrap_or(i64::MAX);
+        for t in self.trim.iter().chain(&self.cuts) {
             if t.start_ms < 0 || t.end_ms <= t.start_ms || (end > 0 && t.start_ms >= end) {
                 return Err("cut".into());
             }
+        }
+        if self.cuts.len() > MAX_CUTS {
+            return Err("too many cuts".into());
         }
         Ok(())
     }
@@ -181,10 +192,55 @@ impl EditSpec {
         Some(((ox - nw / 2.0) / gw, (oy - nh / 2.0) / gh, nw / gw, nh / gh))
     }
 
+    /// The spans of the original that make up the result, in playing order, for a video
+    /// of `duration_ms` (each clamped to it; empty ones dropped).
+    pub fn spans(&self, duration_ms: i64) -> Vec<Trim> {
+        let list: Vec<Trim> = if !self.cuts.is_empty() {
+            self.cuts.clone()
+        } else {
+            vec![self.trim.unwrap_or(Trim { start_ms: 0, end_ms: duration_ms })]
+        };
+        list.into_iter()
+            .map(|t| Trim { start_ms: t.start_ms.max(0), end_ms: t.end_ms.min(duration_ms) })
+            .filter(|t| t.end_ms > t.start_ms)
+            .collect()
+    }
+
+    /// The single kept span when the result is one span of the original (`trim`, or one
+    /// cut); None when it is the whole video or several spans joined.
+    pub fn single_span(&self) -> Option<Trim> {
+        match self.cuts.as_slice() {
+            [] => self.trim,
+            [one] => Some(*one),
+            _ => None,
+        }
+    }
+
+    /// Whether the spans play out of the original's order (a block was moved).
+    pub fn reordered(&self) -> bool {
+        self.cuts.windows(2).any(|w| w[1].start_ms < w[0].end_ms)
+    }
+
     /// Length of the result in milliseconds for a video of `duration_ms`.
     pub fn output_duration_ms(&self, duration_ms: i64) -> i64 {
-        let (a, b) = self.trim.map_or((0, duration_ms), |t| (t.start_ms, t.end_ms.min(duration_ms)));
-        ((b - a).max(0) as f64 / self.speed).round() as i64
+        let kept: i64 = self.spans(duration_ms).iter().map(|t| t.end_ms - t.start_ms).sum();
+        (kept as f64 / self.speed).round() as i64
+    }
+
+    /// Where a span `a..b` of the original lands in the result (ms), for a video of
+    /// `duration_ms`: the first kept span it overlaps, clipped to it; None when all of it
+    /// is cut away.
+    pub fn map_span(&self, a: i64, b: i64, duration_ms: i64) -> Option<(i64, i64)> {
+        let mut offset = 0;
+        for t in self.spans(duration_ms) {
+            let (x, y) = (a.max(t.start_ms), b.min(t.end_ms));
+            if y > x {
+                let to = |v: i64| ((offset + v - t.start_ms) as f64 / self.speed).round() as i64;
+                return Some((to(x), to(y)));
+            }
+            offset += t.end_ms - t.start_ms;
+        }
+        None
     }
 }
 
@@ -261,6 +317,28 @@ mod tests {
         assert!(spec.map_box(400, 300, (0.1, 0.1, 0.1, 0.1)).is_none());
         let (x, ..) = spec.map_box(400, 300, (0.6, 0.1, 0.1, 0.1)).unwrap();
         assert!((x - 0.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn cuts_join_in_their_order() {
+        let t = |a, b| Trim { start_ms: a, end_ms: b };
+        let spec = EditSpec { cuts: vec![t(6000, 8000), t(1000, 2000), t(9000, 20_000)], ..Default::default() };
+        assert!(spec.validate(Some(10_000)).is_ok());
+        assert!(spec.reordered());
+        assert_eq!(spec.spans(10_000), vec![t(6000, 8000), t(1000, 2000), t(9000, 10_000)]);
+        assert_eq!(spec.output_duration_ms(10_000), 4000);
+        assert!(!spec.is_identity());
+        assert_eq!(spec.single_span(), None);
+        // A loop segment over the second block starts after the first block.
+        assert_eq!(spec.map_span(1500, 3000, 10_000), Some((2500, 3000)));
+        assert_eq!(spec.map_span(3000, 5000, 10_000), None);
+        let fast = EditSpec { speed: 2.0, ..spec.clone() };
+        assert_eq!(fast.map_span(6000, 7000, 10_000), Some((0, 500)));
+        let ordered = EditSpec { cuts: vec![t(0, 1000), t(1000, 1033), t(5000, 6000)], ..Default::default() };
+        assert!(!ordered.reordered());
+        assert_eq!(EditSpec { cuts: vec![t(0, 500)], ..Default::default() }.single_span(), Some(t(0, 500)));
+        assert!(EditSpec { cuts: vec![t(500, 500)], ..Default::default() }.validate(Some(10_000)).is_err());
+        assert!(EditSpec { cuts: vec![t(0, 500)], ..Default::default() }.validate(None).is_err());
     }
 
     #[test]

@@ -63,6 +63,10 @@
     archive: "M4 5h16v4H4zM5 9v10h14V9M10 13h4",
     fingerprint:
       "M12 11v3a8 8 0 0 1-1.5 4.7M8.5 7.6A5 5 0 0 1 17 11v1.5M7 11a5 5 0 0 1 .4-2M16.8 16a12 12 0 0 1-.9 3M4 9.5a8.5 8.5 0 0 1 15.4-3.6M20 11v1a16 16 0 0 1-.2 2.5M9 11a3 3 0 0 1 6 0v2a12 12 0 0 1-1.4 5.6M6.5 19.5A11 11 0 0 0 8 14v-3M4 14h.01",
+    blockLeft: "M13 6h8v12h-8zM10 12H3M6 9l-3 3 3 3",
+    blockRight: "M3 6h8v12H3zM14 12h7M18 9l3 3-3 3",
+    cutBefore: "M10 4v16M10 4h4M10 20h4M3 9l4 4M7 9l-4 4M17 12h4",
+    cutAfter: "M14 4v16M14 4h-4M14 20h-4M17 9l4 4M21 9l-4 4M3 12h4",
     key: "M14 7a4 4 0 1 1-3.9 5H7l-1 2H4v-3l6.1-.1A4 4 0 0 1 14 7zM15 10h.01",
     monitor: "M3 5h18v11H3zM8 20h8M12 16v4",
     cpu: "M7 7h10v10H7zM10 10h4v4h-4zM9 3v4M15 3v4M9 17v4M15 17v4M3 9h4M3 15h4M17 9h4M17 15h4",

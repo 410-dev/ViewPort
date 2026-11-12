@@ -158,6 +158,7 @@ pub fn run() {
             commands::delete_media,
             commands::save_video_frame,
             edit::edit_media,
+            edit::video_frame_rate,
             edit::edit_support,
             commands::rename_media,
             commands::move_media_to,

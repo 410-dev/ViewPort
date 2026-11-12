@@ -102,9 +102,9 @@
     ratio = "free";
     touched = false;
     crop = FULL;
-    trimStart = 0;
-    trimEnd = duration;
+    blocks = duration > 0 ? [{ a: 0, b: duration, key: nextKey++ }] : [];
     speed = 1;
+    if (isVideo) seekPos(0);
     refit();
   }
 
@@ -189,22 +189,53 @@
     drag = null;
   }
 
-  // ---- video
+  // ---- video: the cut is a list of blocks (spans of the original, in playing order).
+  // Times are "source" (ms of the original) or "pos" (ms of the result, blocks joined).
   let video = $state<HTMLVideoElement | null>(null);
   let duration = $state(0);
-  let trimStart = $state(0);
-  let trimEnd = $state(0);
+  type Block = { a: number; b: number; key: number };
+  let blocks = $state<Block[]>([]);
+  let nextKey = 1;
   let speed = $state(1);
-  let now = $state(0);
+  /** Playhead in the result. */
+  let pos = $state(0);
   let playing = $state(false);
   const speeds = $derived(prefs.app?.viewer.edit_speeds ?? [0.25, 0.5, 1, 2, 4]);
+  let fps = $state<number | null>(null);
+  const frameMs = $derived(1000 / (fps ?? prefs.app?.viewer.edit_fallback_fps ?? 30));
+
+  $effect(() => {
+    if (!isVideo) return;
+    const id = brief.id;
+    api
+      .videoFrameRate(id)
+      .then((r) => {
+        if (id === brief.id && r) fps = r;
+      })
+      .catch(() => {});
+  });
+
+  const total = $derived(blocks.reduce((n, x) => n + (x.b - x.a), 0));
+  /** Where each block starts in the result. */
+  const offsets = $derived.by(() => {
+    let o = 0;
+    return blocks.map((x) => ((o += x.b - x.a), o - (x.b - x.a)));
+  });
+  /** The block under the playhead (the selected one); the end of the result selects the last. */
+  function blockAt(p: number): number {
+    for (let i = 0; i < blocks.length; i++) if (p < offsets[i] + (blocks[i].b - blocks[i].a)) return i;
+    return blocks.length - 1;
+  }
+  const sel = $derived(blocks.length ? blockAt(pos) : -1);
+  /** Snaps a source time to the start of its frame (blocks always hold whole frames). */
+  const snap = (ms: number) => Math.round(ms / frameMs) * frameMs;
 
   function onMeta(e: Event) {
     const v = e.currentTarget as HTMLVideoElement;
     natW = v.videoWidth;
     natH = v.videoHeight;
     duration = isFinite(v.duration) ? v.duration * 1000 : (brief.duration_ms ?? 0);
-    trimEnd = duration;
+    blocks = [{ a: 0, b: duration, key: nextKey++ }];
     // Android's WebView shows nothing until a frame is decoded: ask for the first one.
     v.currentTime = 0.001;
     refit();
@@ -237,6 +268,17 @@
         return { seg, lane };
       });
   });
+  /** The parts of each segment that are kept, where they land in the result. */
+  const lanePieces = $derived.by(() => {
+    const out: { key: string; lane: number; auto: boolean; from: number; len: number }[] = [];
+    for (const { seg, lane } of laned)
+      blocks.forEach((x, i) => {
+        const a = Math.max(x.a, seg.start_ms);
+        const b = Math.min(x.b, seg.end_ms);
+        if (b > a) out.push({ key: `${seg.id}-${x.key}`, lane, auto: seg.autoplay, from: offsets[i] + a - x.a, len: b - a });
+      });
+    return out;
+  });
   /** Height unit of the lanes, in % of the track: a line is two units, the gaps between
    * lines and at the edges one (three lanes: fifths of the track for the lines). */
   const laneUnit = $derived(100 / (3 * Math.max(LANES, ...laned.map((x) => x.lane + 1)) + 1));
@@ -248,17 +290,31 @@
     loopMenu = false;
     const seg = segments[i];
     if (!seg || duration <= 0) return;
-    trimEnd = Math.min(duration, Math.max(seg.end_ms, MIN_SPAN));
-    trimStart = Math.max(0, Math.min(seg.start_ms, trimEnd - MIN_SPAN));
+    const b = Math.min(duration, seg.end_ms);
+    const a = Math.max(0, Math.min(snap(seg.start_ms), b - frameMs));
+    blocks = [{ a, b, key: nextKey++ }];
     video?.pause();
-    seekTo(trimStart);
+    seekPos(0);
   }
 
+  // ---- playing: the blocks one after another, over and over
+  /** The block the video is playing (or was last sought into). */
+  let playIdx = 0;
+
   function onTime() {
-    if (!video || seeking || pendingSeek !== null) return;
-    now = video.currentTime * 1000;
-    // Play only the kept span, over and over.
-    if (!video.paused && (now >= trimEnd - 20 || now < trimStart - 250)) video.currentTime = trimStart / 1000;
+    if (!video || seeking || pendingSeek !== null || !blocks.length) return;
+    const src = video.currentTime * 1000;
+    let i = Math.min(playIdx, blocks.length - 1);
+    const x = blocks[i];
+    if (!video.paused && (src >= x.b - 20 || src < x.a - 250)) {
+      // Next block (or back to the first), jumped to at once.
+      i = src < x.a - 250 ? i : (i + 1) % blocks.length;
+      playIdx = i;
+      pos = offsets[i];
+      video.currentTime = blocks[i].a / 1000;
+      return;
+    }
+    pos = Math.min(total, offsets[i] + Math.max(0, Math.min(x.b - x.a, src - x.a)));
   }
 
   $effect(() => {
@@ -273,46 +329,35 @@
   function togglePlay() {
     if (!video) return;
     if (video.paused) {
-      if (now < trimStart || now >= trimEnd - 20) video.currentTime = trimStart / 1000;
+      if (pos >= total - frameMs / 2) seekPos(0);
       video.play().catch(() => {});
     } else video.pause();
   }
 
   let track = $state<HTMLElement | null>(null);
-  let trimDrag: "start" | "end" | "head" | null = null;
-  const MIN_SPAN = 100;
+  let scrubbing = false;
 
-  function trimAt(e: PointerEvent): number {
+  function posAt(e: PointerEvent): number {
     const r = track!.getBoundingClientRect();
-    return Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * duration;
+    return Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * total;
   }
 
-  function startTrim(e: PointerEvent, which: "start" | "end" | "head") {
+  function startScrub(e: PointerEvent) {
     e.preventDefault();
-    e.stopPropagation();
     (e.currentTarget as Element).setPointerCapture(e.pointerId);
-    trimDrag = which;
+    scrubbing = true;
     video?.pause();
-    moveTrim(e);
+    moveScrub(e);
   }
 
-  function moveTrim(e: PointerEvent) {
-    if (!trimDrag || !track || !video) return;
-    const at = trimAt(e);
-    if (trimDrag === "start") {
-      trimStart = Math.min(at, trimEnd - MIN_SPAN);
-      seekTo(trimStart);
-    } else if (trimDrag === "end") {
-      trimEnd = Math.max(at, trimStart + MIN_SPAN);
-      seekTo(trimEnd);
-    } else {
-      seekTo(at);
-    }
+  function moveScrub(e: PointerEvent) {
+    if (!scrubbing || !track) return;
+    seekPos(posAt(e));
   }
 
-  function endTrim() {
-    if (!trimDrag) return;
-    trimDrag = null;
+  function endScrub() {
+    if (!scrubbing) return;
+    scrubbing = false;
     if (pendingSeek !== null && !seeking) seekTo(pendingSeek);
   }
 
@@ -326,11 +371,22 @@
   /** A seek that never reports back (it happens) stops holding the next one after this. */
   const SEEK_STUCK_MS = 4000;
 
+  /** Moves the playhead to `p` in the result and shows that frame. */
+  function seekPos(p: number) {
+    if (!blocks.length) return;
+    pos = Math.max(0, Math.min(total, p));
+    const i = blockAt(pos);
+    playIdx = i;
+    const x = blocks[i];
+    // The middle of the frame: a seek to its very start may show the one before.
+    const src = Math.min(x.b - 1, x.a + (pos - offsets[i]) + frameMs / 2);
+    seekTo(Math.max(x.a, src));
+  }
+
+  /** Seeks the video to `ms` of the original. */
   function seekTo(ms: number) {
-    // "Start/end here" need the time at once; a paused WebView may report it only later.
-    now = ms;
     if (!video) return;
-    if ((trimDrag && !liveScrub) || (seeking && performance.now() - seekStarted < SEEK_STUCK_MS)) {
+    if ((scrubbing && !liveScrub) || (seeking && performance.now() - seekStarted < SEEK_STUCK_MS)) {
       pendingSeek = ms;
       return;
     }
@@ -342,39 +398,107 @@
 
   function onSeeked() {
     seeking = false;
-    if (pendingSeek !== null && (liveScrub || !trimDrag)) seekTo(pendingSeek);
+    if (pendingSeek !== null && (liveScrub || !scrubbing)) seekTo(pendingSeek);
   }
 
-  function setStartHere() {
-    trimStart = Math.min(now, trimEnd - MIN_SPAN);
+  /** One frame forward or back, on the frame grid of the result. */
+  function stepFrame(dir: 1 | -1) {
+    video?.pause();
+    const k = Math.round(pos / frameMs) + dir;
+    seekPos(Math.max(0, Math.min(total - frameMs / 2, k * frameMs)));
   }
 
-  function setEndHere() {
-    trimEnd = Math.max(now, trimStart + MIN_SPAN);
+  /** To the start of the selected block, or of the one before (back); to the next block (forward). */
+  function stepCut(dir: 1 | -1) {
+    video?.pause();
+    if (sel < 0) return;
+    if (dir > 0) seekPos(sel + 1 < blocks.length ? offsets[sel + 1] : total - frameMs / 2);
+    else seekPos(pos - offsets[sel] > frameMs / 2 ? offsets[sel] : offsets[Math.max(0, sel - 1)]);
+  }
+
+  /** Where the playhead splits the selected block (source ms), if it leaves a frame on each side. */
+  const splitAt = $derived.by(() => {
+    if (sel < 0) return null;
+    const x = blocks[sel];
+    const at = snap(x.a + (pos - offsets[sel]));
+    return at - x.a >= frameMs - 0.5 && x.b - at >= frameMs - 0.5 ? at : null;
+  });
+
+  function split() {
+    const at = splitAt;
+    if (at === null) return;
+    const i = sel;
+    const x = blocks[i];
+    blocks = [...blocks.slice(0, i), { a: x.a, b: at, key: x.key }, { a: at, b: x.b, key: nextKey++ }, ...blocks.slice(i + 1)];
+    // The playhead stays, now on the start of the second half.
+    pos = offsets[i] + (at - x.a);
+  }
+
+  function deleteBlock() {
+    if (sel < 0 || blocks.length < 2) return;
+    video?.pause();
+    const i = sel;
+    const start = offsets[i];
+    blocks = blocks.filter((_, j) => j !== i);
+    // The neighbours join: the next block now starts where the deleted one did.
+    seekPos(i < blocks.length ? start : offsets[blocks.length - 1]);
+  }
+
+  function moveBlock(dir: 1 | -1) {
+    const i = sel;
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= blocks.length) return;
+    video?.pause();
+    const into = pos - offsets[i];
+    const next = [...blocks];
+    [next[i], next[j]] = [next[j], next[i]];
+    blocks = next;
+    // The playhead goes with the moved block, so it stays selected.
+    seekPos(offsets[j] + into);
+  }
+
+  /** Drops everything before the playhead ("start here"). */
+  function startHere() {
+    if (sel < 0) return;
+    if (splitAt !== null) split();
+    const i = blockAt(pos);
+    if (i === 0) return;
+    blocks = blocks.slice(i);
+    seekPos(0);
+  }
+
+  /** Drops the playhead's frame and everything after it ("end here"). */
+  function endHere() {
+    if (sel < 0) return;
+    if (splitAt !== null) split();
+    const i = blockAt(pos);
+    if (i === 0) return;
+    blocks = blocks.slice(0, i);
+    seekPos(total - frameMs / 2);
   }
 
   function fmt(ms: number) {
     const s = Math.max(0, ms / 1000);
     const m = Math.floor(s / 60);
-    return `${m}:${(s % 60).toFixed(1).padStart(4, "0")}`;
+    return `${m}:${(s % 60).toFixed(2).padStart(5, "0")}`;
   }
 
   // ---- saving
   function spec(): EditSpec {
-    const trimmed = isVideo && duration > 0 && (trimStart > 1 || trimEnd < duration - 1);
+    const cut = isVideo && duration > 0 && cutChanged;
     return {
       rotate_deg: deg,
       expand,
       // A free rotation always sends its crop: the inside is what the editor showed.
       crop: isFull(crop) && (fine === 0 || expand) ? null : { ...crop },
-      trim: trimmed ? { start_ms: Math.round(trimStart), end_ms: Math.round(trimEnd) } : null,
+      trim: null,
+      cuts: cut ? blocks.map((x) => ({ start_ms: Math.round(x.a), end_ms: Math.round(x.b) })) : [],
       speed: isVideo ? speed : 1,
     };
   }
 
-  const changed = $derived(
-    (quarter !== 0 || fine !== 0 || !isFull(crop) || (isVideo && (speed !== 1 || trimStart > 1 || (duration > 0 && trimEnd < duration - 1)))),
-  );
+  const cutChanged = $derived(blocks.length !== 1 || (blocks.length === 1 && (blocks[0].a > 1 || blocks[0].b < duration - 1)));
+  const changed = $derived(quarter !== 0 || fine !== 0 || !isFull(crop) || (isVideo && duration > 0 && (speed !== 1 || cutChanged)));
 
   let menu = $state(false);
   let menuBtn = $state<HTMLElement | null>(null);
@@ -415,6 +539,12 @@
   );
 
   function onKey(e: KeyboardEvent) {
+    if (tab === "trim" && !saving && !confirming && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+      e.preventDefault();
+      e.stopPropagation();
+      stepFrame(e.key === "ArrowRight" ? 1 : -1);
+      return;
+    }
     if (e.key === "Escape" && !saving) {
       e.stopPropagation();
       if (confirming) confirming = false;
@@ -527,7 +657,7 @@
     {/if}
   </div>
 
-  <footer class="tools">
+  <footer class="tools" class:video={isVideo}>
     <div class="panel">
       {#if tab === "crop"}
         <div class="row angle">
@@ -549,60 +679,60 @@
         </div>
       {:else if tab === "trim"}
         <div class="row times tabular">
-          <span>{t("edit.trimStart")} {fmt(trimStart)}</span>
-          <span class="mid">{fmt(now)}</span>
-          <span>{t("edit.trimEnd")} {fmt(trimEnd)}</span>
+          <span>{sel >= 0 ? t("edit.block", { n: sel + 1, total: blocks.length }) : ""}</span>
+          <span class="mid">{fmt(pos)}</span>
+          <span>{fmt(total)}</span>
         </div>
         <div
           class="track"
           bind:this={track}
           role="presentation"
-          onpointerdown={(e) => startTrim(e, "head")}
-          onpointermove={moveTrim}
-          onpointerup={endTrim}
-          onpointercancel={endTrim}
+          onpointerdown={startScrub}
+          onpointermove={moveScrub}
+          onpointerup={endScrub}
+          onpointercancel={endScrub}
         >
-          {#if duration > 0}
-            {#each laned as { seg, lane } (seg.id)}
-              {@const a = Math.max(0, Math.min(duration, seg.start_ms))}
-              {@const b = Math.max(a, Math.min(duration, seg.end_ms))}
-              <span class="lane" class:auto={seg.autoplay} style:top="{laneUnit * (1 + 3 * lane)}%" style:height="{laneUnit * 2}%" style:left="{(a / duration) * 100}%" style:width="{((b - a) / duration) * 100}%"></span>
+          {#if total > 0}
+            {#each blocks as x, i (x.key)}
+              <span
+                class="block"
+                class:on={i === sel}
+                style:left="{(offsets[i] / total) * 100}%"
+                style:width="{((x.b - x.a) / total) * 100}%"
+              ></span>
             {/each}
-            <span class="kept" style:left="{(trimStart / duration) * 100}%" style:width="{((trimEnd - trimStart) / duration) * 100}%"></span>
-            <span class="head" style:left="{(now / duration) * 100}%"></span>
-            <span
-              class="grip start"
-              style:left="{(trimStart / duration) * 100}%"
-              role="presentation"
-              onpointerdown={(e) => startTrim(e, "start")}
-              onpointermove={moveTrim}
-              onpointerup={endTrim}
-              onpointercancel={endTrim}
-            ></span>
-            <span
-              class="grip end"
-              style:left="{(trimEnd / duration) * 100}%"
-              role="presentation"
-              onpointerdown={(e) => startTrim(e, "end")}
-              onpointermove={moveTrim}
-              onpointerup={endTrim}
-              onpointercancel={endTrim}
-            ></span>
+            {#each lanePieces as p (p.key)}
+              <span class="lane" class:auto={p.auto} style:top="{laneUnit * (1 + 3 * p.lane)}%" style:height="{laneUnit * 2}%" style:left="{(p.from / total) * 100}%" style:width="{(p.len / total) * 100}%"></span>
+            {/each}
+            <span class="head" style:left="{(pos / total) * 100}%"></span>
           {/if}
         </div>
-        <div class="row chips trim-chips">
-          <button class="chip" onclick={setStartHere}>{t("edit.setStart")}</button>
-          <button class="chip" onclick={setEndHere}>{t("edit.setEnd")}</button>
-          {#if segments.length}
-            <button class="chip" class:on={loopMenu} bind:this={loopBtn} onclick={() => (loopMenu = !loopMenu)}>{t("edit.fromLoop")}</button>
-          {/if}
+        <!-- Two rows: moving the playhead, then changing the blocks. -->
+        <div class="row tools-row">
+          <button class="icon sm" onclick={() => stepCut(-1)} title={t("edit.prevCut")} aria-label={t("edit.prevCut")}><Icon name="rewind" size={16} /></button>
+          <button class="icon sm" onclick={() => stepFrame(-1)} title={t("edit.frameBack")} aria-label={t("edit.frameBack")}><Icon name="frameBack" size={16} /></button>
+          <button class="icon sm" onclick={togglePlay} title={playing ? t("viewer.pause") : t("viewer.play")} aria-label={playing ? t("viewer.pause") : t("viewer.play")}><Icon name={playing ? "pause" : "play"} size={16} /></button>
+          <button class="icon sm" onclick={() => stepFrame(1)} title={t("edit.frameForward")} aria-label={t("edit.frameForward")}><Icon name="frameForward" size={16} /></button>
+          <button class="icon sm" onclick={() => stepCut(1)} title={t("edit.nextCut")} aria-label={t("edit.nextCut")}><Icon name="fastForward" size={16} /></button>
           <span class="sep"></span>
-          <span class="note tabular">{t("edit.result", { t: fmt((trimEnd - trimStart) / speed) })}</span>
+          <span class="note tabular">{t("edit.result", { t: fmt(total / speed) })}</span>
+        </div>
+        <div class="row tools-row">
+          <button class="icon sm" disabled={splitAt === null} onclick={split} title={t("edit.split")} aria-label={t("edit.split")}><Icon name="scissors" size={16} /></button>
+          <button class="icon sm danger" disabled={blocks.length < 2} onclick={deleteBlock} title={t("edit.deleteBlock")} aria-label={t("edit.deleteBlock")}><Icon name="trash" size={16} /></button>
+          <button class="icon sm" disabled={sel <= 0} onclick={() => moveBlock(-1)} title={t("edit.moveLeft")} aria-label={t("edit.moveLeft")}><Icon name="blockLeft" size={16} /></button>
+          <button class="icon sm" disabled={sel < 0 || sel >= blocks.length - 1} onclick={() => moveBlock(1)} title={t("edit.moveRight")} aria-label={t("edit.moveRight")}><Icon name="blockRight" size={16} /></button>
+          <span class="divider"></span>
+          <button class="icon sm" onclick={startHere} title={t("edit.setStart")} aria-label={t("edit.setStart")}><Icon name="cutBefore" size={16} /></button>
+          <button class="icon sm" onclick={endHere} title={t("edit.setEnd")} aria-label={t("edit.setEnd")}><Icon name="cutAfter" size={16} /></button>
+          {#if segments.length}
+            <button class="icon sm" class:on={loopMenu} bind:this={loopBtn} onclick={() => (loopMenu = !loopMenu)} title={t("edit.fromLoop")} aria-label={t("edit.fromLoop")}><Icon name="loop" size={16} /></button>
+          {/if}
         </div>
         {#if loopMenu}
           <div class="loops" transition:pop use:dismiss={{ onclose: () => (loopMenu = false), keep: () => [loopBtn] }}>
             {#each segments as seg, i (seg.id)}
-              {@const picked = Math.abs(seg.start_ms - trimStart) < 1 && Math.abs(seg.end_ms - trimEnd) < 1}
+              {@const picked = blocks.length === 1 && Math.abs(snap(seg.start_ms) - blocks[0].a) < 1 && Math.abs(Math.min(duration, seg.end_ms) - blocks[0].b) < 1}
               <button class:on={picked} onclick={() => pickLoop(i)}>
                 <span class="name">{segName(seg, i)}</span>
                 <span class="range tabular">{fmt(seg.start_ms)} – {fmt(seg.end_ms)}</span>
@@ -619,7 +749,7 @@
           {/each}
         </div>
         <div class="row">
-          <span class="note tabular">{t("edit.result", { t: fmt((trimEnd - trimStart) / speed) })}</span>
+          <span class="note tabular">{t("edit.result", { t: fmt(total / speed) })}</span>
         </div>
       {/if}
     </div>
@@ -919,6 +1049,10 @@
     gap: 10px;
     min-height: 108px;
   }
+  /* The cut tab is the tallest of a video's tabs: times, track and two rows of buttons. */
+  .tools.video .panel {
+    min-height: 166px;
+  }
   .row {
     display: flex;
     align-items: center;
@@ -964,13 +1098,6 @@
   }
   .chips::-webkit-scrollbar {
     display: none;
-  }
-  .trim-chips {
-    flex-wrap: wrap;
-    overflow: visible;
-  }
-  .trim-chips .note {
-    margin-left: auto;
   }
   /* Loop segments to cut to, above the panel: full width on a phone. */
   .loops {
@@ -1095,13 +1222,22 @@
   .lane.auto {
     background: color-mix(in srgb, var(--accent) 75%, #fff);
   }
-  .kept {
+  .block {
     position: absolute;
     top: 0;
     bottom: 0;
-    border-radius: 8px;
-    background: color-mix(in srgb, var(--accent) 30%, transparent);
-    box-shadow: inset 0 0 0 2px var(--accent);
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+    box-shadow:
+      inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent),
+      inset -2px 0 0 #111318;
+    pointer-events: none;
+  }
+  .block.on {
+    background: color-mix(in srgb, var(--accent) 42%, transparent);
+    box-shadow:
+      inset 0 0 0 2px var(--accent),
+      inset -2px 0 0 #111318;
   }
   .head {
     position: absolute;
@@ -1112,25 +1248,26 @@
     background: #fff;
     pointer-events: none;
   }
-  .grip {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    width: 24px;
-    margin-left: -12px;
-    cursor: ew-resize;
-    touch-action: none;
+  .tools-row {
+    gap: 6px;
+    justify-content: flex-start;
   }
-  .grip::after {
-    content: "";
-    position: absolute;
-    left: 8px;
-    top: 6px;
-    bottom: 6px;
-    width: 8px;
-    border-radius: 4px;
+  .icon.sm {
+    width: 36px;
+    height: 36px;
+  }
+  .icon:disabled {
+    opacity: 0.35;
+  }
+  .icon:disabled:hover {
+    background: rgb(255 255 255 / 0.08);
+  }
+  .icon.danger:not(:disabled) {
+    color: var(--danger);
+  }
+  .icon.on {
     background: var(--accent);
-    box-shadow: 0 1px 3px rgb(0 0 0 / 0.5);
+    color: var(--accent-fg);
   }
   .tabs {
     display: flex;
