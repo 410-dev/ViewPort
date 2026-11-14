@@ -73,8 +73,22 @@ pub struct Edited {
     pub source_height: u32,
 }
 
-/// Applies `spec` to the picture `data` (in `format`) and encodes the result in the same
-/// format. `quality` is the JPEG quality. `progress` gets the part done (0..1) after each
+/// The format `data` is actually in, by its first bytes: files are often named for another
+/// one (a WebP or PNG saved as `.jpg`). None when it is none of the editable formats.
+pub fn sniff(data: &[u8]) -> Option<Format> {
+    Some(match image::guess_format(data).ok()? {
+        ImageFormat::Jpeg => Format::Jpeg,
+        ImageFormat::Png => Format::Png,
+        ImageFormat::WebP => Format::Webp,
+        ImageFormat::Bmp => Format::Bmp,
+        ImageFormat::Tiff => Format::Tiff,
+        _ => return None,
+    })
+}
+
+/// Applies `spec` to the picture `data` and encodes the result in `format`, the format
+/// its file name says. The picture is read in the format its content is in, which may
+/// differ (then the result matches its name again). `quality` is the JPEG quality. `progress` gets the part done (0..1) after each
 /// stage (decoding, transforming, encoding); `cancel` stops it between stages.
 pub fn edit_image(
     data: &[u8],
@@ -86,7 +100,13 @@ pub fn edit_image(
 ) -> Result<Edited, EditError> {
     let err = |e: image::ImageError| EditError::Failed(e.to_string());
     let check = || if cancel.load(Ordering::Relaxed) { Err(EditError::Cancelled) } else { Ok(()) };
-    let mut decoder = ImageReader::with_format(Cursor::new(data), format.image_format()).into_decoder().map_err(err)?;
+    let source = match sniff(data) {
+        Some(f) => f,
+        // HEIF/AVIF and other containers the name hides: say what it is, not a parse error.
+        None if data.get(4..8) == Some(b"ftyp") => return Err(EditError::Failed("this picture is HEIF/AVIF inside; that format cannot be edited".into())),
+        None => format,
+    };
+    let mut decoder = ImageReader::with_format(Cursor::new(data), source.image_format()).into_decoder().map_err(err)?;
     let mut exif = decoder.exif_metadata().ok().flatten();
     let icc = decoder.icc_profile().ok().flatten();
     let orientation = match exif.as_deref_mut() {
@@ -255,5 +275,28 @@ mod tests {
         assert_eq!((out.width, out.height), (32, 64));
         let cancelled = edit_image(&jpg, Format::Jpeg, &EditSpec::default(), 90, &mut |_| {}, &AtomicBool::new(true));
         assert!(matches!(cancelled, Err(EditError::Cancelled)));
+    }
+
+    #[test]
+    fn content_decides_how_it_is_read_and_the_name_how_it_is_written() {
+        // A WebP (or PNG) saved as `.jpg`, as some apps do.
+        let img = sample(40, 20);
+        let mut webp = Vec::new();
+        img.write_to(&mut Cursor::new(&mut webp), ImageFormat::WebP).unwrap();
+        assert_eq!(sniff(&webp), Some(Format::Webp));
+        let out = edit_image(&webp, Format::Jpeg, &EditSpec { rotate_deg: 90.0, ..Default::default() }, 90, &mut |_| {}, &AtomicBool::new(false)).unwrap();
+        assert_eq!((out.width, out.height), (20, 40));
+        assert_eq!(sniff(&out.data), Some(Format::Jpeg), "now a real JPEG, as its name says");
+        let mut png = Vec::new();
+        img.write_to(&mut Cursor::new(&mut png), ImageFormat::Png).unwrap();
+        assert!(edit_image(&png, Format::Jpeg, &EditSpec::default(), 90, &mut |_| {}, &AtomicBool::new(false)).is_ok());
+        // HEIF inside: a clear error.
+        let mut heif = vec![0, 0, 0, 24];
+        heif.extend_from_slice(b"ftypheic");
+        heif.resize(64, 0);
+        let Err(EditError::Failed(e)) = edit_image(&heif, Format::Jpeg, &EditSpec::default(), 90, &mut |_| {}, &AtomicBool::new(false)) else {
+            panic!("HEIF should fail")
+        };
+        assert!(e.contains("HEIF"), "{e}");
     }
 }
