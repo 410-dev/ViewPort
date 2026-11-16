@@ -90,6 +90,9 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
   `SectionScrollbar`(드래그, 구간 선, 드래그 중 구간 이름)를 쓴다. 구간은 검색 결과의 `sections`(가장 우선하는 정렬 키가
   바뀌는 위치: 폴더·날짜·첫 글자, `vp-db::search_sections`)이고, 스크롤 위치는 `views/scroll.ts`가 `scrollKey`(소스·폴더·쿼리)별로
   기억해 결과가 다시 오거나 보기가 다시 만들어져도 그 자리로 돌아간다.
+- 정렬은 폴더별로 라이브러리에 저장된다(`view_sort` 표 ↔ `Workspace.view_sorts` 메모리 ↔ `views/sorts.svelte.ts`). 없으면 위 폴더를
+  따르고 '전체 미디어'의 기본은 만든 날짜 내림차순. 탐색 중에는 메모리만 읽고 바꿀 때 그 행 하나만 쓴다. 폴더 이동·삭제처럼 행이
+  바뀌는 DB 작업 뒤에는 `ws.reload_view_sorts()`와 프론트엔드 `loadSorts(path, true)`를 부른다.
 - `settings/schema.ts`: 설정 패널 레이아웃(데이터). 각 필드는 `bundle`(번들 `Settings`) 또는 `app`(기기 `AppSettings`) 경로를 가리킨다.
 - `tasks.svelte.ts`: 백엔드 작업 레지스트리(`src-tauri/src/tasks.rs`, `task` 이벤트)의 미러.
 - `lib/api.ts`: 모든 `invoke` 래퍼와 백엔드 타입 미러. 커맨드를 추가·변경하면 여기 타입도 맞춘다.

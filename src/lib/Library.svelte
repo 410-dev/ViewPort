@@ -5,6 +5,7 @@
     sourceId: number | null;
     folder: string;
     query: string;
+    /** No longer used: each folder's sort is kept in the library (`views/sorts.svelte.ts`). */
     sort?: Sort | null;
     /** A split-view explorer only: the temporary group it shows (instead of the source). */
     group?: string | null;
@@ -63,6 +64,7 @@
   import { briefs, goneListeners, invalidate } from "./views/briefs.svelte";
   import { groups, type TempGroup } from "./groups.svelte";
   import { columnsFor, type SortSpec } from "./views/columns";
+  import { folderSort, inheritedSort, loadSorts, setFolderSort, sortsReady } from "./views/sorts.svelte";
   import { VIEWS } from "./views";
   import { Selection, type FolderRef } from "./views/selection.svelte";
   import type { FolderItem } from "./views/types";
@@ -104,10 +106,23 @@
   // svelte-ignore state_referenced_locally
   let query = $state(initial?.query ?? "");
   // svelte-ignore state_referenced_locally
-  let sort = $state<SortSpec | null>(initial?.sort ?? null);
+  loadSorts(bundle.path);
   /** The temporary group being shown (instead of a source or search), by id. */
   // svelte-ignore state_referenced_locally
   let group = $state<string | null>(initial?.group ?? null);
+  /** The folder's sort (its own or the one it follows); none for a temporary group. */
+  const viewSort = $derived(group ? null : folderSort(selected, folder));
+  /** A sort was chosen while the query was shown: it goes over the query's own sort. */
+  let sortOver = $state(false);
+  /** The last listing's query sorts by itself. */
+  let querySorted = $state(false);
+  /** The sort the headers and toolbar show: the query's own sort hides the folder's. */
+  const sort = $derived(querySorted && query.trim() && !sortOver ? null : viewSort);
+  // A new query text starts without a sort over it.
+  $effect(() => {
+    query;
+    untrack(() => (sortOver = false));
+  });
   // svelte-ignore state_referenced_locally
   groups.open(bundle.path);
   /** False until the last browsing state is restored, so nothing is searched twice. */
@@ -216,13 +231,12 @@
           lastSource = selected;
           folder = last.folder ?? "";
           query = last.query ?? "";
-          sort = last.sort ?? null;
         }
       })
       .catch(() => {})
       .finally(() => (restored = true));
   function browseState(): BrowseState {
-    return { sourceId: selected, folder, query, sort: sort ? { ...sort } : null };
+    return { sourceId: selected, folder, query };
   }
   $effect(() => {
     if (!persist || !restored) return;
@@ -253,7 +267,6 @@
     let q = query.trim();
     if (q && !/[()]/.test(q)) q = `name(contains:${quoteParam(q)})`;
     if (ui().media_only) q = q ? `(${q}) AND NOT type(nonmedia)` : "NOT type(nonmedia)";
-    if (sort) q = `${q ? q + " AND " : ""}${sort.desc ? "sort desc" : "sort asc"}(${sort.field})`;
     return q;
   });
 
@@ -267,7 +280,8 @@
   let revealAfterSearch: number | null = initial?.reveal ?? null;
   /** A new search (not a refresh) is running over results still shown: the view shows a spinner. */
   let researching = $state(false);
-  const listingKey = () => (group ? `group:${group}` : `${selected}|${folder}|${ui().recursive}|${effectiveQuery}`);
+  const sortKey = () => (viewSort ? `${viewSort.desc ? "-" : "+"}${viewSort.field}${sortOver ? "!" : ""}` : "");
+  const listingKey = () => (group ? `group:${group}` : `${selected}|${folder}|${ui().recursive}|${effectiveQuery}|${sortKey()}`);
   /** The opener's listing, when it is this one: the first search is skipped. */
   const seedNow = untrack(() => seed);
   let seeded = !!seedNow && seedNow.key === listingKey();
@@ -305,8 +319,11 @@
     searching = true;
     researching = reset;
     try {
-      const r = group ? await groupListing(group) : await api.search(effectiveQuery, selected, selected === null ? null : folder, ui().recursive);
+      const r = group
+        ? await groupListing(group)
+        : await api.search(effectiveQuery, selected, selected === null ? null : folder, ui().recursive, viewSort, sortOver);
       if (seq !== searchSeq) return;
+      querySorted = r.query_sorted;
       ids = r.ids;
       sections = r.sections;
       scrollKey = key;
@@ -341,13 +358,12 @@
   async function groupListing(id: string) {
     const list = groups.get(id)?.ids ?? [];
     const found = new Set((list.length ? await api.mediaBrief(list) : []).map((b) => b.id));
-    return { ids: list.filter((x) => found.has(x)), sections: { kind: "none", marks: [] } as Sections, elapsed_ms: 0 };
+    return { ids: list.filter((x) => found.has(x)), sections: { kind: "none", marks: [] } as Sections, elapsed_ms: 0, query_sorted: false };
   }
 
   /** Shows temporary group `g`: the viewer opened there goes round that group only. */
   function showGroup(g: TempGroup) {
     query = "";
-    sort = null;
     selected = null;
     lastSource = null;
     folder = "";
@@ -403,13 +419,12 @@
     showPeople = false;
     revealAfterSearch = id;
     revealIsClosed = false;
-    const same = selected === b.source_id && folder === b.folder && !query && !sort;
+    const same = selected === b.source_id && folder === b.folder && !query;
     group = null;
     selected = b.source_id;
     lastSource = b.source_id;
     folder = b.folder;
     query = "";
-    sort = null;
     // Otherwise the changes above start a search.
     if (same) runSearch(false);
   }
@@ -444,7 +459,9 @@
     folder;
     ui().recursive;
     group;
-    if (!restored) return;
+    viewSort;
+    sortOver;
+    if (!restored || !sortsReady()) return;
     if (seeded) return void (seeded = false);
     const timer = setTimeout(() => runSearch(true), ui().search_debounce_ms);
     return () => clearTimeout(timer);
@@ -510,6 +527,7 @@
     }),
     onSync("sources", () => refreshSources().then(() => runSearch(false))),
     onSync("saved", () => refreshSaved()),
+    onSync("sorts", () => loadSorts(bundle.path, true)),
     onSync("settings", () => api.getSettings().then((s) => (settings = s))),
   );
   // Items found gone (failed to load, file missing): drop them from this and other windows.
@@ -556,6 +574,7 @@
       alert(asCmdError(e).message);
     }
     broadcast("sources");
+    loadSorts(bundle.path, true);
     if (selected === s.id) selected = null;
     delete scans[s.id];
     await refreshSources();
@@ -600,10 +619,19 @@
     api.openWindow({ kind: "library", sourceId: selected, folder, query }).catch((e) => alert(asCmdError(e).message));
   }
 
+  /** Chooses the shown folder's sort (kept in the library; see `views/sorts.svelte.ts`). */
+  function setSort(s: SortSpec | null) {
+    if (group) return;
+    if (query.trim()) sortOver = !!s;
+    setFolderSort(selected, folder, s);
+  }
+
+  /** A header: another field sorts ascending, the same one flips; descending goes back to what
+   *  the folder follows when that is nothing (otherwise ascending again). */
   function toggleSort(field: string) {
-    if (sort?.field !== field) sort = { field, desc: false };
-    else if (!sort.desc) sort = { field, desc: true };
-    else sort = null;
+    if (sort?.field !== field) setSort({ field, desc: false });
+    else if (!sort.desc) setSort({ field, desc: true });
+    else setSort(inheritedSort(selected, folder) ? { field, desc: false } : null);
   }
 
   function setView(key: "grid" | "list" | "tree") {
@@ -885,7 +913,6 @@
     lastSource = f.sourceId;
     folder = parentOf(f.path);
     query = "";
-    sort = null;
     selection.selectFolder(f);
   }
 
@@ -951,6 +978,7 @@
 
   /** Paths changed under a folder: everything cached about paths is stale. */
   function afterFolderChange() {
+    loadSorts(bundle.path, true);
     selection.clear();
     invalidate();
     broadcast("media");
@@ -1003,7 +1031,7 @@
   const currentText = $derived.by(() => {
     let q = query.trim();
     if (q && !/[()]/.test(q)) q = `name(contains:${quoteParam(q)})`;
-    if (sort) q = `${q ? q + " AND " : ""}${sort.desc ? "sort desc" : "sort asc"}(${sort.field})`;
+    if (sort && sortOver) q = `${q ? q + " AND " : ""}${sort.desc ? "sort desc" : "sort asc"}(${sort.field})`;
     return q;
   });
   const canSaveCurrent = $derived(!!query.trim() && !queryError && !saved.some((q) => q.text === query));
@@ -1020,10 +1048,7 @@
       broadcast("saved");
       // Show the saved search as the active one (its text is the normalized form).
       const q = saved.find((x) => x.id === id);
-      if (q) {
-        sort = null;
-        query = q.text;
-      }
+      if (q) query = q.text;
     } catch (e) {
       if (savingCurrent) savingCurrent.error = asCmdError(e).message;
     }
@@ -1134,7 +1159,7 @@
         error={queryError}
         viewKey={view.key}
         {sort}
-        onsetsort={(s) => (sort = s)}
+        onsetsort={setSort}
         onfolder={(f) => (folder = f)}
         onview={setView}
         ontile={setTile}
@@ -1193,7 +1218,7 @@
               {columns}
               rowPx={ui().row_px}
               {sort}
-              tree={{ sources: sources.map((s) => ({ id: s.id, name: s.name })), sourceId: selected, folder, query: effectiveQuery }}
+              tree={{ sources: sources.map((s) => ({ id: s.id, name: s.name })), sourceId: selected, folder, query: effectiveQuery, sortOver }}
               onsort={toggleSort}
               onopen={openViewer}
               onopenwindow={openViewerWindow}
@@ -1545,7 +1570,6 @@
       selected = null;
       lastSource = null;
       folder = "";
-      sort = null;
       query = q;
       showPeople = false;
     }}

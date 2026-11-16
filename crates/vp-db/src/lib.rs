@@ -1399,6 +1399,27 @@ impl Db {
         Ok(())
     }
 
+    /// Every folder's own sort: `(source id or 0 for all media, folder, field, descending)`.
+    pub fn view_sorts(&self) -> Result<Vec<(i64, String, String, bool)>> {
+        let mut stmt = self.conn.prepare("SELECT source_id, path, field, descending FROM view_sort")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, i64>(3)? != 0)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Sets (or with `None` forgets) one folder's own sort; only that row is written.
+    pub fn set_view_sort(&self, source_id: i64, path: &str, sort: Option<(&str, bool)>) -> Result<()> {
+        let path = path.trim_matches('/');
+        match sort {
+            Some((field, desc)) => self.conn.execute(
+                "INSERT INTO view_sort (source_id, path, field, descending) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT (source_id, path) DO UPDATE SET field = excluded.field, descending = excluded.descending",
+                params![source_id, path, field, desc as i64],
+            )?,
+            None => self.conn.execute("DELETE FROM view_sort WHERE source_id = ?1 AND path = ?2", params![source_id, path])?,
+        };
+        Ok(())
+    }
+
     /// Videos that have not been probed yet.
     /// Items of sources in `skip` (e.g. locked shards) are left out.
     pub fn unprobed_videos(&self, limit: usize, skip: &[i64]) -> Result<Vec<i64>> {
@@ -1899,6 +1920,11 @@ impl Db {
             &format!("UPDATE folder_value SET path = ?3 || substr(path, length(?2) + 1) WHERE source_id = ?1 AND {FOLDER_AND_BELOW}"),
             params![source_id, from, to],
         )?;
+        self.conn.execute(&format!("DELETE FROM view_sort WHERE source_id = ?1 AND {FOLDER_AND_BELOW}"), params![source_id, to])?;
+        self.conn.execute(
+            &format!("UPDATE view_sort SET path = ?3 || substr(path, length(?2) + 1) WHERE source_id = ?1 AND {FOLDER_AND_BELOW}"),
+            params![source_id, from, to],
+        )?;
         Ok(())
     }
 
@@ -1906,6 +1932,10 @@ impl Db {
     pub fn delete_folder_values(&self, source_id: i64, path: &str) -> Result<()> {
         self.conn.execute(
             &format!("DELETE FROM folder_value WHERE source_id = ?1 AND {FOLDER_AND_BELOW}"),
+            params![source_id, path.trim_matches('/')],
+        )?;
+        self.conn.execute(
+            &format!("DELETE FROM view_sort WHERE source_id = ?1 AND {FOLDER_AND_BELOW}"),
             params![source_id, path.trim_matches('/')],
         )?;
         Ok(())

@@ -88,6 +88,16 @@ pub struct Workspace {
     pub(crate) shards: Mutex<HashMap<i64, Arc<vp_shard::Shard>>>,
     /// Master keys of encrypted shards unlocked in this session, by source.
     pub(crate) shard_keys: Mutex<HashMap<i64, vp_crypto::BundleKey>>,
+    /// Each folder's own sort (`view_sort`), read once when the bundle opens: browsing
+    /// reads only this, and a change writes just its own row as well.
+    pub view_sorts: RwLock<HashMap<(i64, String), ViewSort>>,
+}
+
+/// How a folder (or, with source 0, the "all media" view) is sorted.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ViewSort {
+    pub field: String,
+    pub desc: bool,
 }
 
 impl Workspace {
@@ -185,6 +195,7 @@ impl Workspace {
             write_db.lock().unwrap().reset_video_thumbnails()?;
             write_db.lock().unwrap().reset_unsupported_image_thumbnails()?;
         }
+        let view_sorts = RwLock::new(Self::read_view_sorts(&write_db.lock().unwrap()));
         let saved_changes = AtomicU64::new(write_db.lock().unwrap().total_changes());
         let c = &settings.cache;
         let capacity = crate::recent::cached_app_settings().hardware.cache_bytes(c.memory_bytes);
@@ -220,7 +231,23 @@ impl Workspace {
             settings: RwLock::new(settings),
             view_db,
             view_locations: Mutex::default(),
+            view_sorts,
         })
+    }
+
+    fn read_view_sorts(db: &vp_db::Db) -> HashMap<(i64, String), ViewSort> {
+        // A bundle from a newer build without the table (or a broken row) just has none.
+        db.view_sorts()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(src, path, field, desc)| ((src, path), ViewSort { field, desc }))
+            .collect()
+    }
+
+    /// Reads the folder sorts again, after folders moved or went away with their rows.
+    pub fn reload_view_sorts(&self) {
+        let fresh = Self::read_view_sorts(&self.write_db.lock().unwrap());
+        *self.view_sorts.write().unwrap() = fresh;
     }
 
     /// Renames the bundle (its `info.json` name; the folder stays).

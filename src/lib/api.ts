@@ -210,6 +210,16 @@ export interface SearchResult {
   ids: number[];
   elapsed_ms: number;
   sections: Sections;
+  /** The query text sorts by itself (a folder's sort then only breaks ties). */
+  query_sorted: boolean;
+}
+
+/** One folder's own sort (`source_id` null: the "all media" view). */
+export interface ViewSortEntry {
+  source_id: number | null;
+  folder: string;
+  field: string;
+  desc: boolean;
 }
 
 export interface ScanEvent {
@@ -656,8 +666,27 @@ export const api = {
   removeSource: (id: number, deleteData = false) => invoke<void>("remove_source", { id, deleteData }),
   scanSource: (id: number) => invoke<void>("scan_source", { id }),
   cancelScan: (id: number) => invoke<void>("cancel_scan", { id }),
-  search: (query: string, sourceId: number | null, folder: string | null = null, recursive = false) =>
-    invoke<SearchResult>("search", { query, sourceId, folder, recursive, tzOffsetMinutes: -new Date().getTimezoneOffset() }),
+  /** `sort` is the folder's sort: used when the query has none, or over it with `sortOver`. */
+  search: (
+    query: string,
+    sourceId: number | null,
+    folder: string | null = null,
+    recursive = false,
+    sort: { field: string; desc: boolean } | null = null,
+    sortOver = false,
+  ) =>
+    invoke<SearchResult>("search", {
+      query,
+      sourceId,
+      folder,
+      recursive,
+      tzOffsetMinutes: -new Date().getTimezoneOffset(),
+      sort,
+      sortOver,
+    }),
+  viewSorts: () => invoke<ViewSortEntry[]>("view_sorts"),
+  setViewSort: (sourceId: number | null, folder: string, sort: { field: string; desc: boolean } | null) =>
+    invoke<void>("set_view_sort", { sourceId, folder, sort }),
   childFolders: (sourceId: number, parent: string) =>
     invoke<{ name: string; count: number }[]>("child_folders", { sourceId, parent }),
   /** Thumbnail ids standing for each folder (same order as `folders`). */

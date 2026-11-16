@@ -14,7 +14,7 @@ use vp_query::{FieldRegistry, QueryError, ast::Span};
 use crate::AppState;
 use crate::error::{CmdError, CmdResult};
 use crate::recent;
-use crate::workspace::{BundleSummary, Workspace, now_ms};
+use crate::workspace::{BundleSummary, ViewSort, Workspace, now_ms};
 
 fn workspace(state: &AppState) -> CmdResult<Arc<Workspace>> {
     state.workspace.read().unwrap().clone().ok_or_else(|| CmdError::new("no_bundle", "no bundle is open"))
@@ -402,6 +402,7 @@ pub async fn remove_source(app: AppHandle, id: i64, delete_data: Option<bool>) -
         let source = ws.read_db.lock().unwrap().source(id)?.ok_or_else(|| CmdError::new("not_found", "source"))?;
         let shard_root = (source.driver == crate::shards::DRIVER).then(|| ws.shard_root(&source)).transpose()?;
         ws.write_db.lock().unwrap().remove_source(id)?;
+        ws.view_sorts.write().unwrap().retain(|k, _| k.0 != id);
         ws.shard_keys.lock().unwrap().remove(&id);
         ws.close_shard(id)?;
         if let Some(root) = shard_root.filter(|_| delete_data == Some(true))
@@ -609,6 +610,14 @@ pub struct SearchResult {
     pub ids: Vec<i64>,
     pub elapsed_ms: f64,
     pub sections: vp_db::Sections,
+    /// The query text sorts by itself (so a folder's sort was only a tie-breaker).
+    pub query_sorted: bool,
+}
+
+/// `sort asc(field)` / `sort desc(field)` as a parsed sort key.
+fn view_sort_key(s: &ViewSort, reg: &vp_query::FieldRegistry) -> CmdResult<Vec<vp_query::Sort>> {
+    let text = format!("{}({})", if s.desc { "sort desc" } else { "sort asc" }, s.field);
+    Ok(vp_query::parse_query(&text, reg)?.sorts)
 }
 
 /// Runs a query. Empty text lists everything. `tz_offset_minutes` is the local offset
@@ -621,6 +630,8 @@ pub async fn search(
     folder: Option<String>,
     recursive: Option<bool>,
     tz_offset_minutes: i32,
+    sort: Option<ViewSort>,
+    sort_over: Option<bool>,
 ) -> CmdResult<SearchResult> {
     let ws = workspace(&app.state::<AppState>())?;
     blocking(move || {
@@ -635,17 +646,73 @@ pub async fn search(
         } else {
             vp_query::parse_query(&query, &reg).map_err(|e| utf16_error(e, &query))?
         };
-        if q.sorts.is_empty() {
+        let query_sorted = !q.sorts.is_empty();
+        // The folder's sort is what the listing is in, unless the query sorts by itself; it
+        // goes over the query's own sort only when chosen while that query was shown.
+        // A field that no longer exists is skipped.
+        let view = sort.and_then(|s| view_sort_key(&s, &reg).ok());
+        if !query_sorted {
             let default_sort = ws.settings.read().unwrap().grid.default_sort.clone();
             // An invalid default (e.g. naming a deleted field) just falls back to scan order.
             if let Ok(d) = vp_query::parse_query(&default_sort, &reg) {
                 q.sorts = d.sorts;
             }
         }
+        if let Some(v) = view
+            && (!query_sorted || sort_over == Some(true))
+        {
+            // Last is most significant; the rest stay as tie-breakers.
+            q.sorts.extend(v);
+        }
         let scope =
             vp_db::Scope { source_id, folder, recursive: recursive.unwrap_or(false), exclude_sources: offline, exclude_folders: replicas };
         let (ids, sections) = db.search_sections(&q, &reg, &Db::compile_context(now_ms(), tz_offset_minutes), &scope)?;
-        Ok(SearchResult { ids, elapsed_ms: started.elapsed().as_secs_f64() * 1000.0, sections })
+        Ok(SearchResult { ids, elapsed_ms: started.elapsed().as_secs_f64() * 1000.0, sections, query_sorted })
+    })
+    .await
+}
+
+/// One folder's own sort, as the frontend sees it (`source_id` none: the "all media" view).
+#[derive(Serialize)]
+pub struct ViewSortEntry {
+    pub source_id: Option<i64>,
+    pub folder: String,
+    #[serde(flatten)]
+    pub sort: ViewSort,
+}
+
+/// Every folder's own sort, from memory (read when the bundle opened).
+#[tauri::command]
+pub fn view_sorts(state: State<'_, AppState>) -> CmdResult<Vec<ViewSortEntry>> {
+    let ws = workspace(&state)?;
+    let map = ws.view_sorts.read().unwrap();
+    Ok(map
+        .iter()
+        .map(|((src, folder), sort)| ViewSortEntry { source_id: (*src != 0).then_some(*src), folder: folder.clone(), sort: sort.clone() })
+        .collect())
+}
+
+/// Sets (or with `None` forgets, so it follows the folder above) one folder's own sort.
+/// Memory and that one row of the library change together.
+#[tauri::command]
+pub async fn set_view_sort(app: AppHandle, source_id: Option<i64>, folder: String, sort: Option<ViewSort>) -> CmdResult<()> {
+    let ws = workspace(&app.state::<AppState>())?;
+    blocking(move || {
+        let key = (source_id.unwrap_or(0), folder.trim_matches('/').to_string());
+        if let Some(s) = &sort {
+            let reg = ws.read_db.lock().unwrap().field_registry()?;
+            view_sort_key(s, &reg)?;
+        }
+        if ws.view_sorts.read().unwrap().get(&key) == sort.as_ref() {
+            return Ok(());
+        }
+        ws.write_db.lock().unwrap().set_view_sort(key.0, &key.1, sort.as_ref().map(|s| (s.field.as_str(), s.desc)))?;
+        let mut map = ws.view_sorts.write().unwrap();
+        match sort {
+            Some(s) => map.insert(key, s),
+            None => map.remove(&key),
+        };
+        Ok(())
     })
     .await
 }
@@ -1642,6 +1709,7 @@ fn relocate_folder(ws: &Workspace, registry: &vp_driver::DriverRegistry, source_
             }
             std::fs::rename(&src, &dst)?;
             report.moved = ws.write_db.lock().unwrap().move_folder(source_id, from, to)?;
+            ws.reload_view_sorts();
             return Ok(report);
         }
     }
@@ -1670,6 +1738,7 @@ fn relocate_folder(ws: &Workspace, registry: &vp_driver::DriverRegistry, source_
         task.add(1);
     }
     ws.write_db.lock().unwrap().move_folder_values(source_id, from, to)?;
+    ws.reload_view_sorts();
     if report.failed.is_empty() { task.finish() } else { task.fail(format!("{} files failed", report.failed.len())) }
     Ok(report)
 }
@@ -1737,6 +1806,7 @@ fn remove_folder(ws: &Workspace, registry: &vp_driver::DriverRegistry, source_id
         task.add(1);
     }
     ws.write_db.lock().unwrap().delete_folder_values(source_id, folder)?;
+    ws.reload_view_sorts();
     let source = ws.read_db.lock().unwrap().source(source_id)?;
     if let Some(source) = source
         && let Some(dir) = ws.driver(registry, &source)?.local_path(folder)

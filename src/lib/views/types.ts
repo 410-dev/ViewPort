@@ -17,6 +17,8 @@ export interface TreeScope {
   folder: string;
   /** Query text applied to the files listed in each folder. */
   query: string;
+  /** The folder sorts go over the query's own sort. */
+  sortOver: boolean;
 }
 
 /** Props every view receives; each view uses the ones it needs. */

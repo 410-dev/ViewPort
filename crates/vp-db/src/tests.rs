@@ -926,3 +926,37 @@ fn extension_conditions_are_not_looked_up_per_item() {
         assert!(!plan.iter().any(|l| l.contains("CORRELATED") || l.contains(" EXISTS ")), "{src}: {plan:?}");
     }
 }
+
+#[test]
+fn folder_sorts_are_kept_moved_and_forgotten_with_their_folders() {
+    let mut lib = library();
+    let db = &mut lib.db;
+    db.set_view_sort(0, "", Some(("name", false))).unwrap();
+    db.set_view_sort(1, "trip", Some(("name", true))).unwrap();
+    db.set_view_sort(1, "trip/day1", Some(("size", false))).unwrap();
+    db.set_view_sort(1, "/trip/", Some(("added", true))).unwrap(); // replaces, slashes trimmed
+    db.set_view_sort(2, "clips", Some(("created", true))).unwrap();
+    let mut all = db.view_sorts().unwrap();
+    all.sort();
+    assert_eq!(
+        all,
+        [
+            (0, "".into(), "name".into(), false),
+            (1, "trip".into(), "added".into(), true),
+            (1, "trip/day1".into(), "size".into(), false),
+            (2, "clips".into(), "created".into(), true),
+        ]
+    );
+
+    // A moved folder takes its sorts (and its subfolders') along.
+    db.move_folder(1, "trip", "old/trip").unwrap();
+    let paths: Vec<_> = db.view_sorts().unwrap().into_iter().filter(|r| r.0 == 1).map(|r| r.1).collect();
+    assert_eq!(paths.len(), 2);
+    assert!(paths.contains(&"old/trip".to_string()) && paths.contains(&"old/trip/day1".to_string()));
+
+    // Forgetting one row, deleting a folder, removing a source.
+    db.set_view_sort(0, "", None).unwrap();
+    db.delete_folder_values(1, "old/trip/day1").unwrap();
+    db.remove_source(2).unwrap();
+    assert_eq!(db.view_sorts().unwrap(), [(1, "old/trip".into(), "added".into(), true)]);
+}

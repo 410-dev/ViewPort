@@ -514,6 +514,20 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE media ADD COLUMN dims_probe INTEGER NOT NULL DEFAULT 0;
     "#,
+    // v14: the sort each folder is browsed in (only where it differs from what the folder
+    // would inherit from the one above it). `source_id` 0 is the "all media" view.
+    r#"
+    CREATE TABLE view_sort (
+        source_id  INTEGER NOT NULL,
+        path       TEXT NOT NULL,
+        field      TEXT NOT NULL,
+        descending INTEGER NOT NULL,
+        PRIMARY KEY (source_id, path)
+    ) WITHOUT ROWID;
+    CREATE TRIGGER view_sort_source_gone AFTER DELETE ON source BEGIN
+        DELETE FROM view_sort WHERE source_id = OLD.id;
+    END;
+    "#,
 ];
 
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;

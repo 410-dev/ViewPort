@@ -167,6 +167,8 @@ pub fn run() {
             commands::edit_folder_values,
             commands::rename_folder,
             commands::move_folder,
+            commands::view_sorts,
+            commands::set_view_sort,
             commands::delete_folder,
             shards::shard_status,
             shards::inspect_shard,

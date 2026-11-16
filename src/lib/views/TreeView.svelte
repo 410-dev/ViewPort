@@ -8,6 +8,7 @@
   import Cells from "./Cells.svelte";
   import HeaderRow from "./HeaderRow.svelte";
   import { arrowStep } from "./selection.svelte";
+  import { folderSort } from "./sorts.svelte";
   import type { ViewProps } from "./types";
 
   /**
@@ -36,7 +37,8 @@
     try {
       const [folders, found] = await Promise.all([
         api.childFolders(src, path),
-        api.search(tree.query, src, path, false),
+        // Each folder in its own sort (or the one it follows).
+        api.search(tree.query, src, path, false, folderSort(src, path), tree.sortOver),
       ]);
       if (gen === generation) children.set(key, { folders, files: found.ids });
     } catch {
@@ -48,7 +50,7 @@
 
   // A new scope or query reloads what is open.
   $effect(() => {
-    const scope = { src: tree.sourceId, folder: tree.folder, query: tree.query, sources: tree.sources.length };
+    const scope = { src: tree.sourceId, folder: tree.folder, query: tree.query, sources: tree.sources.length, over: tree.sortOver, sort };
     untrack(() => {
       generation++;
       children.clear();
