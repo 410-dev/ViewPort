@@ -198,6 +198,24 @@ export class Selection {
     return next;
   }
 
+  /**
+   * A drag over items `from`..`to` (either way): the selection becomes `base` with that run
+   * added (or, with `add` false, taken out). Only what changes is touched.
+   */
+  sweep(base: number[], from: number, to: number, ids: number[], add: boolean) {
+    if (this.folders.length) this.folders = [];
+    const [a, b] = from < to ? [from, to] : [to, from];
+    const want = new Set(base);
+    for (let i = Math.max(0, a); i <= Math.min(ids.length - 1, b); i++) {
+      if (add) want.add(ids[i]);
+      else want.delete(ids[i]);
+    }
+    for (const x of [...this.set]) if (!want.has(x)) this.set.delete(x);
+    for (const x of want) if (!this.set.has(x)) this.set.add(x);
+    this.focus = ids[to] ?? null;
+    this.#anchor = from;
+  }
+
   selectAll(ids: number[]) {
     this.folders = [];
     for (const id of ids) this.set.add(id);

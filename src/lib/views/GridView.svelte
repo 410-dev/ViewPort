@@ -9,6 +9,7 @@
   import { recallScroll, rememberScroll, sectionAt } from "./scroll";
   import SectionScrollbar from "./SectionScrollbar.svelte";
   import { arrowStep } from "./selection.svelte";
+  import { Sweep } from "./sweep.svelte";
   import type { ViewProps } from "./types";
 
   let { ids: listed, folders, selection, resetKey, scrollKey, sections, tile, showNames, folderPreview, overscan, onopenwindow, onopen, onfolder, reorder }: ViewProps = $props();
@@ -154,16 +155,33 @@
     window.removeEventListener("pointercancel", onPressCancel);
   }
 
+  // ---- drag-selecting a run of items (see `sweep.svelte.ts`)
+  const sweep = new Sweep({
+    el: () => el,
+    indexAt: (x, y) => {
+      if (!ids.length) return -1;
+      const p = contentPoint(x, y);
+      const col = Math.min(cols - 1, Math.max(0, Math.floor((p.x - PAD + GAP / 2) / (tileW + GAP))));
+      const row = Math.max(0, Math.floor((p.y - PAD + GAP / 2) / rowH));
+      return Math.min(ids.length - 1, Math.max(0, row * cols + col - folders.length));
+    },
+    ids: () => ids,
+    selection: () => selection,
+    reorderHoldMs: () => reorder?.holdMs ?? null,
+    sideways: () => true,
+  });
+
   // A held item keeps the finger from scrolling the grid (the move becomes the drag).
   $effect(() => {
     if (!el) return;
     const block = (e: TouchEvent) => {
-      if (press?.armed) e.preventDefault();
+      if (press?.armed || sweep.blocksScroll) e.preventDefault();
     };
     el.addEventListener("touchmove", block, { passive: false });
     return () => {
       el.removeEventListener("touchmove", block);
       endPress();
+      sweep.cancel();
     };
   });
 
@@ -281,6 +299,7 @@
   onscroll={onScroll}
   onkeydown={onKey}
   class:reordering={!!dragging}
+  class:sweeping={sweep.active}
   role="listbox"
   aria-multiselectable="true"
   tabindex="0"
@@ -342,9 +361,16 @@
             ? `translate(${dragging.x - dragging.grabX}px, ${dragging.y - dragging.grabY}px) scale(1.06)`
             : `translate(${PAD + col * (tileW + GAP)}px, ${PAD + row * rowH}px)`}
           title={b?.name}
-          onpointerdown={(e) => startPress(e, id, v.index)}
-          onclick={(e) => !dropped && selection.activate(e, v.index, ids, onopen)}
-          oncontextmenu={(e) => (dragging ? e.preventDefault() : selection.hold(e, v.index, ids))}
+          onpointerdown={(e) => {
+            startPress(e, id, v.index);
+            sweep.down(e, v.index);
+          }}
+          onclick={(e) => !dropped && !sweep.dropped && selection.activate(e, v.index, ids, onopen)}
+          oncontextmenu={(e) => {
+            if (dragging || sweep.active) return e.preventDefault();
+            sweep.held();
+            selection.hold(e, v.index, ids);
+          }}
           ondblclick={() => onopen(id, ids)}
           onauxclick={(e) => e.button === 1 && onopenwindow?.(id, ids)}
           onmousedown={(e) => e.button === 1 && e.preventDefault()}
@@ -398,6 +424,12 @@
     outline: none;
     /* Replaced by `SectionScrollbar`. */
     scrollbar-width: none;
+    /* A sideways drag is a sweep (drag-select), never a pan. */
+    touch-action: pan-y;
+  }
+  .sweeping {
+    user-select: none;
+    -webkit-user-select: none;
   }
   .grid::-webkit-scrollbar {
     display: none;

@@ -7,6 +7,7 @@
   import { recallScroll, rememberScroll, sectionAt } from "./scroll";
   import SectionScrollbar from "./SectionScrollbar.svelte";
   import { arrowStep } from "./selection.svelte";
+  import { Sweep } from "./sweep.svelte";
   import type { ViewProps } from "./types";
 
   let { ids, folders, selection, resetKey, scrollKey, sections, overscan, columns, rowPx, sort, onsort, onopenwindow, onopen, onfolder }: ViewProps = $props();
@@ -81,6 +82,35 @@
     selection.revealing = null;
   });
 
+  // ---- drag-selecting a run of rows (see `sweep.svelte.ts`)
+  /** Wide columns scroll sideways: then a sideways drag is that, not a sweep. */
+  let wide = $state(false);
+  const sweep = new Sweep({
+    el: () => el,
+    indexAt: (_x, y) => {
+      if (!ids.length) return -1;
+      const r = el.getBoundingClientRect();
+      const slot = Math.floor((y - r.top + el.scrollTop - HEAD - 4) / rowPx);
+      return Math.min(ids.length - 1, Math.max(0, slot - folders.length));
+    },
+    ids: () => ids,
+    selection: () => selection,
+    reorderHoldMs: () => null,
+    sideways: () => !wide,
+    inset: HEAD,
+  });
+  $effect(() => {
+    if (!el) return;
+    const block = (e: TouchEvent) => {
+      if (sweep.blocksScroll) e.preventDefault();
+    };
+    el.addEventListener("touchmove", block, { passive: false });
+    return () => {
+      el.removeEventListener("touchmove", block);
+      sweep.cancel();
+    };
+  });
+
   function onKey(e: KeyboardEvent) {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
       e.preventDefault();
@@ -106,6 +136,9 @@
   bind:clientHeight={height}
   onscroll={onScroll}
   onkeydown={onKey}
+  class:sweeping={sweep.active}
+  class:pan-y={!wide}
+  onpointerdowncapture={() => (wide = el.scrollWidth > el.clientWidth + 1)}
   role="grid"
   aria-multiselectable="true"
   tabindex="0"
@@ -137,9 +170,16 @@
           class:focus={selection.focus === id}
           style:height="{rowPx}px"
           style:transform="translateY({r.slot * rowPx}px)"
-          onpointerdown={(e) => selection.pointer(e)}
-          onclick={(e) => selection.activate(e, r.index, ids, onopen)}
-          oncontextmenu={(e) => selection.hold(e, r.index, ids)}
+          onpointerdown={(e) => {
+            selection.pointer(e);
+            sweep.down(e, r.index);
+          }}
+          onclick={(e) => !sweep.dropped && selection.activate(e, r.index, ids, onopen)}
+          oncontextmenu={(e) => {
+            if (sweep.active) return e.preventDefault();
+            sweep.held();
+            selection.hold(e, r.index, ids);
+          }}
           ondblclick={() => onopen(id, ids)}
           onauxclick={(e) => e.button === 1 && onopenwindow?.(id, ids)}
           onmousedown={(e) => e.button === 1 && e.preventDefault()}
@@ -170,6 +210,14 @@
   }
   .list::-webkit-scrollbar {
     width: 0;
+  }
+  /* A sideways drag is a sweep (drag-select) unless the columns scroll sideways. */
+  .list.pan-y {
+    touch-action: pan-y;
+  }
+  .sweeping {
+    user-select: none;
+    -webkit-user-select: none;
   }
   .spacer {
     position: relative;
