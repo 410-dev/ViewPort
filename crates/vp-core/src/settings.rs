@@ -959,6 +959,10 @@ pub struct UiSettings {
     /// a shard folder) is connected. Offline sources are struck through and their items
     /// hidden. 0 = only when the window gets focus.
     pub source_check_secs: u32,
+    /// How long a "done" message (a pill at the bottom) stays before it leaves by itself.
+    pub toast_ms: u32,
+    /// Messages shown at once; older ones leave when a new one would go beyond.
+    pub toast_max: u32,
 }
 
 impl Default for UiSettings {
@@ -1000,6 +1004,8 @@ impl Default for UiSettings {
             suggest_limit: 20,
             value_list_limit: 500,
             source_check_secs: 5,
+            toast_ms: 3500,
+            toast_max: 4,
         }
     }
 }

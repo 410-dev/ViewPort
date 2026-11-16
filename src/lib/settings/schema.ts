@@ -146,6 +146,8 @@ export const SECTIONS: Section[] = [
           },
           { kind: "color", ...app({ path: "ui.accent", label: "set.accent" }) },
           { kind: "toggle", ...app({ path: "ui.reduce_motion", label: "set.reduceMotion" }) },
+          { kind: "number", ...app({ path: "ui.toast_ms", label: "set.toastMs", help: "set.toastMs.help" }), min: 500, step: 500, unit: "ms" },
+          { kind: "number", ...app({ path: "ui.toast_max", label: "set.toastMax" }), min: 1, max: 10, step: 1 },
         ],
       },
       {

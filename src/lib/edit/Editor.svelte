@@ -2,6 +2,7 @@
   import { untrack } from "svelte";
   import { api, asCmdError, type EditSpec, type LoopSegment, type MediaBrief, type SaveMode } from "../api";
   import { t } from "../i18n.svelte";
+  import { done } from "../toast.svelte";
   import Icon from "../ui/Icon.svelte";
   import { fade, pop } from "../ui/motion";
   import { dismiss } from "../ui/dismiss";
@@ -515,6 +516,7 @@
     video?.pause();
     try {
       const id = await api.editMedia(brief.id, spec(), mode);
+      done(t(mode === "copy" ? "toast.editCopy" : "toast.editOverwrite"));
       onsaved(id, mode);
     } catch (e) {
       const err = asCmdError(e);

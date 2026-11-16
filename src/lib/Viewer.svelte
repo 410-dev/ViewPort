@@ -25,6 +25,7 @@
   import { invalidate } from "./views/briefs.svelte";
   import { broadcast } from "./sync";
   import { t } from "./i18n.svelte";
+  import { done } from "./toast.svelte";
   import { fraction, tasks } from "./tasks.svelte";
   import { fmtBytes } from "./format";
   import Icon from "./ui/Icon.svelte";
@@ -269,6 +270,7 @@
     api
       .setValues([target], FAVORITE_FIELD, on ? [1] : [])
       .then(() => {
+        done(t(on ? "toast.favOn" : "toast.favOff"));
         invalidate([target]);
         broadcast("media", [target]);
         onchanged?.();

@@ -10,6 +10,7 @@
   import { startBackButton } from "$lib/back.svelte";
   import { picker } from "$lib/pick.svelte";
   import PathPicker from "$lib/ui/PathPicker.svelte";
+  import Toasts from "$lib/ui/Toasts.svelte";
 
   let { children } = $props();
 
@@ -78,6 +79,8 @@
 </script>
 
 {@render children()}
+
+<Toasts />
 
 {#if picker.req}
   {#key picker.req}

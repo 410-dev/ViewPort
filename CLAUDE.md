@@ -103,6 +103,8 @@ Cargo 워크스페이스(`crates/*` + `src-tauri`), edition 2024.
 - `lib/keys.ts`: 키 바인딩(설정 `keys`에서 읽음).
 - 창: `routes/+page.svelte`가 창 라벨(`main`/`viewer-N`/`library-N`)로 화면을 고른다. 뷰어는 `ViewerShell`(분할, 최대 3)이
   `Viewer` 패널들을 감싼다. 창 사이 데이터 변경은 `sync.ts`의 `broadcast`/`onSync`로 알린다 — 공유 데이터를 바꾸는 코드는 꼭 호출한다.
+- 미디어 정보·확장 필드 값을 바꾸거나 편집을 저장하는 새 경로는 성공 뒤 `toast.svelte.ts`의 `done(what, n)`으로 완료 알림을 띄운다
+  (여러 항목이면 n개로 한 번).
 - 소리는 `audio.svelte.ts`(백엔드 `audio.rs` 미러)만 쓴다. 미디어 요소의 음량·음소거를 직접 정하지 말고 `audible()`을 따른다.
 - 화면 가리기는 **Esc 빠른 두 번 누름**(`privacy.panic_keys` + `panic_double_ms`)이다. `routes/+layout.svelte`가 캡처 단계에서
   처리하며 뷰어·몰입 모드에서도 같다. 한 번 누름은 원래 기능(대화 상자·드롭다운·뷰어 닫기, 검색어 지우기)을 그대로 한다.

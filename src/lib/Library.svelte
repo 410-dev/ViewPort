@@ -37,6 +37,7 @@
     type SourceRow,
   } from "./api";
   import { i18n, t } from "./i18n.svelte";
+  import { done } from "./toast.svelte";
   import { isTyping, matches } from "./keys";
   import RightPanel from "./panel/RightPanel.svelte";
   import { prefs, savePrefs, ui } from "./prefs.svelte";
@@ -770,6 +771,7 @@
       }
       if (id === undefined) return;
       await api.renameMedia(id, name);
+      done(t("toast.rename"));
       renaming = null;
       afterRelocate([id]);
     } catch (e) {

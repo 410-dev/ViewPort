@@ -358,6 +358,8 @@ export interface UiSettings {
   suggest_limit: number;
   value_list_limit: number;
   source_check_secs: number;
+  toast_ms: number;
+  toast_max: number;
 }
 
 export interface AppSettings {

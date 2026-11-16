@@ -8,6 +8,7 @@
   import Icon from "../ui/Icon.svelte";
   import { onDestroy } from "svelte";
   import { broadcast, onSync } from "../sync";
+  import { done } from "../toast.svelte";
   import type { FolderRef } from "../views/selection.svelte";
 
   /**
@@ -104,18 +105,44 @@
     return n;
   }
 
+  /** The change as a short phrase for the "done" message ("태그 'x' 추가"). */
+  function describe(key: string, kind: "add" | "remove" | "set", vals: ExtValue[]) {
+    const f = fields.find((x) => x.key === key);
+    const field = f ? fieldName(f) : key;
+    const show = (v: ExtValue) => {
+      const s = String(v).replace(/\s+/g, " ");
+      return s.length > 24 ? `${s.slice(0, 23)}…` : s;
+    };
+    if (kind === "add") return t("toast.add", { field, value: show(vals[0]) });
+    if (kind === "remove") return t("toast.remove", { field, value: show(vals[0]) });
+    if (f?.ty.type === "toggle") return t(vals.length ? "toast.on" : "toast.off", { field });
+    if (!vals.length) return t("toast.clear", { field });
+    return t("toast.set", { field, value: vals.map(show).join(", ") });
+  }
+
+  /** Runs one change and, once it is saved, says so (for every item or folder it went to). */
+  async function notified<T>(what: string, work: Promise<T>): Promise<T> {
+    const [n, inFolders] = ofFolders ? [folders.length, true] : [ids.length, false];
+    const r = await work;
+    done(what, n, inFolders);
+    return r;
+  }
+
   // Edits go to the selected items, or to the folders (and, per field, everything inside).
   function setVals(key: string, vals: ExtValue[]) {
-    if (ofFolders) return editFolders(key, { op: "set", value: vals });
-    return api.setValues(ids, key, vals);
+    const what = describe(key, "set", vals);
+    if (ofFolders) return notified(what, editFolders(key, { op: "set", value: vals }));
+    return notified(what, api.setValues(ids, key, vals));
   }
   function addVal(key: string, v: ExtValue) {
-    if (ofFolders) return editFolders(key, { op: "add", value: v });
-    return api.addValue(ids, key, v);
+    const what = describe(key, "add", [v]);
+    if (ofFolders) return notified(what, editFolders(key, { op: "add", value: v }));
+    return notified(what, api.addValue(ids, key, v));
   }
   function removeVal(key: string, v: ExtValue) {
-    if (ofFolders) return editFolders(key, { op: "remove", value: v });
-    return api.removeValue(ids, key, v);
+    const what = describe(key, "remove", [v]);
+    if (ofFolders) return notified(what, editFolders(key, { op: "remove", value: v }));
+    return notified(what, api.removeValue(ids, key, v));
   }
 
   /** Turning "inside too" on also applies the values the folders already have. */
