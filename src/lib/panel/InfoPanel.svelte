@@ -2,7 +2,7 @@
   import Combobox from "../ui/Combobox.svelte";
   import Select from "../ui/Select.svelte";
   import { ask } from "@tauri-apps/plugin-dialog";
-  import { api, asCmdError, type ExtValue, type FieldInfo, type FieldType, type MediaDetail } from "../api";
+  import { api, asCmdError, type CommonValues, type ExtValue, type FieldInfo, type FieldType, type MediaDetail } from "../api";
   import { fmtBytes, fmtDate, fmtDuration } from "../format";
   import { i18n, t, type Key } from "../i18n.svelte";
   import Icon from "../ui/Icon.svelte";
@@ -31,6 +31,8 @@
 
   let fields = $state<FieldInfo[]>([]);
   let detail = $state<MediaDetail | null>(null);
+  /** Several items selected: the values they all share. */
+  let common = $state<CommonValues | null>(null);
   let folderVals = $state<Record<string, ExtValue[]> | null>(null);
   let error = $state("");
   let notice = $state("");
@@ -61,6 +63,19 @@
     return () => clearTimeout(timer);
   });
 
+  // Several items: what they share (each tag on all of them, the same rating everywhere).
+  $effect(() => {
+    const list = ids;
+    common = null;
+    if (ofFolders || list.length < 2) return;
+    const timer = setTimeout(() => {
+      api.commonValues(list).then((c) => {
+        if (ids === list) common = c;
+      });
+    }, 60);
+    return () => clearTimeout(timer);
+  });
+
   $effect(() => {
     const f = folder;
     folderVals = null;
@@ -75,6 +90,10 @@
         const f = folder;
         api.folderValues(f.sourceId, f.path).then((v) => folder === f && (folderVals = v)).catch(() => {});
       } else if (ids.length === 1) api.mediaDetail(ids[0]).then((d) => (detail = d));
+      else if (ids.length > 1) {
+        const list = ids;
+        api.commonValues(list).then((c) => ids === list && (common = c));
+      }
     }),
     onSync("fields", () => loadFields()),
   ];
@@ -83,6 +102,7 @@
   async function reload() {
     if (folder) folderVals = await api.folderValues(folder.sourceId, folder.path);
     else if (ids.length === 1) detail = await api.mediaDetail(ids[0]);
+    else if (ids.length > 1) common = await api.commonValues(ids);
     onchanged?.();
   }
 
@@ -159,7 +179,10 @@
     });
   }
 
-  const values = (key: string): ExtValue[] => (folder ? folderVals?.[key] : detail?.values[key]) ?? [];
+  const values = (key: string): ExtValue[] =>
+    (folder ? folderVals?.[key] : ofFolders ? undefined : many ? common?.values[key] : detail?.values[key]) ?? [];
+  /** Several items selected and this field differs between them (shown as "multiple values"). */
+  const mixed = (key: string) => many && !ofFolders && !!common?.mixed.includes(key);
   const single = (key: string) => values(key)[0];
 
   let tagInput = $state<Record<string, string>>({});
@@ -273,6 +296,11 @@
         <div class="field">
           <div class="label">
             <span>{fieldName(f)}</span>
+            {#if mixed(f.key)}
+              <span class="mixed" title={t(f.ty.type === "enum" ? "info.mixedEnum.help" : "info.mixed.help")}
+                >{t(f.ty.type === "enum" ? "info.mixedEnum" : "info.mixed")}</span
+              >
+            {/if}
             <span class="grow"></span>
             {#if ofFolders}
               <button
@@ -288,7 +316,7 @@
             {/if}
           </div>
           {#if f.ty.type === "enum"}
-            {#if one && values(f.key).length}
+            {#if values(f.key).length}
               <div class="chips">
                 {#each values(f.key) as v (v)}
                   <span class="chip"
@@ -312,7 +340,7 @@
               >
             {/if}
           {:else if f.ty.type === "toggle"}
-            {@const on = one && single(f.key) === 1}
+            {@const on = single(f.key) === 1}
             <div class="toggles">
               <button
                 class="fav"
@@ -342,14 +370,14 @@
                 {/each}
               </div>
             {:else}
-              <input class="input" type="number" min={ty.min} max={ty.max} value={cur ?? ""} onchange={(e) => setScalar(f, e.currentTarget.value)} />
+              <input class="input" type="number" min={ty.min} max={ty.max} value={cur ?? ""} placeholder={mixed(f.key) ? t("info.mixed") : ""} onchange={(e) => setScalar(f, e.currentTarget.value)} />
             {/if}
           {:else if f.ty.type === "text"}
             {#if f.key === "x.memo"}
-              <textarea class="input" rows="3" value={(single(f.key) as string) ?? ""} onchange={(e) => setScalar(f, e.currentTarget.value)}
+              <textarea class="input" rows="3" value={(single(f.key) as string) ?? ""} placeholder={mixed(f.key) ? t("info.mixed") : ""} onchange={(e) => setScalar(f, e.currentTarget.value)}
               ></textarea>
             {:else}
-              <input class="input" value={(single(f.key) as string) ?? ""} onchange={(e) => setScalar(f, e.currentTarget.value)} />
+              <input class="input" value={(single(f.key) as string) ?? ""} placeholder={mixed(f.key) ? t("info.mixed") : ""} onchange={(e) => setScalar(f, e.currentTarget.value)} />
             {/if}
           {:else}
             <input
@@ -357,6 +385,7 @@
               type="number"
               step={f.ty.type === "real" ? "any" : "1"}
               value={single(f.key) ?? ""}
+              placeholder={mixed(f.key) ? t("info.mixed") : ""}
               onchange={(e) => setScalar(f, e.currentTarget.value)}
             />
           {/if}
@@ -392,6 +421,17 @@
 </div>
 
 <style>
+  .mixed {
+    margin-left: 6px;
+    padding: 0 7px;
+    border-radius: var(--radius-pill);
+    background: var(--surface-2);
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
+  }
   .info {
     height: 100%;
     overflow-y: auto;

@@ -101,6 +101,14 @@ pub struct FieldInfo {
     pub builtin: bool,
 }
 
+/// What several items share ([`Db::common_values`]).
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+pub struct CommonValues {
+    pub values: std::collections::BTreeMap<String, Vec<ExtValue>>,
+    /// Fields with values on some items that are not on all of them.
+    pub mixed: Vec<String>,
+}
+
 /// Everything the info panel shows for one item.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct MediaDetail {
@@ -1249,6 +1257,52 @@ impl Db {
             detail.values.entry(key).or_default().push(v);
         }
         Ok(Some(detail))
+    }
+
+    /// What every item in `ids` has in common: per field, the values all of them carry
+    /// (a tag on every item, the same rating everywhere). `mixed` names the fields some
+    /// items have a value in that is not shared by all.
+    pub fn common_values(&self, ids: &[i64]) -> Result<CommonValues> {
+        let json = serde_json::to_string(ids)?;
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM media WHERE id IN (SELECT value FROM json_each(?1))",
+            [&json],
+            |r| r.get(0),
+        )?;
+        let mut out = CommonValues::default();
+        if n == 0 {
+            return Ok(out);
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT f.key, v.int_val, v.real_val, v.text_val, COUNT(DISTINCT v.media_id), MIN(v.id) FROM ext_value v
+             JOIN ext_field f ON f.id = v.field_id
+             WHERE v.media_id IN (SELECT value FROM json_each(?1))
+             GROUP BY v.field_id, v.int_val, v.real_val, v.text_val ORDER BY 6",
+        )?;
+        let rows = stmt.query_map([&json], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<i64>>(1)?,
+                r.get::<_, Option<f64>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, i64>(4)?,
+            ))
+        })?;
+        for row in rows {
+            let (key, i, f, t, count) = row?;
+            let v = match (i, f, t) {
+                (Some(i), _, _) => ExtValue::Int(i),
+                (_, Some(f), _) => ExtValue::Real(f),
+                (_, _, Some(t)) => ExtValue::Text(t),
+                _ => continue,
+            };
+            if count == n {
+                out.values.entry(key).or_default().push(v);
+            } else if !out.mixed.contains(&key) {
+                out.mixed.push(key);
+            }
+        }
+        Ok(out)
     }
 
     /// Replaces a field's values on every item in `ids` (one transaction).

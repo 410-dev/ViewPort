@@ -960,3 +960,22 @@ fn folder_sorts_are_kept_moved_and_forgotten_with_their_folders() {
     db.remove_source(2).unwrap();
     assert_eq!(db.view_sorts().unwrap(), [(1, "old/trip".into(), "added".into(), true)]);
 }
+
+#[test]
+fn common_values_are_what_every_selected_item_has() {
+    let lib = library();
+    let db = &lib.db;
+    // Items 1 and 2: tags 바다+가족 / 바다; ratings 5 / 3; genres differ.
+    let c = db.common_values(&[1, 2]).unwrap();
+    assert_eq!(c.values.get("x.tags"), Some(&vec![ExtValue::Text("바다".into())]));
+    assert_eq!(c.values.get("x.rating"), None);
+    assert!(c.mixed.contains(&"x.rating".to_string()) && c.mixed.contains(&"x.tags".to_string()));
+
+    db.set_values_many(&[1, 2, 4], "x.rating", &[ExtValue::Int(3)], "user").unwrap();
+    let c = db.common_values(&[1, 2, 4]).unwrap();
+    assert_eq!(c.values.get("x.rating"), Some(&vec![ExtValue::Int(3)]));
+    assert!(!c.mixed.contains(&"x.rating".to_string()));
+    // Ids no longer in the library do not count; nothing selected shares nothing.
+    assert_eq!(db.common_values(&[1, 2, 4, 999]).unwrap().values.get("x.rating"), Some(&vec![ExtValue::Int(3)]));
+    assert!(db.common_values(&[]).unwrap().values.is_empty());
+}

@@ -137,6 +137,13 @@ export interface EditSpec {
 }
 export type SaveMode = "copy" | "overwrite";
 
+/** What several selected items have in common (`common_values`). */
+export interface CommonValues {
+  values: Record<string, ExtValue[]>;
+  /** Fields with values on some of the items that not all of them share. */
+  mixed: string[];
+}
+
 export interface LoopSegment {
   id: number;
   media_id: number;
@@ -721,6 +728,8 @@ export const api = {
     invoke<void>("rename_field", { key, names, aliases }),
   deleteField: (key: string) => invoke<void>("delete_field", { key }),
   mediaDetail: (id: number) => invoke<MediaDetail | null>("media_detail", { id }),
+  /** The values every item in `ids` shares, and the fields where they differ. */
+  commonValues: (ids: number[]) => invoke<CommonValues>("common_values", { ids }),
   setValues: (ids: number[], key: string, values: ExtValue[]) => invoke<void>("set_values", { ids, key, values }),
   addValue: (ids: number[], key: string, value: ExtValue) => invoke<void>("add_value", { ids, key, value }),
   removeValue: (ids: number[], key: string, value: ExtValue) => invoke<void>("remove_value", { ids, key, value }),

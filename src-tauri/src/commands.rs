@@ -1029,6 +1029,13 @@ pub async fn media_detail(app: AppHandle, id: i64) -> CmdResult<Option<vp_db::Me
     blocking(move || Ok(ws.read_db.lock().unwrap().media_detail(id)?)).await
 }
 
+/// The extension field values every item in `ids` shares (the info panel of a selection).
+#[tauri::command]
+pub async fn common_values(app: AppHandle, ids: Vec<i64>) -> CmdResult<vp_db::CommonValues> {
+    let ws = workspace(&app.state::<AppState>())?;
+    blocking(move || Ok(ws.read_db.lock().unwrap().common_values(&ids)?)).await
+}
+
 #[tauri::command]
 pub async fn set_values(app: AppHandle, ids: Vec<i64>, key: String, values: Vec<vp_db::ExtValue>) -> CmdResult<()> {
     let ws = workspace(&app.state::<AppState>())?;

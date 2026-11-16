@@ -110,6 +110,7 @@ pub fn run() {
             commands::rename_field,
             commands::delete_field,
             commands::media_detail,
+            commands::common_values,
             commands::set_values,
             commands::add_value,
             commands::remove_value,
