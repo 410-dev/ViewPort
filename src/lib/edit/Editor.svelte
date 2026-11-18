@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { untrack } from "svelte";
+  import { onDestroy, untrack } from "svelte";
   import { api, asCmdError, type EditSpec, type LoopSegment, type MediaBrief, type SaveMode } from "../api";
   import { t } from "../i18n.svelte";
   import { done } from "../toast.svelte";
@@ -107,6 +107,80 @@
     speed = 1;
     if (isVideo) seekPos(0);
     refit();
+  }
+
+
+  // ---- undo / redo. Every change to the edit state is noticed here (no handler has to
+  // know): once the state has been still for a moment, the previous state is pushed on the
+  // undo stack. Dragging a handle or a slider therefore makes one step, not hundreds.
+  type Snap = { quarter: number; fine: number; expand: boolean; crop: Rect; touched: boolean; ratio: Ratio; blocks: Block[]; speed: number };
+  const takeSnap = (): Snap => ({
+    quarter, fine, expand, crop: { ...crop }, touched, ratio, speed,
+    blocks: blocks.map((x) => ({ ...x })),
+  });
+  const sameSnap = (a: Snap, b: Snap) => JSON.stringify(a) === JSON.stringify(b);
+  let past = $state<Snap[]>([]);
+  let future = $state<Snap[]>([]);
+  let histBase: Snap | null = null;
+  let histTimer: ReturnType<typeof setTimeout> | undefined;
+  const HIST_QUIET_MS = 400;
+
+  function commitHist() {
+    clearTimeout(histTimer);
+    histTimer = undefined;
+    const now = takeSnap();
+    if (!histBase) histBase = now;
+    else if (!sameSnap(histBase, now)) {
+      past = [...past.slice(-199), histBase];
+      future = [];
+      histBase = now;
+    }
+  }
+
+  $effect(() => {
+    takeSnap(); // tracked: any edit restarts the quiet timer
+    const ready = natW > 0 && (!isVideo || duration > 0);
+    if (!ready) return;
+    untrack(() => {
+      if (!histBase) return commitHist();
+      clearTimeout(histTimer);
+      histTimer = setTimeout(commitHist, HIST_QUIET_MS);
+    });
+  });
+  onDestroy(() => clearTimeout(histTimer));
+
+  function restoreSnap(sn: Snap) {
+    quarter = sn.quarter;
+    fine = sn.fine;
+    expand = sn.expand;
+    crop = { ...sn.crop };
+    touched = sn.touched;
+    ratio = sn.ratio;
+    speed = sn.speed;
+    blocks = sn.blocks.map((x) => ({ ...x }));
+    histBase = takeSnap();
+    if (isVideo) {
+      video?.pause();
+      seekPos(Math.max(0, Math.min(pos, total - frameMs / 2)));
+    }
+  }
+
+  function undo() {
+    if (histTimer !== undefined) commitHist();
+    const sn = past[past.length - 1];
+    if (!sn || !histBase) return;
+    future = [...future, histBase];
+    past = past.slice(0, -1);
+    restoreSnap(sn);
+  }
+
+  function redo() {
+    if (histTimer !== undefined) commitHist();
+    const sn = future[future.length - 1];
+    if (!sn || !histBase) return;
+    past = [...past, histBase];
+    future = future.slice(0, -1);
+    restoreSnap(sn);
   }
 
   // ---- stage layout
@@ -409,6 +483,12 @@
     seekPos(Math.max(0, Math.min(total - frameMs / 2, k * frameMs)));
   }
 
+  /** One second forward or back in the result. */
+  function stepSec(dir: 1 | -1) {
+    video?.pause();
+    seekPos(Math.max(0, Math.min(total - frameMs / 2, Math.round((pos + dir * 1000) / frameMs) * frameMs)));
+  }
+
   /** To the start of the selected block, or of the one before (back); to the next block (forward). */
   function stepCut(dir: 1 | -1) {
     video?.pause();
@@ -541,6 +621,16 @@
   );
 
   function onKey(e: KeyboardEvent) {
+    if ((e.ctrlKey || e.metaKey) && !saving && !confirming && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) {
+      const k = e.key.toLowerCase();
+      if (k === "z" || k === "y") {
+        e.preventDefault();
+        e.stopPropagation();
+        if (k === "y" || e.shiftKey) redo();
+        else undo();
+        return;
+      }
+    }
     if (tab === "trim" && !saving && !confirming && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
       e.preventDefault();
       e.stopPropagation();
@@ -573,6 +663,8 @@
   <header class="topbar">
     <button class="pill" onclick={onclose} disabled={saving}><Icon name="x" size={15} /><span class="label">{t("common.cancel")}</span></button>
     <span class="title">{t("edit.title")}</span>
+    <button class="pill" onclick={undo} disabled={saving || !past.length} title={t("edit.undo")} aria-label={t("edit.undo")}><Icon name="undo" size={15} /></button>
+    <button class="pill" onclick={redo} disabled={saving || !future.length} title={t("edit.redo")} aria-label={t("edit.redo")}><Icon name="redo" size={15} /></button>
     <button class="pill" onclick={reset} disabled={saving || !changed} title={t("edit.reset")}><Icon name="refresh" size={15} /><span class="label">{t("edit.reset")}</span></button>
     <span class="save-wrap">
       <button class="pill primary" bind:this={menuBtn} disabled={saving || !changed} onclick={() => (menu = !menu)}>
@@ -712,9 +804,11 @@
         <!-- Two rows: moving the playhead, then changing the blocks. -->
         <div class="row tools-row">
           <button class="icon sm" onclick={() => stepCut(-1)} title={t("edit.prevCut")} aria-label={t("edit.prevCut")}><Icon name="rewind" size={16} /></button>
+          <button class="icon sm sec" onclick={() => stepSec(-1)} title={t("edit.secBack")} aria-label={t("edit.secBack")}>−1s</button>
           <button class="icon sm" onclick={() => stepFrame(-1)} title={t("edit.frameBack")} aria-label={t("edit.frameBack")}><Icon name="frameBack" size={16} /></button>
           <button class="icon sm" onclick={togglePlay} title={playing ? t("viewer.pause") : t("viewer.play")} aria-label={playing ? t("viewer.pause") : t("viewer.play")}><Icon name={playing ? "pause" : "play"} size={16} /></button>
           <button class="icon sm" onclick={() => stepFrame(1)} title={t("edit.frameForward")} aria-label={t("edit.frameForward")}><Icon name="frameForward" size={16} /></button>
+          <button class="icon sm sec" onclick={() => stepSec(1)} title={t("edit.secForward")} aria-label={t("edit.secForward")}>+1s</button>
           <button class="icon sm" onclick={() => stepCut(1)} title={t("edit.nextCut")} aria-label={t("edit.nextCut")}><Icon name="fastForward" size={16} /></button>
           <span class="sep"></span>
           <span class="note tabular">{t("edit.result", { t: fmt(total / speed) })}</span>
@@ -1257,6 +1351,11 @@
   .icon.sm {
     width: 36px;
     height: 36px;
+  }
+  .icon.sec {
+    font-size: 11px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
   }
   .icon:disabled {
     opacity: 0.35;

@@ -965,6 +965,7 @@
   // A tap waits out the double-tap interval, so a double tap zooms without first moving on.
   let tapTimer: ReturnType<typeof setTimeout> | undefined;
   let lastPointerType = "mouse";
+  let hudWasShown = false;
 
   function cancelTap() {
     clearTimeout(tapTimer);
@@ -980,7 +981,14 @@
     }
     tapTimer = setTimeout(() => {
       tapTimer = undefined;
-      if (!zoom.zoomed && (prefs.app?.viewer.tap_to_advance ?? true)) settle(1);
+      if (zoom.zoomed) return;
+      if (prefs.app?.viewer.tap_to_advance ?? true) settle(1);
+      else if (hudWasShown && !showLoops) {
+        // Tap-to-advance is off: a tap on the picture hides the controls and keeps them
+        // hidden (no timer) until the next touch.
+        clearTimeout(hudTimer);
+        hud = false;
+      }
     }, prefs.app?.viewer.double_tap_ms ?? 280);
   }
 
@@ -993,6 +1001,8 @@
 
   function onPointerDown(e: PointerEvent) {
     lastPointerType = e.pointerType;
+    // Remember whether the controls were up before this touch, for a tap that hides them.
+    hudWasShown = showHud;
     if (e.pointerType === "touch") poke();
     finishSlide();
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
