@@ -619,6 +619,8 @@ const en: Record<Key, string> = {
   "viewer.paneMenu": "Split menu",
   "viewer.switchPane": "Switch to this pane",
   "viewer.swapPanes": "Swap places",
+  "viewer.turnColumns": "Side by side",
+  "viewer.turnRows": "Stack",
   "viewer.equalPanes": "Equal sizes",
   "viewer.closeLeft": "Close left",
   "viewer.closeRight": "Close right",

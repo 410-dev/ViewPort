@@ -28,9 +28,9 @@
    * strip swaps the two, sliding one aside as the other comes in. Dragged nearly to the end,
    * so that one of the two panes keeps less than `100 - close_at_percent` percent of their
    * length, that pane closes instead. The "…" button on a divider opens its menu: swap the two panes, equal sizes,
-   * close either side. Panes stay in `panes` (and in the DOM) where they were added and
-   * are placed by CSS `order` from `slots`, so a swap moves no element: a playing video
-   * keeps playing.
+   * turn that part the other way, close either side. Panes stay in `panes` (and in the DOM)
+   * where they were added and are placed absolutely from `tiles`, so a swap or a turn moves
+   * no element: a playing video keeps playing.
    */
   type Pane = {
     key: number;
@@ -73,33 +73,44 @@
 
   let nextKey = 0;
   let panes = $state<Pane[]>(untrack(() => initial.map((p) => ({ key: nextKey++, ...p, browse: null }))));
-  /** Pane indices in the order they are shown. */
-  let slots = $state<number[]>(untrack(() => initial.map((_, i) => i)));
+
+  /**
+   * The layout: tiles along the split direction `dir`. A tile holds one pane, or two
+   * stacked across `dir` (one long pane beside two short ones). Panes are named by their
+   * `key`, so closing one renumbers nothing here. `size` is the tile's share of the split
+   * length (the tiles' sizes sum to 1); `inner` the shares of its panes across it.
+   */
+  type Tile = { tid: number; size: number; keys: number[]; inner: number[] };
+  type Dir = "columns" | "rows";
+  let nextTid = 0;
+  let tiles = $state<Tile[]>(untrack(() => panes.map((p) => ({ tid: nextTid++, size: 1 / panes.length, keys: [p.key], inner: [1] }))));
+  /** Chosen when the split opens (by the window's shape when `auto`); it stays until changed
+   * from a divider menu, however the window turns. */
+  let dir = $state<Dir | null>(null);
   let active = $state(0);
   let width = $state(0);
   let height = $state(0);
 
-  /** Share of the split length per pane (sums to 1), by pane index. */
-  let sizes = $state<number[]>(untrack(() => initial.map(() => 1 / initial.length)));
-  /** Switching mode: the large pane, or null. */
+  /** Switching mode: the large tile (`tid`), or null. */
   let main = $state<number | null>(null);
-  /** The large pane before the last switch: the one sliding aside. */
+  /** The large tile before the last switch: the one sliding aside. */
   let prevMain = $state<number | null>(null);
   let animating = $state(false);
   /**
-   * While a divider is dragged: each pane's size when the drag started. Panes keep that
-   * layout and are scaled to their slot instead of being laid out again every frame, which
-   * made the WebView decode and rasterize large pictures over and over (flicker).
+   * While a divider is dragged: each pane's size (by key) when the drag started. Panes keep
+   * that layout and are scaled to their slot instead of being laid out again every frame,
+   * which made the WebView decode and rasterize large pictures over and over (flicker).
    */
-  let frozen = $state<{ w: number; h: number }[] | null>(null);
-  /** The pane a divider drag would close if let go now. */
-  let closing = $state<number | null>(null);
-  /** A pane on its way out: kept at this size, clipped by its shrinking slot. */
-  let leaving = $state<{ i: number; w: number; h: number; end: boolean } | null>(null);
-  /** The divider (by slot) whose menu is open. */
-  let menuAt = $state<number | null>(null);
-  const inners: HTMLDivElement[] = [];
-  const paneEls: HTMLDivElement[] = [];
+  let frozen = $state<Map<number, { w: number; h: number }> | null>(null);
+  /** The panes (keys) a divider drag would close if let go now. */
+  let closing = $state<number[]>([]);
+  /** Panes on their way out: kept at their size, clipped by their shrinking slot, against
+   * the far side (`end`) along `rows` (a vertical shrink). */
+  let leaving = $state<{ keys: number[]; size: Map<number, { w: number; h: number }>; end: boolean; rows: boolean } | null>(null);
+  /** The divider (by id) whose menu is open. */
+  let menuAt = $state<string | null>(null);
+  const inners: Record<number, HTMLDivElement> = {};
+  const paneEls: Record<number, HTMLDivElement> = {};
   let shell = $state<HTMLDivElement>();
   let animTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -111,19 +122,75 @@
   const animMs = $derived(reduced() ? 0 : (win?.switch_anim_ms ?? 280));
 
   const max = $derived(Math.min(3, Math.max(1, prefs.app?.windows.max_viewer_panes ?? 3)));
-  const layout = $derived.by(() => {
+
+  /** The direction a split opening now takes. */
+  function autoDir(): Dir {
     const l = prefs.app?.windows.split_layout ?? "auto";
-    return l === "auto" ? (width >= height ? "columns" : "rows") : l;
+    return l === "columns" || l === "rows" ? l : width >= height ? "columns" : "rows";
+  }
+  // Opened already split: the direction is chosen once the window's size is known.
+  $effect(() => {
+    if (dir === null && width > 0 && height > 0) untrack(() => (dir = autoDir()));
   });
 
-  const cols = $derived(layout === "columns");
+  const cols = $derived((dir ?? "columns") === "columns");
   const DIVIDER = 4;
-  /** Length shared by the panes (without the dividers). */
-  const avail = $derived(Math.max(1, (cols ? width : height) - DIVIDER * (panes.length - 1)));
+  /** Length shared by the tiles (without the dividers). */
+  const avail = $derived(Math.max(1, (cols ? width : height) - DIVIDER * (tiles.length - 1)));
+
+  const indexOf = (key: number) => panes.findIndex((p) => p.key === key);
+  const tileOf = (key: number) => tiles.findIndex((t) => t.keys.includes(key));
+  /** Pane indices in the order they are shown. */
+  const order = $derived(tiles.flatMap((t) => t.keys.map(indexOf)).filter((i) => i >= 0));
+
+  type Rect = { x: number; y: number; w: number; h: number };
+  /** A divider: between tiles `k` and `k + 1` (`root`), or between the two panes of tile
+   * `k`. `h` is a horizontal line (panes above and below it). `at` is where its menu button
+   * sits along it (%): beside a stacked tile, off the point where the other line meets it.
+   * `folded`: inside a tile folded to a strip (switching mode). */
+  type Divider = { id: string; root: boolean; k: number; rect: Rect; h: boolean; at: number; folded: boolean };
+  const geo = $derived.by(() => {
+    const across = cols ? height : width;
+    const box = (a: number, c: number, la: number, lc: number): Rect =>
+      cols ? { x: a, y: c, w: la, h: lc } : { x: c, y: a, w: lc, h: la };
+    const rects = new Map<number, Rect>();
+    const dividers: Divider[] = [];
+    let at = 0;
+    tiles.forEach((t, k) => {
+      const len = t.size * avail;
+      if (t.keys.length === 1) rects.set(t.keys[0], box(at, 0, len, across));
+      else {
+        const room = Math.max(1, across - DIVIDER);
+        let c = 0;
+        t.keys.forEach((key, j) => {
+          const l = (t.inner[j] ?? 0.5) * room;
+          rects.set(key, box(at, c, len, l));
+          c += l;
+          if (j === 0) {
+            dividers.push({ id: `i${t.tid}`, root: false, k, rect: box(at, c, len, DIVIDER), h: cols, at: 50, folded: main !== null && t.tid !== main });
+            c += DIVIDER;
+          }
+        });
+      }
+      at += len;
+      if (k < tiles.length - 1) {
+        const stacked = [t, tiles[k + 1]].find((x) => x.keys.length > 1);
+        dividers.push({ id: `r${k}`, root: true, k, rect: box(at, 0, DIVIDER, across), h: !cols, at: stacked ? (stacked.inner[0] ?? 0.5) * 50 : 50, folded: false });
+        at += DIVIDER;
+      }
+    });
+    return { rects, dividers };
+  });
 
   function equalSizes() {
-    sizes = panes.map(() => 1 / panes.length);
+    for (const t of tiles) t.size = 1 / tiles.length;
     main = prevMain = null;
+  }
+
+  /** Equal sizes on both sides of divider `d` (the tiles, or the two stacked panes). */
+  function equalAt(d: Divider) {
+    if (d.root) equalSizes();
+    else tiles[d.k].inner = [0.5, 0.5];
   }
 
   /** Turns the size transition on, in the styles, before anything changes size. */
@@ -135,25 +202,35 @@
     void shell?.offsetHeight;
   }
 
-  /** Switching mode with pane `i` large. */
-  async function switchTo(i: number) {
-    if (panes.length < 2) return;
-    const rest = (1 - mainShare) / (panes.length - 1);
+  /** Switching mode with tile `tid` large. */
+  async function switchTo(tid: number) {
+    if (tiles.length < 2) return;
+    const rest = (1 - mainShare) / (tiles.length - 1);
     // The transition must be on before any pane changes size. Set in the same update,
     // the WebView could restyle a pane in between (the tapped strip is removed then) and
     // that pane jumped while the other grew from the wrong edge.
     await animate();
-    prevMain = main ?? i;
-    main = i;
-    active = i;
-    sizes = panes.map((_, j) => (j === i ? mainShare : rest));
+    prevMain = main ?? tid;
+    main = tid;
+    const t = tiles.find((x) => x.tid === tid);
+    if (t && !t.keys.includes(panes[active]?.key)) active = indexOf(t.keys[0]);
+    for (const x of tiles) x.size = x.tid === tid ? mainShare : rest;
   }
 
+  const measure = (keys: number[]) =>
+    new Map(
+      keys.map((key) => {
+        const r = inners[key]?.getBoundingClientRect();
+        return [key, { w: r?.width ?? 0, h: r?.height ?? 0 }];
+      }),
+    );
+
   /**
-   * Drags the divider after slot `k`. Let go past `switchAt`, switching mode starts;
-   * nearly at the end, the smaller pane closes.
+   * Drags divider `d`. Between tiles, let go past `switchAt` switching mode starts; nearly at
+   * the end, the smaller tile closes (both panes of a stacked tile). Between the two panes of
+   * a tile, it only resizes them or closes one.
    */
-  function drag(e: PointerEvent, k: number) {
+  function drag(e: PointerEvent, d: Divider) {
     if (e.pointerType === "mouse" && e.button !== 0) return;
     if (leaving) return;
     const el = e.currentTarget as HTMLElement;
@@ -161,94 +238,148 @@
     e.preventDefault();
     e.stopPropagation();
     menuAt = null;
-    main = prevMain = null;
-    frozen = panes.map((_, j) => {
-      const r = inners[j]?.getBoundingClientRect();
-      return { w: r?.width ?? 0, h: r?.height ?? 0 };
-    });
+    if (d.root) main = prevMain = null;
+    frozen = measure(panes.map((p) => p.key));
     animating = false;
-    const [a, b] = [slots[k], slots[k + 1]];
-    const from = cols ? e.clientX : e.clientY;
-    const a0 = sizes[a];
-    const pair = a0 + sizes[b];
+    const t = tiles[d.k];
+    const [ta, tb] = [tiles[d.k], tiles[d.k + 1]];
+    // The shares on both sides of the divider.
+    const get = (j: 0 | 1) => (d.root ? (j ? tb : ta).size : t.inner[j]);
+    const set = (j: 0 | 1, v: number) => {
+      if (d.root) (j ? tb : ta).size = v;
+      else t.inner[j] = v;
+    };
+    const keysOf = (j: 0 | 1) => (d.root ? (j ? tb : ta).keys : [t.keys[j]]);
+    const room = d.root ? avail : Math.max(1, (cols ? height : width) - DIVIDER);
+    const along = (ev: PointerEvent) => (d.h ? ev.clientY : ev.clientX);
+    const from = along(e);
+    const a0 = get(0);
+    const pair = a0 + get(1);
+    let gone: 0 | 1 | null = null;
     const move = (ev: PointerEvent) => {
-      const x = Math.min(pair, Math.max(0, a0 + ((cols ? ev.clientX : ev.clientY) - from) / avail));
-      sizes[a] = x;
-      sizes[b] = pair - x;
-      closing = x < pair * closeBelow ? a : pair - x < pair * closeBelow ? b : null;
+      const x = Math.min(pair, Math.max(0, a0 + (along(ev) - from) / room));
+      set(0, x);
+      set(1, pair - x);
+      gone = x < pair * closeBelow ? 0 : pair - x < pair * closeBelow ? 1 : null;
+      closing = gone === null ? [] : [...keysOf(gone)];
     };
     const up = () => {
       el.removeEventListener("pointermove", move);
       el.removeEventListener("pointerup", up);
       el.removeEventListener("pointercancel", up);
       frozen = null;
-      const gone = closing;
-      closing = null;
-      if (gone !== null) return void collapse(gone, gone === a ? b : a);
-      const big = sizes.findIndex((x) => x > switchAt);
-      if (big >= 0) switchTo(big);
+      closing = [];
+      if (gone !== null) return void collapse(d, gone);
+      if (!d.root) return;
+      const big = tiles.find((x) => x.size > switchAt);
+      if (big) switchTo(big.tid);
     };
     el.addEventListener("pointermove", move);
     el.addEventListener("pointerup", up);
     el.addEventListener("pointercancel", up);
   }
 
-  /** Pane `i` shrinks away into the divider, its neighbour `into` taking its length, and closes. */
-  async function collapse(i: number, into: number) {
+  /** Side `j` of divider `d` shrinks away into it, the other side taking its length, and closes. */
+  async function collapse(d: Divider, j: 0 | 1) {
     if (leaving) return;
-    const r = inners[i]?.getBoundingClientRect();
+    const t = tiles[d.k];
+    const keys = [...(d.root ? tiles[d.k + j].keys : [t.keys[j]])];
     // Held at its size and against the far side, so it looks pushed off rather than squeezed.
-    leaving = { i, w: r?.width ?? 0, h: r?.height ?? 0, end: slots.indexOf(i) < slots.indexOf(into) };
-    main = prevMain = null;
+    leaving = { keys, size: measure(keys), end: j === 0, rows: d.h };
+    if (d.root) main = prevMain = null;
     await animate();
-    sizes[into] += sizes[i];
-    sizes[i] = 0;
+    if (d.root) {
+      const [gone, into] = [tiles[d.k + j], tiles[d.k + 1 - j]];
+      into.size += gone.size;
+      gone.size = 0;
+    } else {
+      t.inner[1 - j] = 1;
+      t.inner[j] = 0;
+    }
     setTimeout(() => {
       leaving = null;
-      remove(i);
+      // Removing one renumbers the panes after it: look each up again.
+      for (const key of keys) {
+        const i = indexOf(key);
+        if (i >= 0) remove(i);
+      }
     }, animMs);
   }
 
-  /** Swaps the panes on both sides of divider `k`, sliding each into the other's place. */
-  async function swap(k: number) {
-    menuAt = null;
-    const moved = [slots[k], slots[k + 1]];
-    const before = moved.map((i) => paneEls[i]?.getBoundingClientRect());
-    [slots[k], slots[k + 1]] = [slots[k + 1], slots[k]];
+  /** Runs `change`, then slides each pane from where it was to where it is now. */
+  async function slide(change: () => void) {
+    const before = new Map(panes.map((p) => [p.key, paneEls[p.key]?.getBoundingClientRect()]));
+    change();
     await tick();
     if (!animMs) return;
-    moved.forEach((i, n) => {
-      const el = paneEls[i];
-      const was = before[n];
-      if (!el || !was) return;
+    for (const [key, was] of before) {
+      const el = paneEls[key];
+      if (!el || !was) continue;
       const now = el.getBoundingClientRect();
+      if (Math.abs(was.left - now.left) < 1 && Math.abs(was.top - now.top) < 1) continue;
       el.style.transition = "none";
       el.style.transform = `translate(${was.left - now.left}px, ${was.top - now.top}px)`;
       void el.offsetWidth;
       el.style.transition = `transform ${animMs}ms cubic-bezier(0.3, 0, 0.1, 1)`;
       el.style.transform = "";
       setTimeout(() => (el.style.transition = ""), animMs + 40);
+    }
+  }
+
+  /** Swaps what is on both sides of divider `d` (a stacked tile moves as one). */
+  function swap(d: Divider) {
+    menuAt = null;
+    slide(() => {
+      if (d.root) [tiles[d.k], tiles[d.k + 1]] = [tiles[d.k + 1], tiles[d.k]];
+      else {
+        const t = tiles[d.k];
+        t.keys = [t.keys[1], t.keys[0]];
+        t.inner = [t.inner[1], t.inner[0]];
+      }
     });
   }
 
   /**
-   * Switching mode: every pane is drawn at the large size, clipped by its slot and held
-   * against the side facing the large pane, so a folding pane looks pushed aside.
+   * Turns the panes on both sides of divider `d` the other way. Between two tiles that are
+   * the whole split, the split turns (a stacked tile with it). Between two of three single
+   * tiles, those two stack across and the other one stays long. Between two stacked panes,
+   * they go back in line with the rest.
    */
-  function anchor(i: number): "start" | "end" | null {
+  async function turn(d: Divider) {
+    menuAt = null;
+    await animate();
+    if (!d.root) {
+      const t = tiles[d.k];
+      tiles.splice(d.k, 1, ...t.keys.map((key, j) => ({ tid: nextTid++, size: t.size * (t.inner[j] ?? 0.5), keys: [key], inner: [1] })));
+    } else if (tiles.length === 2) {
+      dir = cols ? "rows" : "columns";
+    } else {
+      const [a, b] = [tiles[d.k], tiles[d.k + 1]];
+      const size = a.size + b.size;
+      tiles.splice(d.k, 2, { tid: nextTid++, size, keys: [...a.keys, ...b.keys], inner: [a.size / size, b.size / size] });
+    }
+    main = prevMain = null;
+  }
+
+  /**
+   * Switching mode: every pane is drawn at the large length, clipped by its slot and held
+   * against the side facing the large tile, so a folding tile looks pushed aside.
+   */
+  function anchor(key: number): "start" | "end" | null {
     if (main === null) return null;
-    const at = slots.indexOf(i);
-    if (i !== main) return at > slots.indexOf(main) ? "start" : "end";
-    return prevMain !== null && slots.indexOf(prevMain) > at ? "end" : "start";
+    const at = tileOf(key);
+    const m = tiles.findIndex((t) => t.tid === main);
+    if (tiles[at]?.tid !== main) return at > m ? "start" : "end";
+    const p = tiles.findIndex((t) => t.tid === prevMain);
+    return p >= 0 && p > at ? "end" : "start";
   }
 
   /** Scale of a frozen pane in its current slot (never enlarged: the rest stays black). */
-  function frozenScale(i: number) {
-    const f = frozen?.[i];
-    if (!f?.w || !f.h) return 1;
-    const slot = (sizes[i] ?? 0) * avail;
-    const [w, h] = cols ? [slot, height] : [width, slot];
-    return Math.min(1, w / f.w, h / f.h);
+  function frozenScale(key: number) {
+    const f = frozen?.get(key);
+    const r = geo.rects.get(key);
+    if (!f?.w || !f.h || !r) return 1;
+    return Math.min(1, r.w / f.w, r.h / f.h);
   }
 
   /** Where a new explorer pane starts. */
@@ -257,10 +388,13 @@
   function split() {
     if (panes.length >= max) return;
     const p = panes[active];
+    // A split opening takes its direction from the window now.
+    if (panes.length === 1) dir = autoDir();
     // The new pane starts as an explorer; until something is opened there it keeps the
     // active pane's list.
-    panes.push({ key: nextKey++, ids: p.ids, index: p.index, group: p.group, browse: start() });
-    slots.push(panes.length - 1);
+    const key = nextKey++;
+    panes.push({ key, ids: p.ids, index: p.index, group: p.group, browse: start() });
+    tiles.push({ tid: nextTid++, size: 0, keys: [key], inner: [1] });
     active = panes.length - 1;
     menuAt = null;
     equalSizes();
@@ -269,22 +403,34 @@
   /** Closes pane `i`; the others keep their proportions. */
   function remove(i: number) {
     if (panes.length === 1) return onclose(panes[0].ids[panes[0].index]);
+    const key = panes[i].key;
+    const activeKey = panes[active]?.key;
     panes.splice(i, 1);
-    slots = slots.filter((x) => x !== i).map((x) => (x > i ? x - 1 : x));
-    const rest = sizes.filter((_, j) => j !== i);
-    const sum = rest.reduce((a, b) => a + b, 0);
-    sizes = rest.map((x) => (sum > 0 ? x / sum : 1 / rest.length));
-    if (active === i) active = slots[0];
-    else if (active > i) active--;
+    const at = tileOf(key);
+    const t = tiles[at];
+    if (t && t.keys.length > 1) {
+      t.keys = t.keys.filter((k) => k !== key);
+      t.inner = [1];
+    } else if (t) {
+      if (main === t.tid) main = prevMain = null;
+      if (prevMain === t.tid) prevMain = null;
+      tiles.splice(at, 1);
+      const sum = tiles.reduce((n, x) => n + x.size, 0);
+      for (const x of tiles) x.size = sum > 0 ? x.size / sum : 1 / tiles.length;
+    }
+    // A stacked tile left alone becomes the split, turned its way.
+    if (tiles.length === 1 && tiles[0].keys.length === 2) {
+      const only = tiles[0];
+      dir = cols ? "rows" : "columns";
+      tiles = only.keys.map((k, j) => ({ tid: nextTid++, size: only.inner[j] ?? 0.5, keys: [k], inner: [1] }));
+      main = prevMain = null;
+    }
+    const still = indexOf(activeKey);
+    active = still >= 0 ? still : (order[0] ?? 0);
     if (main !== null) {
-      // Switching mode goes on with the panes left, unless the large one closed.
-      if (main === i || panes.length < 2) equalSizes();
-      else {
-        const at = (x: number | null) => (x !== null && x > i ? x - 1 : x === i ? null : x);
-        main = at(main);
-        prevMain = at(prevMain);
-        sizes = panes.map((_, j) => (j === main ? mainShare : (1 - mainShare) / (panes.length - 1)));
-      }
+      // Switching mode goes on with the tiles left.
+      if (tiles.length < 2) equalSizes();
+      else for (const x of tiles) x.size = x.tid === main ? mainShare : (1 - mainShare) / (tiles.length - 1);
     }
     menuAt = null;
   }
@@ -349,7 +495,7 @@
     const k = settings.keys;
     if (matches(e, k.toggle_mute)) toggleMute();
     else if (matches(e, k.split_view)) split();
-    else if (matches(e, k.next_pane) && panes.length > 1) active = slots[(slots.indexOf(active) + 1) % slots.length];
+    else if (matches(e, k.next_pane) && panes.length > 1) active = order[(order.indexOf(active) + 1) % order.length];
     else return;
     e.preventDefault();
   }
@@ -398,32 +544,38 @@
   aria-modal="true"
 >
   {#each panes as p, i (p.key)}
-    {@const slot = slots.indexOf(i)}
-    {@const side = anchor(i)}
+    {@const side = anchor(p.key)}
+    {@const r = geo.rects.get(p.key)}
+    {@const out = leaving?.keys.includes(p.key) ? leaving : null}
+    {@const held = out?.size.get(p.key)}
+    {@const fz = frozen?.get(p.key)}
     <div
       class="pane"
-      bind:this={paneEls[i]}
-      class:closing={closing === i}
-      style:order={slot * 2}
-      style:flex-grow={sizes[i] ?? 1}
+      bind:this={paneEls[p.key]}
+      class:closing={closing.includes(p.key)}
+      class:ax-rows={out ? out.rows : !cols}
+      style:left="{r?.x ?? 0}px"
+      style:top="{r?.y ?? 0}px"
+      style:width="{r?.w ?? 0}px"
+      style:height="{r?.h ?? 0}px"
       onpointerdowncapture={() => (active = i)}
       role="presentation"
     >
       <div
         class="inner"
-        bind:this={inners[i]}
+        bind:this={inners[p.key]}
         class:browse={!!p.browse}
         class:a-start={side === "start"}
         class:a-end={side === "end"}
-        class:leaving={leaving?.i === i}
-        class:end={leaving?.i === i && leaving.end}
-        class:frozen={!!frozen?.[i]?.w}
+        class:leaving={!!out}
+        class:end={!!out?.end}
+        class:frozen={!!fz?.w}
         style:--big="{avail * mainShare}px"
-        style:--lw="{leaving?.w ?? 0}px"
-        style:--lh="{leaving?.h ?? 0}px"
-        style:--fw="{frozen?.[i]?.w ?? 0}px"
-        style:--fh="{frozen?.[i]?.h ?? 0}px"
-        style:--fs={frozenScale(i)}
+        style:--lw="{held?.w ?? 0}px"
+        style:--lh="{held?.h ?? 0}px"
+        style:--fw="{fz?.w ?? 0}px"
+        style:--fh="{fz?.h ?? 0}px"
+        style:--fs={frozenScale(p.key)}
       >
         {#if p.browse}
           {#if bundle}
@@ -463,33 +615,40 @@
           />
         {/if}
       </div>
-      {#if main !== null && i !== main}
-        <!-- A folded pane: a tap swaps it in. -->
-        <button class="peek" class:end={side === "end"} aria-label={t("viewer.switchPane")} onclick={() => switchTo(i)}></button>
+      {#if main !== null && tiles[tileOf(p.key)] && tiles[tileOf(p.key)].tid !== main}
+        <!-- A folded tile: a tap swaps it in. -->
+        <button class="peek" class:end={side === "end"} aria-label={t("viewer.switchPane")} onclick={() => switchTo(tiles[tileOf(p.key)].tid)}></button>
       {/if}
     </div>
   {/each}
-  {#each slots.slice(1) as _, k (k)}
+  {#each geo.dividers as d (d.id)}
     <div
       class="divider"
-      style:order={k * 2 + 1}
+      class:h={d.h}
+      class:open={menuAt === d.id}
+      class:folded={d.folded}
+      style:--at="{d.at}%"
+      style:left="{d.rect.x}px"
+      style:top="{d.rect.y}px"
+      style:width="{d.rect.w}px"
+      style:height="{d.rect.h}px"
       role="separator"
-      aria-orientation={cols ? "vertical" : "horizontal"}
-      onpointerdown={(e) => drag(e, k)}
-      ondblclick={equalSizes}
+      aria-orientation={d.h ? "horizontal" : "vertical"}
+      onpointerdown={(e) => drag(e, d)}
+      ondblclick={() => animate().then(() => equalAt(d))}
     >
       <button
         class="more"
-        class:on={menuAt === k}
+        class:on={menuAt === d.id}
         aria-label={t("viewer.paneMenu")}
-        aria-expanded={menuAt === k}
+        aria-expanded={menuAt === d.id}
         onpointerdown={(e) => e.stopPropagation()}
         ondblclick={(e) => e.stopPropagation()}
-        onclick={() => (menuAt = menuAt === k ? null : k)}
+        onclick={() => (menuAt = menuAt === d.id ? null : d.id)}
       >
         <Icon name="dots" size={16} />
       </button>
-      {#if menuAt === k}
+      {#if menuAt === d.id}
         <div class="menu-at">
         <div
           class="menu"
@@ -499,24 +658,28 @@
           onpointerdown={(e) => e.stopPropagation()}
           use:dismiss={{ onclose: () => (menuAt = null), keep: () => [shell?.querySelector(".more.on")] }}
         >
-          <button class="btn sm ghost" role="menuitem" onclick={() => swap(k)}>
+          <button class="btn sm ghost" role="menuitem" onclick={() => swap(d)}>
             <Icon name="swap" size={14} />{t("viewer.swapPanes")}
+          </button>
+          <button class="btn sm ghost" role="menuitem" onclick={() => turn(d)}>
+            <!-- Panes side by side turn into a stack (세로), a stack into panes side by side (가로). -->
+            <Icon name={d.h ? "columns" : "rows"} size={14} />{t(d.h ? "viewer.turnColumns" : "viewer.turnRows")}
           </button>
           <button
             class="btn sm ghost"
             role="menuitem"
             onclick={() => {
               menuAt = null;
-              animate().then(equalSizes);
+              animate().then(() => equalAt(d));
             }}
           >
-            <Icon name={cols ? "columns" : "rows"} size={14} />{t("viewer.equalPanes")}
+            <Icon name={d.h ? "rows" : "columns"} size={14} />{t("viewer.equalPanes")}
           </button>
-          <button class="btn sm ghost" role="menuitem" onclick={() => ((menuAt = null), collapse(slots[k], slots[k + 1]))}>
-            <Icon name="x" size={14} />{t(cols ? "viewer.closeLeft" : "viewer.closeTop")}
+          <button class="btn sm ghost" role="menuitem" onclick={() => ((menuAt = null), collapse(d, 0))}>
+            <Icon name="x" size={14} />{t(d.h ? "viewer.closeTop" : "viewer.closeLeft")}
           </button>
-          <button class="btn sm ghost" role="menuitem" onclick={() => ((menuAt = null), collapse(slots[k + 1], slots[k]))}>
-            <Icon name="x" size={14} />{t(cols ? "viewer.closeRight" : "viewer.closeBottom")}
+          <button class="btn sm ghost" role="menuitem" onclick={() => ((menuAt = null), collapse(d, 1))}>
+            <Icon name="x" size={14} />{t(d.h ? "viewer.closeBottom" : "viewer.closeRight")}
           </button>
         </div>
         </div>
@@ -530,21 +693,19 @@
     position: fixed;
     inset: 0;
     z-index: 20;
-    display: flex;
+    overflow: hidden;
     background: #000;
   }
-  .shell.rows {
-    flex-direction: column;
-  }
+  /* Panes and dividers are placed from the layout (ViewerShell `geo`). */
   .pane {
-    position: relative;
-    flex: 1 1 0px;
-    min-width: 0;
-    min-height: 0;
+    position: absolute;
     overflow: hidden;
   }
-  .shell.animating .pane {
-    transition: flex-grow var(--anim) cubic-bezier(0.3, 0, 0.1, 1);
+  .shell.animating .pane,
+  .shell.animating .divider {
+    transition-property: left, top, width, height;
+    transition-duration: var(--anim);
+    transition-timing-function: cubic-bezier(0.3, 0, 0.1, 1);
   }
   .inner {
     position: absolute;
@@ -561,16 +722,16 @@
   .inner.a-end {
     left: auto;
   }
-  .rows .inner.a-start,
-  .rows .inner.a-end {
+  .ax-rows .inner.a-start,
+  .ax-rows .inner.a-end {
     width: auto;
     height: var(--big);
   }
-  .rows .inner.a-start {
+  .ax-rows .inner.a-start {
     right: 0;
     bottom: auto;
   }
-  .rows .inner.a-end {
+  .ax-rows .inner.a-end {
     left: 0;
     top: auto;
   }
@@ -587,10 +748,10 @@
   .peek.end {
     background: linear-gradient(to left, rgb(0 0 0 / 0.55), rgb(0 0 0 / 0.25));
   }
-  .rows .peek {
+  .ax-rows .peek {
     background: linear-gradient(to bottom, rgb(0 0 0 / 0.55), rgb(0 0 0 / 0.25));
   }
-  .rows .peek.end {
+  .ax-rows .peek.end {
     background: linear-gradient(to top, rgb(0 0 0 / 0.55), rgb(0 0 0 / 0.25));
   }
   .peek:hover {
@@ -609,7 +770,7 @@
     left: auto;
     right: 0;
   }
-  .rows .inner.leaving.end {
+  .ax-rows .inner.leaving.end {
     top: auto;
     bottom: 0;
     left: 0;
@@ -641,15 +802,25 @@
     will-change: transform;
   }
   .divider {
-    position: relative;
+    position: absolute;
     z-index: 40;
-    flex: 0 0 4px;
     background: #000;
     cursor: col-resize;
     touch-action: none;
   }
-  .rows > .divider {
+  .divider.h {
     cursor: row-resize;
+  }
+  /* Its menu goes over the other dividers. */
+  .divider.open {
+    z-index: 45;
+  }
+  /* Inside a folded tile: only the line shows. */
+  .divider.folded {
+    pointer-events: none;
+  }
+  .divider.folded .more {
+    display: none;
   }
   /* A wider grip than the visible line (a finger needs more). */
   .divider::before {
@@ -657,7 +828,7 @@
     position: absolute;
     inset: 0 -6px;
   }
-  .rows > .divider::before {
+  .divider.h::before {
     inset: -6px 0;
   }
   .divider::after {
@@ -668,7 +839,7 @@
     background: #2b2f39;
     transition: background var(--t-fast) var(--ease);
   }
-  .rows > .divider::after {
+  .divider.h::after {
     inset: 1px 0;
   }
   .divider:hover::after,
@@ -680,7 +851,7 @@
     position: absolute;
     z-index: 2;
     left: 50%;
-    top: 50%;
+    top: var(--at, 50%);
     width: 22px;
     height: 34px;
     display: grid;
@@ -700,11 +871,13 @@
   .more :global(svg) {
     transform: rotate(90deg);
   }
-  .rows .more {
+  .divider.h .more {
+    left: var(--at, 50%);
+    top: 50%;
     width: 34px;
     height: 22px;
   }
-  .rows .more :global(svg) {
+  .divider.h .more :global(svg) {
     transform: none;
   }
   .more:hover,
@@ -716,10 +889,12 @@
     position: absolute;
     z-index: 3;
     left: 50%;
-    top: 50%;
+    top: var(--at, 50%);
     transform: translate(-50%, 30px);
   }
-  .rows .menu-at {
+  .divider.h .menu-at {
+    left: var(--at, 50%);
+    top: 50%;
     transform: translate(-50%, 16px);
   }
   .menu {
@@ -744,14 +919,14 @@
       width: 28px;
       height: 44px;
     }
-    .rows .more {
+    .divider.h .more {
       width: 44px;
       height: 28px;
     }
     .divider::before {
       inset: 0 -12px;
     }
-    .rows > .divider::before {
+    .divider.h::before {
       inset: -12px 0;
     }
   }

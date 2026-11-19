@@ -618,6 +618,8 @@ const ko = {
   "viewer.paneMenu": "분할 메뉴",
   "viewer.switchPane": "이 화면으로 전환",
   "viewer.swapPanes": "위치 바꾸기",
+  "viewer.turnColumns": "가로로 바꾸기",
+  "viewer.turnRows": "세로로 바꾸기",
   "viewer.equalPanes": "같은 크기로",
   "viewer.closeLeft": "왼쪽 닫기",
   "viewer.closeRight": "오른쪽 닫기",

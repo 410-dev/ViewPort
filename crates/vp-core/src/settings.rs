@@ -868,7 +868,8 @@ impl Default for PrivacySettings {
 pub struct WindowSettings {
     /// Most viewer panes shown side by side in one window.
     pub max_viewer_panes: u32,
-    /// "auto" (by window orientation), "columns" or "rows".
+    /// Direction a split takes when it opens: "auto" (by the window's shape then), "columns"
+    /// or "rows". It stays until changed from a divider menu.
     pub split_layout: String,
     /// Dragging a split divider so one pane passes this share (percent) of the window
     /// enters switching mode: one pane large, the others a strip that brings them back.
