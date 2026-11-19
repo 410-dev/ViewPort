@@ -966,6 +966,13 @@
   let tapTimer: ReturnType<typeof setTimeout> | undefined;
   let lastPointerType = "mouse";
   let hudWasShown = false;
+  // Set while a press outside the loop panel closes it (its capture listener runs first).
+  let loopsDismissed = false;
+  function dismissLoops() {
+    showLoops = false;
+    loopsDismissed = true;
+    setTimeout(() => (loopsDismissed = false));
+  }
 
   function cancelTap() {
     clearTimeout(tapTimer);
@@ -983,13 +990,16 @@
       tapTimer = undefined;
       if (zoom.zoomed) return;
       if (prefs.app?.viewer.tap_to_advance ?? true) settle(1);
-      else if (hudWasShown && !showLoops) {
-        // Tap-to-advance is off: a tap on the picture hides the controls and keeps them
-        // hidden (no timer) until the next touch.
-        clearTimeout(hudTimer);
-        hud = false;
-      }
+      else tapHidesHud();
     }, prefs.app?.viewer.double_tap_ms ?? 280);
+  }
+
+  /** Tap-to-advance is off: a tap on the picture or video hides the controls and keeps
+   *  them hidden (no timer) until the next touch. Not for the tap that brought them up. */
+  function tapHidesHud() {
+    if (!hudWasShown || showLoops) return;
+    clearTimeout(hudTimer);
+    hud = false;
   }
 
   function toggleZoomAt(x: number, y: number) {
@@ -1002,7 +1012,8 @@
   function onPointerDown(e: PointerEvent) {
     lastPointerType = e.pointerType;
     // Remember whether the controls were up before this touch, for a tap that hides them.
-    hudWasShown = showHud;
+    // A press that just closed the loop panel only closes it.
+    hudWasShown = showHud && !loopsDismissed;
     if (e.pointerType === "touch") poke();
     finishSlide();
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -1115,6 +1126,8 @@
     // Taps: touch only (a mouse double click comes as `dblclick`). Zoomed, a single tap
     // does nothing and a double tap zooms back out.
     if (g.type === "touch" && zoomable && !g.moved && dt < 600) onTap(e);
+    else if (g.type === "touch" && cur?.kind === "video" && g.swipe && !g.moved && dt < 600 && !(prefs.app?.viewer.tap_to_advance ?? true))
+      tapHidesHud();
     else poke();
   }
 
@@ -1356,7 +1369,7 @@
       class="loops"
       role="presentation"
       transition:pop
-      use:dismiss={{ onclose: () => (showLoops = false), keep: () => [dockEl], ignore: onVideoControls }}
+      use:dismiss={{ onclose: dismissLoops, keep: () => [dockEl], ignore: onVideoControls }}
       onpointerdown={(e) => e.stopPropagation()} onpointerup={(e) => e.stopPropagation()}>
       <div class="loops-head">
         <strong>{t("viewer.loops")}</strong>
@@ -1531,7 +1544,7 @@
     </div>
   {/if}
   {#if editing && cur}
-    <Editor brief={cur} src={cur.kind === "video" ? src(cur.id) : imageSrc(cur)} poster={thumbUrl(cur.id)} onclose={() => (editing = false)} onsaved={edited} />
+    <Editor brief={cur} src={cur.kind === "video" ? src(cur.id) : imageSrc(cur)} poster={thumbUrl(cur.id)} keys={settings.keys} onclose={() => (editing = false)} onsaved={edited} />
   {/if}
   {#if prefs.app?.viewer.show_nav_buttons ?? true}
     <button class="nav prev" class:visible={showHud} onclick={() => go(-1)} aria-label={t("viewer.prev")}><Icon name="chevronLeft" size={26} /></button>

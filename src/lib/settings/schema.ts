@@ -382,6 +382,8 @@ export const SECTIONS: Section[] = [
           { kind: "number", ...app({ path: "viewer.edit_quality", label: "set.editQuality", help: "set.editQuality.help" }), min: 1, max: 100, step: 1 },
           { kind: "toggle", ...app({ path: "viewer.edit_live_scrub", label: "set.editLiveScrub", help: "set.editLiveScrub.help" }) },
           { kind: "number", ...app({ path: "viewer.edit_fallback_fps", label: "set.editFallbackFps", help: "set.editFallbackFps.help" }), min: 1, max: 240, step: 1 },
+          { kind: "number", ...app({ path: "viewer.edit_undo_quiet_ms", label: "set.editUndoQuiet", help: "set.editUndoQuiet.help" }), min: 50, max: 5000, step: 50, unit: "ms" },
+          { kind: "number", ...app({ path: "viewer.edit_undo_steps", label: "set.editUndoSteps" }), min: 1, max: 10000, step: 10 },
         ],
       },
       {
@@ -748,6 +750,8 @@ export const SECTIONS: Section[] = [
           key("toggle_immersive", "key.toggle_immersive"),
           key("save_frame", "key.save_frame"),
           key("delete_item", "key.delete_item"),
+          key("edit_undo", "key.edit_undo"),
+          key("edit_redo", "key.edit_redo"),
         ],
       },
     ],

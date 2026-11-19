@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, untrack } from "svelte";
-  import { api, asCmdError, type EditSpec, type LoopSegment, type MediaBrief, type SaveMode } from "../api";
+  import { api, asCmdError, type EditSpec, type KeyBindings, type LoopSegment, type MediaBrief, type SaveMode } from "../api";
   import { t } from "../i18n.svelte";
   import { done } from "../toast.svelte";
   import Icon from "../ui/Icon.svelte";
@@ -8,6 +8,7 @@
   import { dismiss } from "../ui/dismiss";
   import { onBack } from "../back.svelte";
   import { prefs } from "../prefs.svelte";
+  import { isTyping, matches } from "../keys";
   import { tasks } from "../tasks.svelte";
   import { audible, audio } from "../audio.svelte";
   import { FULL, fitCrop, isFull, largestCrop, rotatedSize, towards, turnCrop, type Rect } from "./geometry";
@@ -20,6 +21,7 @@
     brief,
     src,
     poster,
+    keys,
     onclose,
     onsaved,
   }: {
@@ -28,6 +30,8 @@
     src: string;
     /** A video's thumbnail, shown until its first frame is decoded. */
     poster?: string;
+    /** The bundle's key bindings (undo, redo). */
+    keys?: KeyBindings;
     onclose: () => void;
     /** Saved: `id` holds the result (a new item for a copy). */
     onsaved: (id: number, mode: SaveMode) => void;
@@ -123,15 +127,19 @@
   let future = $state<Snap[]>([]);
   let histBase: Snap | null = null;
   let histTimer: ReturnType<typeof setTimeout> | undefined;
-  const HIST_QUIET_MS = 400;
+  /** A change is waiting out the quiet time: undo can already take it back. */
+  let histPending = $state(false);
+  const histQuietMs = () => prefs.app?.viewer.edit_undo_quiet_ms ?? 400;
+  const histSteps = () => Math.max(1, prefs.app?.viewer.edit_undo_steps ?? 200);
 
   function commitHist() {
     clearTimeout(histTimer);
     histTimer = undefined;
+    histPending = false;
     const now = takeSnap();
     if (!histBase) histBase = now;
     else if (!sameSnap(histBase, now)) {
-      past = [...past.slice(-199), histBase];
+      past = [...past.slice(-(histSteps() - 1)), histBase];
       future = [];
       histBase = now;
     }
@@ -144,7 +152,8 @@
     untrack(() => {
       if (!histBase) return commitHist();
       clearTimeout(histTimer);
-      histTimer = setTimeout(commitHist, HIST_QUIET_MS);
+      histTimer = setTimeout(commitHist, histQuietMs());
+      histPending = !sameSnap(histBase, takeSnap());
     });
   });
   onDestroy(() => clearTimeout(histTimer));
@@ -621,15 +630,14 @@
   );
 
   function onKey(e: KeyboardEvent) {
-    if ((e.ctrlKey || e.metaKey) && !saving && !confirming && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) {
-      const k = e.key.toLowerCase();
-      if (k === "z" || k === "y") {
-        e.preventDefault();
-        e.stopPropagation();
-        if (k === "y" || e.shiftKey) redo();
-        else undo();
-        return;
-      }
+    // The angle slider keeps focus after a drag; undo still applies there.
+    const typing = isTyping(e) && !(e.target instanceof HTMLInputElement && e.target.type === "range");
+    if (!saving && !confirming && !typing && (matches(e, keys?.edit_undo) || matches(e, keys?.edit_redo))) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (matches(e, keys?.edit_redo)) redo();
+      else undo();
+      return;
     }
     if (tab === "trim" && !saving && !confirming && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
       e.preventDefault();
@@ -663,7 +671,7 @@
   <header class="topbar">
     <button class="pill" onclick={onclose} disabled={saving}><Icon name="x" size={15} /><span class="label">{t("common.cancel")}</span></button>
     <span class="title">{t("edit.title")}</span>
-    <button class="pill" onclick={undo} disabled={saving || !past.length} title={t("edit.undo")} aria-label={t("edit.undo")}><Icon name="undo" size={15} /></button>
+    <button class="pill" onclick={undo} disabled={saving || (!past.length && !histPending)} title={t("edit.undo")} aria-label={t("edit.undo")}><Icon name="undo" size={15} /></button>
     <button class="pill" onclick={redo} disabled={saving || !future.length} title={t("edit.redo")} aria-label={t("edit.redo")}><Icon name="redo" size={15} /></button>
     <button class="pill" onclick={reset} disabled={saving || !changed} title={t("edit.reset")}><Icon name="refresh" size={15} /><span class="label">{t("edit.reset")}</span></button>
     <span class="save-wrap">
@@ -802,7 +810,7 @@
           {/if}
         </div>
         <!-- Two rows: moving the playhead, then changing the blocks. -->
-        <div class="row tools-row">
+        <div class="row tools-row transport">
           <button class="icon sm" onclick={() => stepCut(-1)} title={t("edit.prevCut")} aria-label={t("edit.prevCut")}><Icon name="rewind" size={16} /></button>
           <button class="icon sm sec" onclick={() => stepSec(-1)} title={t("edit.secBack")} aria-label={t("edit.secBack")}>−1s</button>
           <button class="icon sm" onclick={() => stepFrame(-1)} title={t("edit.frameBack")} aria-label={t("edit.frameBack")}><Icon name="frameBack" size={16} /></button>
@@ -919,6 +927,9 @@
   .title {
     flex: 1;
     min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     text-align: center;
     font-weight: 600;
   }
@@ -1348,6 +1359,15 @@
     gap: 6px;
     justify-content: flex-start;
   }
+  /* The playhead buttons stay on one line; on a narrow screen the result length moves
+     to a line of its own under them, at the right. */
+  .transport {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+  .transport .note {
+    margin-left: auto;
+  }
   .icon.sm {
     width: 36px;
     height: 36px;
@@ -1446,6 +1466,16 @@
     }
     .pill {
       padding: 0 11px;
+    }
+  }
+  @media (max-width: 380px) {
+    .topbar {
+      gap: 6px;
+      padding-left: 10px;
+      padding-right: 10px;
+    }
+    .pill {
+      padding: 0 9px;
     }
   }
 </style>

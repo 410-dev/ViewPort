@@ -311,6 +311,8 @@ export interface KeyBindings {
   toggle_immersive: string[];
   save_frame: string[];
   delete_item: string[];
+  edit_undo: string[];
+  edit_redo: string[];
 }
 
 export interface Settings {
@@ -436,6 +438,8 @@ export interface AppSettings {
     edit_speeds: number[];
     edit_live_scrub: boolean;
     edit_fallback_fps: number;
+    edit_undo_quiet_ms: number;
+    edit_undo_steps: number;
   };
   ml: {
     runtime_path: string;

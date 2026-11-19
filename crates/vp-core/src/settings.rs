@@ -766,6 +766,11 @@ pub struct ViewerSettings {
     pub edit_live_scrub: bool,
     /// Frames per second the cut editor steps by when a video does not say.
     pub edit_fallback_fps: f64,
+    /// The editor records an undo step once its state has been still this long (a drag
+    /// or a slider makes one step, not hundreds).
+    pub edit_undo_quiet_ms: u32,
+    /// Undo steps the editor keeps; the oldest go first.
+    pub edit_undo_steps: u32,
 }
 
 impl Default for ViewerSettings {
@@ -802,6 +807,8 @@ impl Default for ViewerSettings {
             edit_speeds: vec![0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 4.0],
             edit_live_scrub: true,
             edit_fallback_fps: 30.0,
+            edit_undo_quiet_ms: 400,
+            edit_undo_steps: 200,
         }
     }
 }
@@ -1204,6 +1211,9 @@ pub struct KeyBindings {
     /// Viewer: save the video frame on screen as a picture, delete the item shown.
     pub save_frame: Vec<String>,
     pub delete_item: Vec<String>,
+    /// Editor: undo and redo.
+    pub edit_undo: Vec<String>,
+    pub edit_redo: Vec<String>,
 }
 
 impl Default for KeyBindings {
@@ -1237,6 +1247,8 @@ impl Default for KeyBindings {
             toggle_immersive: v(&["h"]),
             save_frame: v(&["c"]),
             delete_item: v(&["Delete"]),
+            edit_undo: v(&["Ctrl+z", "Meta+z"]),
+            edit_redo: v(&["Ctrl+Shift+z", "Ctrl+y", "Meta+Shift+z"]),
         }
     }
 }
